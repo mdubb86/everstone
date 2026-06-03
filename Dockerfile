@@ -41,6 +41,16 @@ RUN apk update && apk add --no-cache \
     make release && \
     mv /couchdb-src/rel/couchdb /out
 
+# engraph binary (optional — if cargo build fails, a stub is placed; setup_engraph handles first-run build)
+FROM alpine:3.22 AS engraph
+RUN apk add --no-cache rust cargo git
+# Place a stub first so COPY --from always succeeds; overwrite with real binary if build succeeds
+RUN mkdir -p /usr/local/bin && \
+    printf '#!/bin/sh\necho "[engraph] not yet built — run setup_engraph"\n' > /usr/local/bin/engraph && \
+    chmod +x /usr/local/bin/engraph
+RUN cargo install --git https://github.com/devwhodevs/engraph --root /usr/local 2>&1 | tail -5 || \
+    echo "[engraph] build failed — stub binary retained; index on first run"
+
 FROM alpine:3.22
 
 ARG TARGETARCH
@@ -58,8 +68,7 @@ RUN apk update && apk add --no-cache \
     python3 \
     py3-pip \
     git \
-    git-daemon \
-    fcgiwrap \
+    deno \
     jq \
     py3-yaml \
     py3-jsonschema && \
@@ -71,17 +80,24 @@ RUN apk update && apk add --no-cache \
 
 COPY --from=caddy /out/caddy /opt/bin/caddy
 COPY --from=couchdb /out /opt/bin/couchdb
+COPY --from=engraph /usr/local/bin/engraph /usr/local/bin/engraph
 
-# Install radfire (CalDAV server with webhook event emission)
-COPY radfire /opt/radfire
-RUN pip install --break-system-packages /opt/radfire
+# Python services
+RUN pip install --break-system-packages "radicale>=3.2" "hermes-agent"
+COPY everstone_tasks /opt/everstone_tasks
+RUN pip install --break-system-packages /opt/everstone_tasks
+COPY access_hook /opt/access_hook
+RUN pip install --break-system-packages /opt/access_hook
+
+# livesync-bridge (requires github.com access at build time)
+RUN git clone --depth 1 https://github.com/vrtmrz/livesync-bridge /opt/livesync-bridge || \
+    echo "[livesync-bridge] clone failed — /opt/livesync-bridge absent; install manually at runtime"
 
 COPY scripts /scripts
 COPY services /services
-
 COPY config /opt/defaults/config
 
-ENV PATH="${PATH}:/command:/scripts:/opt/bin"
+ENV PATH="${PATH}:/command:/scripts:/opt/bin:/usr/local/bin"
 ENTRYPOINT ["/scripts/entrypoint"]
 EXPOSE 80
 VOLUME ["/opt/config.yaml", "/opt/data"]
