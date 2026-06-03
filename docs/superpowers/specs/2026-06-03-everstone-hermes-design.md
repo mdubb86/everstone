@@ -56,6 +56,16 @@ sync surfaces above (`/db`, `/caldav`, `/git`), which your own devices use. The
 agent's control channel adds zero inbound attack surface. (We avoid Telegram
 *webhooks* precisely because they would require a public route.)
 
+**Private access + offline-tolerant sync.** EverStone needs no public exposure:
+the inbound surfaces are typically reached over a private overlay (e.g. Tailscale
+MagicDNS). Both sync layers are **offline-capable and eventually consistent** —
+edits made on Obsidian or Tasks.org while disconnected are queued locally and sync
+automatically the next time the device reaches EverStone. The agent is just
+another participant (notes via livesync-bridge, tasks via CalDAV), so all of them
+reconcile to the server. Concurrent offline edits to the *same* item can conflict:
+LiveSync merges/surfaces note conflicts (chunk-level); CalDAV is last-write-wins
+per task (see §12).
+
 **Data layout on the `/opt/data` volume** (everything that must persist):
 
 | Path | Purpose |
