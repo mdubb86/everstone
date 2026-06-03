@@ -165,9 +165,10 @@ A Telegram bot is reachable by anyone who finds it, so the bot must **ignore
 everyone unauthorized**, default-deny:
 
 - **DM:** `TELEGRAM_ALLOWED_USERS` = the owner only.
-- **Group:** `TELEGRAM_GROUP_ALLOWED_CHATS` = the one shared group's chat id, and
-  `TELEGRAM_GROUP_ALLOWED_USERS` = the household members (you + spouse), so either
-  can address either agent in the group.
+- **Group:** `TELEGRAM_GROUP_ALLOWED_USERS` = the household members (you + spouse)
+  — **required**. `TELEGRAM_GROUP_ALLOWED_CHATS` (pinning *which* group) is
+  **optional**: set it to restrict to one group, or omit to allow any group those
+  users add the bot to (still tasks-only by Layer 2's `chat_type` gate).
 - `unknown_user_action = ignore`; **never** `GATEWAY_ALLOW_ALL_USERS`.
 
 These allowlists are **declared in `config.yaml` and injected as container env** by
@@ -193,7 +194,7 @@ on every tool call:
 | chat (from the session key) | Allowed tools |
 |---|---|
 | owner's **DM** (`chat_type = private`) | everything (shell, files, engraph, tasks) |
-| the **shared group** (`chat_type = group`, `group_chat_id`) | **only** `everstone_tasks` |
+| **any group** (`chat_type` = `group`/`supergroup`) | **only** `everstone_tasks` |
 | **unknown / unparseable** | **deny** (fail-closed) |
 
 So **in the group, the agent is strictly tasks-only — for everyone, including the
@@ -206,7 +207,9 @@ use notes, the owner goes to the **DM** (where they have full tools).
 Gating is by **chat, not sender**: Hermes exposes the chat (via the session key)
 to the hook but not the individual sender within a group, so per-sender
 distinction *inside* a group is intentionally out of scope (it would require a
-second bot for negligible benefit — see §11).
+second bot for negligible benefit — see §11). The hook keys on the **`chat_type`**
+field (`private` vs `group`/`supergroup`), so **no group chat id is hardcoded** —
+any group is treated conservatively as tasks-only (fail-safe).
 
 Two load-bearing assumptions, both **verified at build / by the e2e battery (§10)**:
 (1) the `pre_tool_call` payload's `session_id` is the structured key carrying
@@ -253,8 +256,9 @@ instance:
   name: Jarvis                       # public display identity (group routing is by @mention)
 telegram:
   owner_user_id: 123456789           # DM: only you, at full power
-  group_chat_id: -1001234567890      # the shared family group
-  group_allowed_user_ids: [123456789, 987654321]  # you + spouse may address it in-group
+  group_allowed_user_ids: [123456789, 987654321]  # you + spouse may @mention it in groups
+  group_chat_id: -1001234567890      # OPTIONAL: pin to one group (Layer 1). The access
+                                     # hook gates by chat_type, so no group id is required.
 hermes:
   model: openai-codex                # confirm exact id with `hermes model`
   telegram_bot_token: <bot token>
