@@ -1,0 +1,3 @@
+#!/command/execlineb -P
+with-contenv
+caddy run --config /opt/config/caddy/Caddyfile --adapter caddyfile

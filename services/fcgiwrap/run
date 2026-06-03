@@ -1,0 +1,3 @@
+#!/command/execlineb -P
+with-contenv
+fcgiwrap -s unix:/run/fcgiwrap.sock

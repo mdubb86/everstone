@@ -1,0 +1,87 @@
+FROM alpine:3.22 AS caddy
+
+ARG TARGETARCH
+ARG GO_VERSION=1.24.3
+ARG XCADDY_VERSION=0.4.5
+ARG CADDY_VERSION=latest
+RUN apk update && apk add --no-cache \
+    git \
+    build-base \
+    curl \
+    tar && \
+    GO_ARCH=$( [ "$TARGETARCH" = "arm64" ] && echo 'linux-arm64' || echo 'linux-amd64' ) && \
+    GO_URL="https://go.dev/dl/go${GO_VERSION}.${GO_ARCH}.tar.gz" && \
+    echo "Downloading go from ${GO_URL}" && \
+    curl -fsSL "${GO_URL}" | tar xz -C / && \
+    XCADDY_URL="https://github.com/caddyserver/xcaddy/releases/download/v${XCADDY_VERSION}/xcaddy_${XCADDY_VERSION}_linux_${TARGETARCH}.tar.gz" && \
+    echo "Downloading xcaddy from ${XCADDY_URL}" && \
+    curl -fsSL "${XCADDY_URL}" | tar xz -C / && \
+    echo "Building caddy ${CADDY_VERSION}" && \
+    PATH="${PATH}:/go/bin" ./xcaddy build "$CADDY_VERSION" && \
+    mkdir -p /out && \
+    mv caddy /out/caddy
+
+FROM alpine:3.22 AS couchdb
+
+ARG COUCHDB_VERSION=3.5.1
+RUN apk update && apk add --no-cache \
+    build-base \
+    curl \
+    erlang26 \
+    erlang26-dev \
+    erlang26-reltool \
+    icu-dev \
+    openssl-dev \
+    git && \
+    curl -fsSL "https://archive.apache.org/dist/couchdb/source/${COUCHDB_VERSION}/apache-couchdb-${COUCHDB_VERSION}.tar.gz" -o couchdb.tar.gz && \
+    mkdir /couchdb-src && \
+    tar xzf couchdb.tar.gz -C /couchdb-src --strip-components=1 && \
+    cd /couchdb-src && \
+    ./configure --disable-docs --disable-fauxton --js-engine=quickjs --disable-spidermonkey && \
+    make release && \
+    mv /couchdb-src/rel/couchdb /out
+
+FROM alpine:3.22
+
+ARG TARGETARCH
+ARG S6_OVERLAY_VERSION=3.2.0.2
+ARG S6_OVERLAY_BASE_URL="https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}"
+RUN apk update && apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    curl \
+    tar \
+    xz \
+    erlang26 \
+    icu-libs \
+    openssl \
+    python3 \
+    py3-pip \
+    git \
+    git-daemon \
+    fcgiwrap \
+    jq \
+    py3-yaml \
+    py3-jsonschema && \
+    ARCH=$( [ "$TARGETARCH" = "arm64" ] && echo aarch64 || echo x86_64 ) && \
+    curl -fsSL "${S6_OVERLAY_BASE_URL}/s6-overlay-${ARCH}.tar.xz" | tar xJ -C / && \
+    curl -fsSL "${S6_OVERLAY_BASE_URL}/s6-overlay-noarch.tar.xz" | tar xJ -C / && \
+    addgroup -g 5984 couchdb && \
+    adduser -D -u 5984 -G couchdb -h /home/couchdb couchdb
+
+COPY --from=caddy /out/caddy /opt/bin/caddy
+COPY --from=couchdb /out /opt/bin/couchdb
+
+# Install radfire (CalDAV server with webhook event emission)
+COPY radfire /opt/radfire
+RUN pip install --break-system-packages /opt/radfire
+
+COPY scripts /scripts
+COPY services /services
+
+COPY config /opt/defaults/config
+
+ENV PATH="${PATH}:/command:/scripts:/opt/bin"
+ENTRYPOINT ["/scripts/entrypoint"]
+EXPOSE 80
+VOLUME ["/opt/config.yaml", "/opt/data"]

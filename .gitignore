@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / SvelteKit
+node_modules/
+.svelte-kit/
+build/
+dist/
+
+# Editors
+.idea/
+*.iml
+
+# Local runtimes / data
+.pyenv/
+radfire_data/
+
+# OS
+.DS_Store

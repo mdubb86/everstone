@@ -1,0 +1,8 @@
+couchdb:
+  user: everstone
+  password: null
+  database: everstone
+
+git:
+  user: everstone
+  password: null

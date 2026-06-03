@@ -1,0 +1,126 @@
+#!/bin/sh
+set -eu
+
+# Generate ObsidianLiveSync setup URI
+# Based on: https://raw.githubusercontent.com/vrtmrz/obsidian-livesync/main/utils/flyio/generate_setupuri.ts
+
+# Cleanup temp file on exit
+cleanup() {
+    rm -f /tmp/setupuri.ts
+}
+trap cleanup EXIT
+
+# Install Deno if not present
+if ! command -v deno >/dev/null 2>&1; then
+    echo "Installing Deno..."
+    apk add --no-cache deno
+fi
+
+# Check for required hostname argument
+if [ $# -lt 1 ]; then
+    echo "Usage: setupuri <hostname>"
+    echo "Example: setupuri https://sync.example.com"
+    echo "         setupuri http://localhost:8080"
+    exit 1
+fi
+
+hostname="$1"
+
+# Config values injected by configure.py
+username="{{COUCHDB_USER}}"
+password="{{COUCHDB_PASSWORD}}"
+database="{{COUCHDB_DATABASE}}"
+
+# Create the TypeScript script in /tmp
+cat > /tmp/setupuri.ts << TYPESCRIPT_EOF
+import { Input, Secret } from "https://deno.land/x/cliffy@v1.0.0-rc.4/prompt/mod.ts";
+import { encrypt } from "npm:octagonal-wheels@0.1.30/encryption/encryption";
+
+const noun = ["waterfall", "river", "breeze", "moon", "rain", "wind", "sea", "morning", "snow", "lake", "sunset", "pine", "shadow", "leaf", "dawn", "glitter", "forest", "hill", "cloud", "meadow", "sun", "glade", "bird", "brook", "butterfly", "bush", "dew", "dust", "field", "fire", "flower", "firefly", "feather", "grass", "haze", "mountain", "night", "pond", "darkness", "snowflake", "silence", "sound", "sky", "shape", "surf", "thunder", "violet", "water", "wildflower", "wave", "water", "resonance", "sun", "log", "dream", "cherry", "tree", "fog", "frost", "voice", "paper", "frog", "smoke", "star"];
+const adjectives = ["autumn", "hidden", "bitter", "misty", "silent", "empty", "dry", "dark", "summer", "icy", "delicate", "quiet", "white", "cool", "spring", "winter", "patient", "twilight", "dawn", "crimson", "wispy", "weathered", "blue", "billowing", "broken", "cold", "damp", "falling", "frosty", "green", "long", "late", "lingering", "bold", "little", "morning", "muddy", "old", "red", "rough", "still", "small", "sparkling", "thrumming", "shy", "wandering", "withered", "wild", "black", "young", "holy", "solitary", "fragrant", "aged", "snowy", "proud", "floral", "restless", "divine", "polished", "ancient", "purple", "lively", "nameless"];
+function friendlyString() {
+    return \`\${adjectives[Math.floor(Math.random() * adjectives.length)]}-\${noun[Math.floor(Math.random() * noun.length)]}\`;
+}
+
+const URIBASE = "obsidian://setuplivesync?settings=";
+async function main() {
+    // Parse and validate hostname from argument
+    const host = "$hostname";
+
+    // Validate URL format
+    let parsedUrl;
+    try {
+        parsedUrl = new URL(host);
+        if (!parsedUrl.protocol.match(/^https?:\$/)) {
+            console.error("Error: hostname must use http:// or https:// protocol");
+            Deno.exit(1);
+        }
+    } catch (error) {
+        console.error(\`Error: Invalid URL format: \${host}\`);
+        console.error("Must be a valid URL like https://sync.example.com or http://localhost:8080");
+        Deno.exit(1);
+    }
+
+    const hostname = host + "/db";
+
+    // Prompt for vault passphrase
+    const passphrase = await Input.prompt({
+        message: "Enter your vault encryption passphrase",
+        hint: "This encrypts your notes end-to-end"
+    });
+
+    // Generate uri_passphrase
+    const uri_passphrase = friendlyString();
+
+    const conf = {
+        couchDB_URI: hostname,
+        couchDB_USER: "$username",
+        couchDB_PASSWORD: "$password",
+        couchDB_DBNAME: "$database",
+        passphrase: passphrase,
+
+        syncOnStart: true,
+        gcDelay: 0,
+        periodicReplication: true,
+        syncOnFileOpen: true,
+        encrypt: true,
+        usePathObfuscation: true,
+        batchSave: true,
+        batch_size: 50,
+        batches_limit: 50,
+        useHistory: true,
+        disableRequestURI: true,
+        customChunkSize: 50,
+        syncAfterMerge: false,
+        concurrencyOfReadChunksOnline: 100,
+        minimumIntervalOfReadChunksOnline: 100,
+        handleFilenameCaseSensitive: false,
+        doNotUseFixedRevisionForChunks: true,
+        settingVersion: 10,
+        notifyThresholdOfRemoteStorageSize: 800,
+    };
+    const encryptedConf = encodeURIComponent(await encrypt(JSON.stringify(conf), uri_passphrase, false));
+    const theURI = \`\${URIBASE}\${encryptedConf}\`;
+
+    console.log("\\n" + "=".repeat(80));
+    console.log("Obsidian LiveSync Setup Configuration");
+    console.log("=".repeat(80));
+    console.log("\\nServer: " + hostname);
+    console.log("\\n1. Setup URI:");
+    console.log(theURI);
+    console.log("\\n2. Setup URI Passphrase:");
+    console.log(uri_passphrase);
+    console.log("\\n3. Sync Passphrase (Vault Encryption):");
+    console.log(passphrase);
+    console.log("\\n" + "=".repeat(80));
+    console.log("IMPORTANT: Save these securely - they cannot be recovered!");
+    console.log("=".repeat(80) + "\\n");
+}
+await main();
+TYPESCRIPT_EOF
+
+# Execute the TypeScript script with Deno
+deno run --allow-net --allow-read=stdin /tmp/setupuri.ts
+
+# Clean up
+rm /tmp/setupuri.ts

@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["couchdb", "git"],
+  "properties": {
+    "couchdb": {
+      "type": "object",
+      "required": ["user", "password", "database"],
+      "properties": {
+        "user": { "type": "string", "minLength": 1 },
+        "password": { "type": "string", "minLength": 1 },
+        "database": { "type": "string", "minLength": 1 }
+      }
+    },
+    "git": {
+      "type": "object",
+      "required": ["user", "password"],
+      "properties": {
+        "user": { "type": "string", "minLength": 1 },
+        "password": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
