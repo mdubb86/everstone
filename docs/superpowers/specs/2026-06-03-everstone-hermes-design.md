@@ -49,6 +49,13 @@ livesync-bridge (Deno) · engraph (Rust) · hermes`.
 **Caddy routing:** `/db → couchdb`, `/caldav → radicale`, `/git →
 git-http-backend`, `/health`, `/* → "EverStone Server"`.
 
+**Telegram needs no inbound route.** The agent's gateway uses **outbound
+long-polling** to Telegram (and outbound HTTPS to the model API), so the bot needs
+no public URL or open port — Caddy is untouched and keeps serving only the inbound
+sync surfaces above (`/db`, `/caldav`, `/git`), which your own devices use. The
+agent's control channel adds zero inbound attack surface. (We avoid Telegram
+*webhooks* precisely because they would require a public route.)
+
 **Data layout on the `/opt/data` volume** (everything that must persist):
 
 | Path | Purpose |
@@ -152,8 +159,12 @@ everyone unauthorized**, default-deny:
   can address either agent in the group.
 - `unknown_user_action = ignore`; **never** `GATEWAY_ALLOW_ALL_USERS`.
 
-This is mandatory: the agent has shell access, so an open bot would be remote code
-execution for any stranger.
+These allowlists are **declared in `config.yaml` and injected as container env** by
+`configure.py` — the policy is version-controlled and reproducible, not mutable
+runtime state. Hermes's interactive DM **pairing is disabled**, so the env
+allowlist is authoritative: the only way onto it is editing `config.yaml` and
+redeploying. This is mandatory: the agent has shell access, so an open bot would be
+remote code execution for any stranger.
 
 ### Layer 2 — per-sender tool allowlist (what it may do)
 
