@@ -6,7 +6,7 @@ configure = importlib.util.module_from_spec(spec); spec.loader.exec_module(confi
 
 SAMPLE = {
   "couchdb": {"user":"u","password":"p","database":"vault"},
-  "git": {"user":"g","password":"gp"}, "caldav": {"user":"cu","password":"cp"},
+  "caldav": {"user":"cu","password":"cp"},
   "livesync": {"passphrase":"ph","obfuscate_passphrase":"ob"},
   "obsidian": {"vault_name":"myvault"}, "instance": {"name":"Jarvis"},
   "telegram": {"owner_user_id":111,"bot_token":"TKN"}, "hermes": {"model":"openai/gpt-5-codex"},
