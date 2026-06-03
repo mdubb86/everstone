@@ -230,15 +230,29 @@ code.
 
 ## 10. Testing strategy
 
+Chosen level: **protocol-level e2e + a documented manual smoke test.** Driving the
+real Obsidian GUI in CI (xvfb/Electron) is explicitly rejected as too brittle.
+
 - **everstone-tasks:** unit tests for command behavior and deeplink construction,
   run against an ephemeral Radicale (or a mocked `caldav` client).
 - **configure.py:** tests that rendering produces valid Radicale config,
   livesync-bridge `config.json`, and Hermes config from a sample `config.yaml`;
   schema-validation failure cases.
+- **Protocol-level e2e (automated CI):**
+  - **Notes round-trip:** run CouchDB + **two `livesync-bridge` instances**
+    (folder A ↔ CouchDB ↔ folder B) with encryption + obfuscation on. Assert a
+    file created/edited/deleted in folder A propagates to folder B (and is a
+    valid LiveSync doc in CouchDB). A second bridge is a faithful stand-in for
+    "another Obsidian device," since it is a LiveSync-compatible client by the
+    same author.
+  - **Tasks round-trip:** real Radicale + `everstone-tasks` + a CalDAV client
+    lib; assert add/done/link and that the `obsidian://` deeplink survives a
+    write→read cycle.
 - **Container smoke test:** build the image, boot it, assert `/health` is 200 and
   each s6 service reaches "up."
-- **Hermes & livesync-bridge:** third-party; verified by manual integration check
-  on a throwaway vault before pointing at the real one.
+- **Manual smoke (documented, one-time):** one real Obsidian device against a
+  **throwaway vault** to confirm the true GUI round-trip before pointing the
+  stack at the real vault. The real Obsidian GUI itself is not automated.
 
 ## 11. Out of scope (YAGNI for v2)
 
@@ -247,6 +261,14 @@ code.
 - Note → task deeplinks (task → note only for now).
 - A web UI / status dashboard.
 - Multi-user; this is a single-person hub.
+- **Home Assistant integration (future):** a likely next interaction point. It
+  rides on Hermes (which already supports Home Assistant as a gateway, and can
+  call HA's REST/websocket API via its own tools/MCP), so it needs no EverStone
+  plumbing and is deferred — not planned in v2.
+
+> Note: Obsidian shipped an official **headless sync client** (npm, Feb 2026),
+> but it targets Obsidian's paid **Sync** service, not the self-hosted
+> CouchDB/LiveSync backend EverStone uses — so it does not apply here.
 
 ## 12. Risks & open questions
 
