@@ -1,4 +1,4 @@
-# EverStone v2 — Hermes-Centered Personal Hub
+# EverStone — Hermes-Centered Personal Hub
 
 - **Date:** 2026-06-03
 - **Status:** Design — awaiting review
@@ -6,285 +6,339 @@
 
 ## 1. Vision
 
-EverStone becomes a single self-hosted container that hosts a person's notes,
-tasks, and backups, with an AI agent (**Hermes Agent**) sitting on top of both
-notes and tasks as a persistent personal assistant reached from a phone via
-Telegram.
+EverStone is a single self-hosted container that hosts one person's notes, tasks,
+and backups, with an AI assistant (**Hermes Agent**) sitting on top of both notes
+and tasks and reachable from a phone via Telegram.
 
 - **Notes** live in Obsidian, synced through CouchDB (LiveSync), and are exposed
   to Hermes as **plaintext files** via `livesync-bridge`.
-- **Tasks** live in Radicale (CalDAV), authored/managed in a native Mac CalDAV
-  client and Tasks.org on the phone, and reached by Hermes through a small
-  `everstone-tasks` CLI.
+- **Tasks** live in Radicale (CalDAV), authored in a native Mac CalDAV client and
+  Tasks.org on the phone, and reached by Hermes through the `everstone-tasks` CLI.
 - **Tasks link to notes** via `obsidian://` deeplinks that Hermes maintains.
 - **Backups** continue via the existing git HTTP backend.
 
-The marquee change from the original project: we are **not** mirroring markdown
-checkboxes into VTODOs. Tasks and notes are independent stores; the only
-connection is a deeplink, and the intelligence that ties them together is
-Hermes, not a hand-written sync engine.
+Each instance runs **two agents** — a fully-capable **personal** agent in your
+private chat, and a **household** agent in a shared chat that can file tasks on
+your list but is structurally barred from your notes. Serving another person
+(e.g. a spouse) is just running a second container; their household agent meets
+yours in the shared chat.
 
-## 2. Background — what changed and why
+We are **not** mirroring markdown checkboxes into VTODOs. Tasks and notes are
+independent stores; the only connection is a deeplink, and the intelligence that
+ties them together is Hermes.
 
-The original design (`building-blocks.md`) tried to parse markdown tasks,
-generate stable UIDs, mirror them into CalDAV VTODOs, watch both sides, and
-reconcile bidirectional edits. That is the hardest, most fragile part of the
-whole concept (UID stability across edits, conflict resolution, two sources of
-truth for the same text).
+## 2. Architecture
 
-The pivot:
-
-1. Tasks are managed in a real CalDAV client, not inside Obsidian.
-2. The note↔task relationship is a **link**, not a content copy.
-3. **Hermes Agent** is added as the brain that reads/writes both stores.
-
-Consequences:
-
-- The custom event-emitting Radicale storage (`radfire`) is **removed**. It only
-  ever bought *real-time reaction* to task changes, which none of the planned
-  jobs require (they are message-triggered, cron-triggered, or on-demand). If
-  real-time is ever wanted, Radicale's built-in `[storage] hook` can run a
-  one-line "poke Hermes" command — no custom storage class needed.
-- The notes-access problem (LiveSync stores E2E-encrypted, path-obfuscated
-  chunks in CouchDB) is solved by `livesync-bridge`, which holds the passphrase
-  and materializes a plaintext folder.
-- The unbuilt `taskite` SvelteKit scaffold is **removed** — interaction happens
-  through Telegram, so a web dashboard is redundant.
-
-## 3. Architecture
-
-Single container, s6-overlay supervising all long-lived services.
+One Alpine + s6-overlay container supervises every long-lived service.
 
 ```
 Obsidian (all devices) ─┐
-                        ├─⇄ CouchDB (/db) ⇄ livesync-bridge ⇄ [ /opt/data/vault ]
-Mac CalDAV client ──────┐                                            ▲
-Tasks.org (phone) ──────┴─⇄ Radicale (/caldav)  ◄────────────┐      │ file tools
-                                                             │      │
-                                       everstone-tasks CLI ──┴──── Hermes Agent
-                                                              (Telegram gateway, cron, skills)
+                        ├─⇄ CouchDB (/db) ⇄ livesync-bridge ⇄ [ /opt/data/vault ] ──┐
+Mac CalDAV client ──────┐                                          ▲   ▲             │
+Tasks.org (phone) ──────┴─⇄ Radicale (/caldav)                     │   │ engraph     │ file
+                              ▲          ▲                         │   │ (search+    │ access
+                              │ tasks    │ tasks                   │   │  edit, MCP) │
+                  Personal Hermes (DM, user: personal) ── direct files + engraph + tasks
+                  Household Hermes (shared group, user: household) ── tasks only, no notes
 ```
 
-**Services under s6:** `caddy · couchdb · radicale (plain) · git/fcgiwrap ·
-livesync-bridge (Deno) · hermes`.
+**Services under s6:** `caddy · couchdb · radicale · git/fcgiwrap ·
+livesync-bridge (Deno) · engraph (Rust) · hermes-personal · hermes-household`.
 
-**Caddy routing (unchanged):** `/db → couchdb`, `/caldav → radicale`,
-`/git → git-http-backend`, `/health`, `/* → "EverStone Server"`.
+**Caddy routing:** `/db → couchdb`, `/caldav → radicale`, `/git →
+git-http-backend`, `/health`, `/* → "EverStone Server"`.
 
-**Data layout on the `/opt/data` volume** (everything that must survive restarts):
+**Two OS users for capability isolation:**
+
+- **`personal`** — owns `/opt/data/vault`, the engraph index, and the personal
+  agent's home. Runs the personal Hermes agent, livesync-bridge, and engraph.
+- **`household`** — owns only the household agent's home. **No read access to the
+  vault or the engraph index.** Runs the household Hermes agent, which is handed
+  only the `everstone-tasks` tool.
+
+**Data layout on the `/opt/data` volume** (everything that must persist):
 
 | Path | Owner | Purpose |
 |------|-------|---------|
-| `couchdb/` | couchdb | CouchDB data (existing) |
-| `git/` | git | bare backup repo (existing) |
-| `radicale/collections/` | radicale | VTODO `.ics` storage |
-| `radicale/htpasswd` | radicale | CalDAV auth |
-| `vault/` | hermes | plaintext vault (livesync-bridge `baseDir`) |
-| `hermes/` | hermes | `~/.hermes`: OAuth token, memory, skills, sessions |
+| `couchdb/` | couchdb | CouchDB data |
+| `git/` | git | bare backup repo |
+| `radicale/collections/` + `radicale/htpasswd` | radicale | CalDAV tasks + auth |
+| `vault/` | personal | plaintext notes (livesync-bridge target) |
+| `hermes/personal/` | personal | personal `HERMES_HOME` + `.engraph` index/model |
+| `hermes/household/` | household | household `HERMES_HOME` |
 
-## 4. Components
+## 3. Components
 
-### 4.1 Radicale (replaces radfire)
+### 3.1 CouchDB
 
-Stock Radicale run as an s6 `longrun`. `multifilesystem` storage at
+Unchanged from today: backs Obsidian LiveSync at `/db`, single-node, CORS for
+Obsidian, built from source in the image.
+
+### 3.2 Radicale
+
+Stock Radicale (no custom storage) as an s6 longrun. `multifilesystem` storage at
 `/opt/data/radicale/collections`; htpasswd auth at `/opt/data/radicale/htpasswd`.
-Config templated by `configure.py` from `config.yaml`. No custom Python package;
-the `radfire/` directory and its event/consumer/storage modules are deleted.
+Config and htpasswd are generated by `configure.py`. Serves CalDAV VTODOs to the
+Mac client, the phone, and the `everstone-tasks` CLI.
 
-- **What it does:** serves CalDAV VTODOs to the Mac client, the phone, and the
-  `everstone-tasks` CLI.
-- **Depends on:** the data volume, htpasswd creds from config.
+### 3.3 livesync-bridge
 
-### 4.2 livesync-bridge (Deno)
+`vrtmrz/livesync-bridge` (Deno) as an s6 longrun, running as the `personal` user.
+Bidirectionally replicates the CouchDB LiveSync database to/from
+`/opt/data/vault` as plaintext, decrypting with the LiveSync E2E passphrase and
+obfuscation passphrase. This gives Hermes plaintext notes and pushes Hermes's
+edits back to CouchDB → every Obsidian device. Configured by a generated
+`dat/config.json`: one `couchdb` peer (`http://localhost:5984`, the vault
+database, CouchDB credentials, passphrases) and one `storage` peer
+(`baseDir: /opt/data/vault/`) in the same group.
 
-`vrtmrz/livesync-bridge` run as an s6 `longrun`. Bidirectionally replicates the
-CouchDB LiveSync database to/from `/opt/data/vault` as plaintext, decrypting with
-the LiveSync E2E passphrase and obfuscation passphrase.
+### 3.4 engraph
 
-- **What it does:** gives Hermes plaintext notes to read/write with native file
-  tools; pushes Hermes's edits back to CouchDB → every Obsidian device.
-- **Config:** `configure.py` templates `dat/config.json` with two peers — a
-  `couchdb` peer (`http://localhost:5984`, database name, username/password,
-  `passphrase`, `obfuscatePassphrase`) and a `storage` peer
-  (`baseDir: /opt/data/vault`).
-- **Depends on:** Deno runtime (now permanent in the image), CouchDB, the
-  passphrase secret.
+`devwhodevs/engraph` (a single Rust binary) — the **personal** agent's rich notes
+interface. It indexes `/opt/data/vault` into a local SQLite index (under the
+`personal` user's home) using **fully local GGUF embeddings via llama.cpp (no API
+key, no network)**, and exposes an `engraph serve` **stdio MCP** offering both
+**semantic + link-aware search** and **frontmatter-safe structured editing**
+(search, read-section, edit-section, edit-frontmatter, …). It covers both the
+search and the safe-frontmatter editing the personal agent wants.
 
-### 4.3 Hermes Agent
+engraph is **additive**: the personal agent also keeps **direct file access** to
+the vault (it runs as `personal`, which owns the folder) for capture, attachments,
+bulk ops, and fallback. engraph is the *preferred* path for search and frontmatter
+edits, not the only one. The household agent is granted **neither** engraph nor
+file access.
 
-Installed via `pip install hermes-agent`; run as an s6 `longrun` daemon with the
-Telegram gateway enabled.
+Build note: prebuilt engraph binaries are glibc; on Alpine (musl) we build from
+source (`cargo install --git …`) or add a glibc-compat layer.
 
-- **Model auth:** ChatGPT subscription via **Codex OAuth** (`hermes auth add
-  codex-oauth`), `gpt-5-codex` family. No API key, no per-token billing.
-- **`terminal.backend = local`** — code exec happens in the container (no
-  Docker-in-Docker). Acceptable for a personal box.
-- **Persistence:** `HOME` is set so `~/.hermes` resolves under `/opt/data/hermes`
-  — OAuth token (auto-rotating), memory, skills, and session history all survive
-  restarts.
-- **Config:** `configure.py` templates Hermes's `config.yaml` (provider/model
-  defaults, gateway = telegram); the Telegram bot token is a secret from
-  `config.yaml` → Hermes's `.env`.
-- **Depends on:** outbound HTTPS to OpenAI, the `/opt/data/hermes` volume, the
-  `everstone-tasks` CLI, and the `/opt/data/vault` folder.
+### 3.5 everstone-tasks CLI
 
-### 4.4 everstone-tasks CLI
+A small purpose-built Python CLI (using the `caldav` library) that the agents call
+via their shell tool. Talks to Radicale on `http://localhost:5232`.
 
-A small purpose-built Python CLI (using the `caldav` library), installed into the
-image and invoked by Hermes via its shell tool. Talks to Radicale on
-`http://localhost:5232` with the CalDAV creds.
+- `list [--list NAME]` — tasks with uid, summary, status, due, url (deeplink).
+- `add SUMMARY [--list NAME] [--due …] [--note VAULT_PATH]` — create a VTODO; with
+  `--note`, set its `URL` to the note's `obsidian://` deeplink.
+- `done UID` / `update UID [fields]` — mutate a task.
+- `link UID --note VAULT_PATH` — set/replace the deeplink on a task.
 
-- **Commands (all `--json` capable):**
-  - `list [--list NAME]` — tasks with uid, summary, status, due, url(deeplink).
-  - `add SUMMARY [--list NAME] [--due ...] [--note VAULT_PATH]` — create a VTODO;
-    if `--note` given, set its `URL` to the note's `obsidian://` deeplink.
-  - `done UID` / `update UID [fields]` — mutate a task.
-  - `link UID --note VAULT_PATH` — set/replace the deeplink on an existing task.
-- **Why custom:** first-class JSON for the agent to parse, and first-class
-  support for the deeplink URL field — cleaner than wrapping `todoman`/`vdirsyncer`.
-- **Depends on:** Radicale, `caldav` lib, the vault name (for deeplink building).
+Outputs JSON (`--json`) for easy agent parsing. It is the **only** notes-or-tasks
+capability the household agent receives.
 
-### 4.5 configure.py (extended)
+### 3.6 Hermes Agent (personal + household)
 
-Continues to merge `config.yaml` + defaults, validate against the JSON schema,
-and template service configs. **New outputs:** Radicale config + htpasswd,
-livesync-bridge `dat/config.json`, and Hermes `config.yaml`/`.env`. Existing
-outputs (Caddyfile, CouchDB `local.ini`, `setupuri`) are unchanged.
+Hermes is installed once; two **profiles** run as two s6 longruns under two OS
+users, each `hermes gateway run` (a foreground process) against its own
+`HERMES_HOME`:
 
-## 5. Configuration & secrets
+- **Personal** (`personal` user, `HERMES_HOME=/opt/data/hermes/personal`): private
+  Telegram DM. Tools: direct file access, engraph (stdio MCP), `everstone-tasks`.
+- **Household** (`household` user, `HERMES_HOME=/opt/data/hermes/household`): the
+  shared Telegram group. Tools: **only** `everstone-tasks`. No vault, no engraph.
 
-`config.yaml` / `schema.json` gain:
+Common settings (applied via `hermes config set` in a setup step):
+
+- **Model:** ChatGPT subscription via **Codex OAuth** (`hermes auth add
+  codex-oauth`), `gpt-5-codex` family — no API key, no per-token billing.
+- **`terminal.backend = local`** — code exec happens in the container.
+- Each profile gets its own Telegram bot token (two bots: one DM, one group).
+
+### 3.7 configure.py
+
+Merges `config.yaml` + defaults, validates against the JSON schema, creates the
+data directories with correct ownership, and templates every service config:
+Caddyfile, CouchDB `local.ini`, `setupuri`, Radicale config + htpasswd,
+livesync-bridge `dat/config.json`, and the per-profile Hermes environment
+(including `EVERSTONE_AGENT_NAME` and the CalDAV credentials the CLI needs).
+
+## 4. Isolation & privacy model
+
+Privacy rests on **OS-user capability isolation**, enforced by the kernel — not on
+prompt instructions.
+
+- Notes are reachable only by a process that (a) runs as a user permitted to read
+  the vault / engraph index and (b) is handed the relevant tool. The **household**
+  user is denied both, so even a shell in the household agent cannot read a note —
+  the files simply aren't readable to it.
+- This is why notes stay private in a shared group: the agent in that room was
+  never given the keys. A prompt saying "don't reveal notes" is not relied upon.
+- Search and editing are a single capability per agent. The personal agent has it
+  (file access + engraph); the household agent does not. There is no HTTP search
+  service or separate vector database to widen the surface.
+
+**More people = another container.** Serving an additional person is running the
+image again with its own `config.yaml` (own vault, own name, own bots). Each
+container brings its own personal+household pair; the household agents meet in the
+shared group. No storage is shared between people — notes are private by
+construction (separate encrypted databases).
+
+## 5. Configuration
+
+A single `config.yaml` (validated by `schema.json`); secrets templated into the
+right places. Sensitive new inputs are the **LiveSync passphrase** (must match the
+vault's existing encryption settings exactly) and the two Telegram bot tokens.
 
 ```yaml
-couchdb:            # existing
-  user: ...
-  password: ...
-  database: ...
-git:                # existing
-  user: ...
-  password: ...
-caldav:             # NEW — Radicale auth used by clients + the CLI
-  user: ...
-  password: ...
-livesync:           # NEW — for livesync-bridge
-  passphrase: ...            # E2E encryption passphrase
-  obfuscate_passphrase: ...  # path-obfuscation passphrase (often same value)
-obsidian:           # NEW — for deeplink construction
-  vault_name: ...
-hermes:             # NEW
-  model: openai-codex        # provider/model defaults
-  telegram_bot_token: ...    # secret → Hermes .env
+couchdb:
+  user: everstone
+  password: <couchdb password>
+  database: everstone
+git:
+  user: everstone
+  password: <git password>
+caldav:
+  user: everstone
+  password: <caldav password>
+livesync:
+  passphrase: <LiveSync E2E passphrase>
+  obfuscate_passphrase: <path-obfuscation passphrase, often the same>
+obsidian:
+  vault_name: <Obsidian vault name>
+instance:
+  name: Jarvis                       # public identity + trigger word
+hermes:
+  model: openai-codex                # confirm exact id with `hermes model`
+  personal_telegram_bot_token: <DM bot token>
+  household_telegram_bot_token: <shared-group bot token>
 ```
 
-All new secrets are validated and templated the same way existing ones are. The
-**LiveSync passphrase is the most sensitive new input** and must exactly match
-the vault's existing encryption settings, or sync will fail/corrupt.
+**Public agent name.** `instance.name` becomes the container-wide
+`EVERSTONE_AGENT_NAME`. It is the household agent's Telegram display identity and
+its **trigger word**, and in a shared group it disambiguates which instance should
+act ("Jarvis, add milk to my list"). A single global env var consumed by Hermes's
+identity/trigger config.
 
 ## 6. Deeplink convention
 
 `task.URL = obsidian://open?vault=<vault_name>&file=<url-encoded vault path>`
 
-- Hermes (and the CLI's `--note`/`link`) stamp this into the VTODO `URL`
-  property. Most CalDAV task clients render `URL` as a tappable link, so
-  completing/opening a task can jump straight to its backing note.
-- Direction is **task → note** for v2. Note → task linking is out of scope (see §11).
+Hermes and the CLI (`--note` / `link`) stamp this into the VTODO `URL` property,
+so opening a task can jump to its backing note. Direction is **task → note**.
 
-## 7. The four jobs (ride on top — described, not core build)
+## 7. What the agents do
 
-Once the plumbing works, the requested capabilities are largely Hermes
-configuration (skills + cron), not bespoke code:
+Once the plumbing works, the capabilities are mostly Hermes configuration (skills
++ cron) rather than bespoke code:
 
-- **Capture & triage:** Telegram message → Hermes creates a note (file write to
-  `vault/`) and/or a task (`everstone-tasks add`), files it, sets due dates,
-  stamps a deeplink.
-- **Proactive briefings:** natural-language **cron** → Hermes reads current task
-  state + relevant notes and pushes a summary to Telegram. Paced to respect
-  subscription rate limits.
-- **Q&A over the vault:** Hermes searches `vault/` with its file tools and
-  answers, surfacing related notes.
-- **Organize & enrich:** periodic sweep — maintain deeplinks, tag, dedupe,
-  restructure. (This is the only job that would have benefited from real-time
-  task events; a sweep covers it.)
+- **Capture & triage** (personal, DM): a message → Hermes creates a note (file
+  write to `vault/`) and/or a task (`everstone-tasks add`), files it, sets due
+  dates, stamps a deeplink.
+- **Proactive briefings** (personal, cron): scheduled summaries of due/stale tasks
+  and relevant notes, pushed to Telegram. Paced to respect subscription limits.
+- **Q&A over the vault** (personal): searches via engraph (semantic + link-aware)
+  and answers, surfacing related notes.
+- **Organize & enrich** (personal, periodic sweep): maintain deeplinks, tag,
+  dedupe, restructure.
+- **Cross-person task assignment** (household, shared group): a message addressed
+  to an instance's name ("Jarvis, …") is picked up by *that* instance's household
+  agent, which files the task on its owner's local list via `everstone-tasks`. The
+  household agent never touches notes. Each instance's household agent is its own
+  Telegram bot; the humans and both bots share the one group, and the agent name
+  is the routing key.
 
-These are validated manually after the plumbing lands; they are not unit-tested
-code.
+## 8. Bootstrap
 
-## 8. Bootstrap / setup flow
+1. Fill `config.yaml`.
+2. `docker run` (or `run_local.sh`); wait for `/health`.
+3. One-time Codex login, per profile:
+   `docker exec -it everstone su <user> -c 'HERMES_HOME=… hermes auth add codex-oauth'`
+   (complete the device-code flow in a browser; tokens then auto-rotate on the
+   volume).
+4. One-time gateway setup per profile (`hermes gateway setup` → Telegram; the bot
+   tokens from `config.yaml` are already applied).
+5. Point clients at the server: Obsidian via `setupuri`, the Mac CalDAV client and
+   phone at `/caldav`.
 
-1. Fill `config.yaml` (couchdb, git, caldav, livesync passphrase, obsidian vault
-   name, hermes telegram token).
-2. `docker run` (or `run_local.sh`).
-3. `docker exec -it everstone hermes auth add codex-oauth` → complete the
-   device-code login in a browser (once; token then auto-rotates on the volume).
-4. `docker exec -it everstone hermes gateway setup` → Telegram (paste bot token
-   if not already in config).
-5. Point clients at the server: Obsidian via `setupuri`, the Mac CalDAV client
-   and the phone at `/caldav`.
+All agent state (tokens, memory, skills, sessions) persists under `/opt/data`, so
+backing up `/opt/data` backs up everything.
 
 ## 9. Removed
 
-- **radfire** — the entire custom Radicale storage package (`storage.py`,
-  `events.py`, `consumer.py`, `server.py`, `pyproject.toml`) and its Dockerfile
-  install step. Replaced by stock Radicale.
-- **taskite** — the unbuilt SvelteKit scaffold and its tooling.
+- **radfire** — the custom event-emitting Radicale storage package, replaced by
+  stock Radicale. (It only enabled real-time reaction to task changes, which no
+  capability here needs; if ever wanted, Radicale's built-in `[storage] hook` can
+  run a one-line command — no custom storage class.)
+- **taskite** — the unbuilt SvelteKit web-dashboard scaffold; interaction is via
+  Telegram.
 
 ## 10. Testing strategy
 
-Chosen level: **protocol-level e2e + a documented manual smoke test.** Driving the
-real Obsidian GUI in CI (xvfb/Electron) is explicitly rejected as too brittle.
+A `Justfile` drives everything (`just build`, `just up`, `just test`, `just
+down`). The e2e battery is a **standalone `uv` Python project** that `just`
+launches **on the host**: it brings up the local stack via Docker under dedicated
+e2e container names + port bindings (so it never collides with a running dev
+instance), then asserts through **HTTP requests** to the published ports and
+**`docker exec`** (as specific users) for the isolation and on-disk checks, and
+tears the stack down afterward. Driving the real Obsidian GUI in CI is rejected as
+too brittle.
 
-- **everstone-tasks:** unit tests for command behavior and deeplink construction,
-  run against an ephemeral Radicale (or a mocked `caldav` client).
-- **configure.py:** tests that rendering produces valid Radicale config,
-  livesync-bridge `config.json`, and Hermes config from a sample `config.yaml`;
-  schema-validation failure cases.
-- **Protocol-level e2e (automated CI):**
-  - **Notes round-trip:** run CouchDB + **two `livesync-bridge` instances**
-    (folder A ↔ CouchDB ↔ folder B) with encryption + obfuscation on. Assert a
-    file created/edited/deleted in folder A propagates to folder B (and is a
-    valid LiveSync doc in CouchDB). A second bridge is a faithful stand-in for
-    "another Obsidian device," since it is a LiveSync-compatible client by the
-    same author.
-  - **Tasks round-trip:** real Radicale + `everstone-tasks` + a CalDAV client
-    lib; assert add/done/link and that the `obsidian://` deeplink survives a
-    write→read cycle.
-- **Container smoke test:** build the image, boot it, assert `/health` is 200 and
-  each s6 service reaches "up."
-- **Manual smoke (documented, one-time):** one real Obsidian device against a
-  **throwaway vault** to confirm the true GUI round-trip before pointing the
-  stack at the real vault. The real Obsidian GUI itself is not automated.
+**Unit (no container):**
 
-## 11. Out of scope (YAGNI for v2)
+- **everstone-tasks:** command behavior + deeplink construction (ephemeral Radicale).
+- **configure.py:** rendering of Radicale / livesync-bridge / Hermes configs from a
+  sample `config.yaml`, plus schema-validation failure cases.
+
+**E2E battery (against a live container):**
+
+- **Routing/health:** `/health` → 200; `/db`, `/caldav`, `/git` reachable with the
+  expected auth behavior.
+- **Service liveness:** every s6 longrun reaches "up"; oneshots succeed.
+- **Tasks round-trip:** `everstone-tasks` add / list / done / link; the
+  `obsidian://` deeplink survives a write→read cycle.
+- **Deeplink resolves:** the stamped `obsidian://` URL decodes to an actual
+  existing file under `/opt/data/vault` (path correctness, not launching Obsidian).
+- **Notes round-trip:** a file written under `/opt/data/vault` reaches CouchDB as a
+  valid LiveSync doc and back (two-`livesync-bridge` harness with encryption +
+  obfuscation on; a second bridge is a faithful stand-in for another Obsidian
+  device).
+- **Isolation (negative — the headline tests):** as the **`household`** user,
+  reads of `/opt/data/vault`, the engraph index, and the `personal` `HERMES_HOME`
+  all **fail** (permission denied), and `engraph` is unavailable; as **`personal`**
+  the same reads **succeed** (positive control); `household` can still
+  `everstone-tasks add`.
+- **Config + permissions:** generated configs contain expected values; vault /
+  home / token-file modes and ownership are correct.
+- **Persistence:** restart the container; OAuth token, memory, and engraph index
+  survive.
+- **Backup/restore:** archive `/opt/data`, restore into a fresh container, and
+  assert tasks, notes, and the OAuth token survive.
+
+**Manual smoke (one-time):** one real Obsidian device against a **throwaway vault**
+to confirm the true GUI round-trip before pointing at the real vault.
+
+## 11. Out of scope
 
 - Markdown↔VTODO content sync (explicitly retired).
 - Real-time task-change reaction (recoverable later via Radicale `[storage] hook`).
-- Note → task deeplinks (task → note only for now).
+- Note → task deeplinks (task → note only).
 - A web UI / status dashboard.
-- Multi-user; this is a single-person hub.
-- **Home Assistant integration (future):** a likely next interaction point. It
-  rides on Hermes (which already supports Home Assistant as a gateway, and can
-  call HA's REST/websocket API via its own tools/MCP), so it needs no EverStone
-  plumbing and is deferred — not planned in v2.
+- Home Assistant integration — a likely later add-on that rides on Hermes (which
+  already supports Home Assistant as a gateway and can call its REST/websocket API
+  via tools/MCP), so it needs no EverStone plumbing.
 
-> Note: Obsidian shipped an official **headless sync client** (npm, Feb 2026),
-> but it targets Obsidian's paid **Sync** service, not the self-hosted
-> CouchDB/LiveSync backend EverStone uses — so it does not apply here.
+> Obsidian shipped an official **headless sync client** (npm, Feb 2026), but it
+> targets Obsidian's paid **Sync** service, not the self-hosted CouchDB/LiveSync
+> backend EverStone uses — so it does not apply here.
 
 ## 12. Risks & open questions
 
-- **LiveSync passphrase correctness:** a mismatch with the existing vault's
-  settings can corrupt sync. Mitigation: validate against a throwaway vault first.
-- **Codex OAuth in a headless container:** login is interactive once via
-  `docker exec`; confirm device-code flow works without a local browser on the
-  host (it should — it prints a URL + code).
-- **Subscription rate limits:** unattended cron sweeps can hit ChatGPT/Codex
-  caps. Mitigation: conservative cron cadence; Hermes stays model-agnostic if a
-  fallback provider is ever needed.
-- **Agent writes vs. live Obsidian edits:** concurrent edits to the same note;
-  LiveSync handles conflicts, but Hermes should prefer append/section edits over
-  wholesale rewrites.
-- **`local` terminal backend:** Hermes can run arbitrary commands in the
-  container. Acceptable for a personal box; note it as a security posture choice.
-- **Relocating `~/.hermes`:** confirm the exact mechanism (HOME vs. a config key)
-  during planning.
-- **Image weight:** adds Deno + Node + Hermes; acceptable but larger.
+- **LiveSync passphrase correctness:** a mismatch with the vault's settings can
+  corrupt sync. Validate against a throwaway vault first.
+- **Two Hermes profiles + name-trigger routing in a shared group:** confirm how
+  Hermes runs two profiles (two bots) and how the household agent triggers on
+  `EVERSTONE_AGENT_NAME` in a group — resolve during planning.
+- **Codex OAuth in a headless container:** login is interactive once per profile
+  via `docker exec`; confirm the device-code flow works without a host browser.
+- **Subscription rate limits:** unattended cron can hit ChatGPT/Codex caps; keep
+  cron cadence conservative.
+- **Telegram bot privacy mode:** for free-form name-trigger routing in a group,
+  each agent's bot needs privacy mode **disabled** (via BotFather) so it sees all
+  group messages; otherwise it only receives @mentions, commands, or replies.
+  Confirm at gateway-setup time.
+- **engraph on Alpine/musl:** prebuilt binaries are glibc; confirm the source
+  build or a glibc-compat layer.
+- **Relocating `~/.hermes`:** confirmed via `HERMES_HOME`; verify per-profile
+  ownership lines up with the running user.
+- **Agent writes vs. live Obsidian edits:** prefer append/section edits over
+  wholesale rewrites; LiveSync handles conflicts.
+- **Image weight:** adds Deno + Node + Hermes + engraph (Rust) + a GGUF model.
