@@ -7,6 +7,7 @@ and generates all service config files.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -16,12 +17,11 @@ import yaml
 from jsonschema import validate, ValidationError
 
 
-DEFAULTS_CONFIG_DIR = Path("/opt/defaults/config")
-DEFAULTS_PATH = DEFAULTS_CONFIG_DIR / "defaults.yaml"
+DEFAULTS_CONFIG_DIR = Path(os.environ.get("EVERSTONE_DEFAULTS_DIR", "/opt/defaults/config"))
 SCHEMA_PATH = DEFAULTS_CONFIG_DIR / "schema.json"
-
-CONFIG_DIR = Path("/opt/config")
-DATA_DIR = Path("/opt/data")
+DEFAULTS_PATH = DEFAULTS_CONFIG_DIR / "defaults.yaml"
+CONFIG_DIR = Path(os.environ.get("EVERSTONE_CONFIG_DIR", "/opt/config"))
+DATA_DIR = Path(os.environ.get("EVERSTONE_DATA_DIR", "/opt/data"))
 
 
 def deep_merge(base: dict, override: dict) -> dict:
