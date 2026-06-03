@@ -1,28 +1,8 @@
 :80 {
-	# Health check endpoint
 	handle_path /health {
 		respond "OK" 200
 	}
 
-	# Git HTTP backend at /git subpath
-	# Requires basic auth, forwards to fcgiwrap -> git-http-backend
-	handle_path /git/* {
-		basicauth {
-			{{GIT_USER}} {{GIT_PASSWORD_HASH}}
-		}
-		reverse_proxy unix//run/fcgiwrap.sock {
-			transport fastcgi {
-				env SCRIPT_FILENAME /usr/libexec/git-core/git-http-backend
-				env GIT_PROJECT_ROOT /opt/data/git
-				env GIT_HTTP_EXPORT_ALL 1
-				env PATH_INFO {path}
-			}
-		}
-	}
-
-	# CouchDB at /db subpath
-	# Strips /db prefix and forwards to CouchDB backend
-	# flush_interval -1 disables buffering for continuous replication
 	handle_path /db/* {
 		reverse_proxy localhost:5984 {
 			flush_interval -1
@@ -33,8 +13,6 @@
 		}
 	}
 
-	# Radicale CalDAV at /caldav subpath
-	# X-Script-Name header tells Radicale about the subpath
 	handle /caldav/* {
 		reverse_proxy localhost:5232 {
 			header_up X-Script-Name /caldav
@@ -45,7 +23,6 @@
 		}
 	}
 
-	# Default handler for root and other paths
 	handle /* {
 		respond "EverStone Server" 200
 	}

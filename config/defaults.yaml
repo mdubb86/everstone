@@ -1,5 +1,4 @@
 couchdb: {user: everstone, password: null, database: everstone}
-git: {user: everstone, password: null}
 caldav: {user: everstone, password: null}
 livesync: {passphrase: null, obfuscate_passphrase: null}
 obsidian: {vault_name: everstone}

@@ -9,7 +9,6 @@ and generates all service config files.
 import json
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -73,27 +72,11 @@ def generate_couchdb_config(config: dict) -> None:
 
 
 def generate_caddy_config(config: dict) -> None:
-    """Generate Caddyfile from template."""
+    """Copy Caddyfile template (no substitution needed)."""
     template_path = DEFAULTS_CONFIG_DIR / "caddy" / "Caddyfile"
-    output_dir = CONFIG_DIR / "caddy"
-    output_path = output_dir / "Caddyfile"
-
+    output_dir = _config_dir() / "caddy"
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Hash the git password using caddy
-    result = subprocess.run(
-        ["caddy", "hash-password", "--plaintext", config["git"]["password"]],
-        capture_output=True,
-        text=True,
-        check=True
-    )
-    password_hash = result.stdout.strip()
-
-    template = template_path.read_text()
-    result = template.replace("{{GIT_USER}}", config["git"]["user"])
-    result = result.replace("{{GIT_PASSWORD_HASH}}", password_hash)
-
-    output_path.write_text(result)
+    shutil.copy(template_path, output_dir / "Caddyfile")
 
 
 def generate_setupuri_script(config: dict) -> None:
@@ -178,15 +161,6 @@ def setup_data_directories() -> None:
         print("[configure] Initializing couchdb directory")
         couchdb_dir.mkdir(parents=True, exist_ok=True)
         shutil.chown(couchdb_dir, user="couchdb", group="couchdb")
-
-    # Initialize git repository if necessary
-    git_dir = data_dir / "git"
-    if not git_dir.exists():
-        print("[configure] Initializing git repository")
-        git_dir.mkdir(parents=True, exist_ok=True)
-        git_repo = git_dir / "everstone.git"
-        subprocess.run(["git", "init", "--bare", str(git_repo)], check=True)
-        subprocess.run(["git", "config", "--file", str(git_repo / "config"), "http.receivepack", "true"], check=True)
 
     # Initialize radicale data directory if necessary
     radicale_dir = data_dir / "radicale"

@@ -14,6 +14,8 @@ Client Request → Caddy (Port 80) → Backend Services
                    └─ /*          → Default response / Future bridge UI
 ```
 
+> **Git HTTP backend removed** — backups are tar.gz snapshots of /opt/data (see scripts/backup).
+
 ## Service Endpoints
 
 ### CouchDB (Obsidian LiveSync)
