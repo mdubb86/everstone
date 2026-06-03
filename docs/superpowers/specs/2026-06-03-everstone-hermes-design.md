@@ -166,6 +166,16 @@ prompt instructions.
   (file access + engraph); the household agent does not. There is no HTTP search
   service or separate vector database to widen the surface.
 
+**Gateway access control (fail-closed) — mandatory.** A Telegram bot is reachable
+by anyone who finds it, so privacy means the bot *ignores* everyone unauthorized.
+Both agents are configured **default-deny**: the personal bot responds only to the
+owner's Telegram user ID (DM); the household bot only within the specific shared
+group chat and from allowlisted members; unknown senders are silently ignored.
+This is **not optional** — the agents run `terminal.backend = local` (a shell), so
+an unrestricted bot would let any stranger execute commands in the container
+(RCE). We never enable allow-all. This is a higher-severity wall than the OS-user
+isolation, and bootstrap must fail closed.
+
 **More people = another container.** Serving an additional person is running the
 image again with its own `config.yaml` (own vault, own name, own bots). Each
 container brings its own personal+household pair; the household agents meet in the
@@ -196,11 +206,20 @@ obsidian:
   vault_name: <Obsidian vault name>
 instance:
   name: Jarvis                       # public identity + trigger word
+telegram:                            # fail-closed access control (REQUIRED)
+  allowed_user_ids: [123456789]      # personal DM — your Telegram user id; others ignored
+  group_chat_id: -1001234567890      # the one shared household group
+  group_allowed_user_ids: [123456789, 987654321]  # who may command in the group (you + spouse)
 hermes:
   model: openai-codex                # confirm exact id with `hermes model`
   personal_telegram_bot_token: <DM bot token>
   household_telegram_bot_token: <shared-group bot token>
 ```
+
+The `telegram` allowlists are required. `configure.py` maps them to Hermes's
+`TELEGRAM_ALLOWED_USERS` (personal), `TELEGRAM_GROUP_ALLOWED_CHATS` +
+`TELEGRAM_GROUP_ALLOWED_USERS` (household), sets `unknown_user_action = ignore`,
+and never enables `GATEWAY_ALLOW_ALL_USERS`.
 
 **Public agent name.** `instance.name` becomes the container-wide
 `EVERSTONE_AGENT_NAME`. It is the household agent's Telegram display identity and
@@ -298,10 +317,22 @@ too brittle.
   `everstone-tasks add`.
 - **Config + permissions:** generated configs contain expected values; vault /
   home / token-file modes and ownership are correct.
+- **Authorization (gateway lockdown) — config level:** assert the generated Hermes
+  config is fail-closed: `TELEGRAM_ALLOWED_USERS` / group allowlists set,
+  `unknown_user_action = ignore`, `GATEWAY_ALLOW_ALL_USERS` unset/false. No
+  Telegram needed; catches the open-by-default footgun automatically.
 - **Persistence:** restart the container; OAuth token, memory, and engraph index
   survive.
 - **Backup/restore:** archive `/opt/data`, restore into a fresh container, and
   assert tasks, notes, and the OAuth token survive.
+
+**Live lockdown test (optional, real Telegram).** A Telethon/Pyrogram script logs
+in as a **user account** (dedicated test number + API id/hash, stored session):
+from a **non-allowlisted** account it messages each bot and asserts **no response
+or side-effect**; from an **allowlisted** account it asserts a response. Run it
+against a **staging** deployment (test bots + throwaway group) in CI, and/or
+schedule it as a **prod canary** that alerts if an unauthorized message ever gets
+a reply. (Bots can't DM bots, so a user-account client is required.)
 
 **Manual smoke (one-time):** one real Obsidian device against a **throwaway vault**
 to confirm the true GUI round-trip before pointing at the real vault.
@@ -335,6 +366,11 @@ to confirm the true GUI round-trip before pointing at the real vault.
   each agent's bot needs privacy mode **disabled** (via BotFather) so it sees all
   group messages; otherwise it only receives @mentions, commands, or replies.
   Confirm at gateway-setup time.
+- **Open-bot = RCE — must fail closed (highest severity):** the agents have shell
+  access, so an unrestricted Telegram bot lets any stranger run commands in the
+  container. Hermes can default to open. We must set the allowlists,
+  `unknown_user_action = ignore`, and never `GATEWAY_ALLOW_ALL_USERS=true` — and
+  verify a non-allowlisted account is ignored before trusting the deployment.
 - **engraph on Alpine/musl:** prebuilt binaries are glibc; confirm the source
   build or a glibc-compat layer.
 - **Relocating `~/.hermes`:** confirmed via `HERMES_HOME`; verify per-profile
