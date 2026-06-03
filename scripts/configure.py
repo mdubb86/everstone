@@ -24,6 +24,14 @@ CONFIG_DIR = Path(os.environ.get("EVERSTONE_CONFIG_DIR", "/opt/config"))
 DATA_DIR = Path(os.environ.get("EVERSTONE_DATA_DIR", "/opt/data"))
 
 
+def _config_dir() -> Path:
+    return Path(os.environ.get("EVERSTONE_CONFIG_DIR", "/opt/config"))
+
+
+def _data_dir() -> Path:
+    return Path(os.environ.get("EVERSTONE_DATA_DIR", "/opt/data"))
+
+
 def deep_merge(base: dict, override: dict) -> dict:
     """Deep merge override into base, returning new dict."""
     result = base.copy()
@@ -102,30 +110,101 @@ def generate_setupuri_script(config: dict) -> None:
     output_path.chmod(0o744)
 
 
+def generate_radicale_config(config: dict) -> None:
+    """Generate radicale htpasswd file from config."""
+    config_dir = _config_dir()
+    output_dir = config_dir / "radicale"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    htpasswd_path = output_dir / "htpasswd"
+    htpasswd_path.write_text(f"{config['caldav']['user']}:{config['caldav']['password']}\n")
+
+
+def generate_livesync_bridge_config(config: dict) -> None:
+    """Generate livesync-bridge config.json from config."""
+    config_dir = _config_dir()
+    output_dir = config_dir / "livesync-bridge"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cfg = {
+        "peers": [
+            {
+                "type": "couchdb",
+                "url": "http://localhost:5984",
+                "database": config["couchdb"]["database"],
+                "user": config["couchdb"]["user"],
+                "password": config["couchdb"]["password"],
+                "passphrase": config["livesync"]["passphrase"],
+                "obfuscatePassphrase": config["livesync"]["obfuscate_passphrase"],
+                "group": "everstone",
+            },
+            {
+                "type": "storage",
+                "baseDir": "/opt/data/vault/",
+                "group": "everstone",
+            },
+        ]
+    }
+    output_path = output_dir / "config.json"
+    output_path.write_text(json.dumps(cfg, indent=2))
+
+
+def generate_hermes_env(config: dict) -> None:
+    """Generate s6 envdir files for hermes from config."""
+    config_dir = _config_dir()
+    envdir = config_dir / "hermes" / "envdir"
+    envdir.mkdir(parents=True, exist_ok=True)
+
+    env_vars = {
+        "EVERSTONE_CALDAV_URL": "http://localhost:5232",
+        "EVERSTONE_CALDAV_USER": config["caldav"]["user"],
+        "EVERSTONE_CALDAV_PASSWORD": config["caldav"]["password"],
+        "EVERSTONE_VAULT_NAME": config["obsidian"]["vault_name"],
+        "EVERSTONE_AGENT_NAME": config["instance"]["name"],
+        "HERMES_MODEL": config["hermes"]["model"],
+        "TELEGRAM_BOT_TOKEN": config["telegram"]["bot_token"],
+        "TELEGRAM_OWNER_USER_ID": str(config["telegram"]["owner_user_id"]),
+        "EVERSTONE_GROUP_TOOLS": "everstone_tasks",
+    }
+    for name, value in env_vars.items():
+        (envdir / name).write_text(value)
+
+
 def setup_data_directories() -> None:
     """Create data directories with correct permissions."""
+    data_dir = _data_dir()
 
     # Initialize couchdb data directory if necessary
-    couchdb_dir = DATA_DIR / "couchdb"
+    couchdb_dir = data_dir / "couchdb"
     if not couchdb_dir.exists():
         print("[configure] Initializing couchdb directory")
-        couchdb_dir.mkdir()
+        couchdb_dir.mkdir(parents=True, exist_ok=True)
         shutil.chown(couchdb_dir, user="couchdb", group="couchdb")
 
     # Initialize git repository if necessary
-    git_dir = DATA_DIR / "git"
+    git_dir = data_dir / "git"
     if not git_dir.exists():
         print("[configure] Initializing git repository")
-        git_dir.mkdir()
+        git_dir.mkdir(parents=True, exist_ok=True)
         git_repo = git_dir / "everstone.git"
         subprocess.run(["git", "init", "--bare", str(git_repo)], check=True)
         subprocess.run(["git", "config", "--file", str(git_repo / "config"), "http.receivepack", "true"], check=True)
 
     # Initialize radicale data directory if necessary
-    radicale_dir = DATA_DIR / "radicale"
+    radicale_dir = data_dir / "radicale"
     if not radicale_dir.exists():
         print("[configure] Initializing radicale directory")
-        radicale_dir.mkdir()
+        radicale_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialize vault data directory
+    vault_dir = data_dir / "vault"
+    vault_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialize hermes data directory
+    hermes_dir = data_dir / "hermes"
+    hermes_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialize radicale/collections data directory
+    radicale_collections_dir = data_dir / "radicale" / "collections"
+    radicale_collections_dir.mkdir(parents=True, exist_ok=True)
 
 def main():
     user_config_path = Path("/opt/config.yaml")
@@ -166,6 +245,15 @@ def main():
 
     print("[configure] Generating setupuri script")
     generate_setupuri_script(config)
+
+    print("[configure] Generating radicale config")
+    generate_radicale_config(config)
+
+    print("[configure] Generating livesync-bridge config")
+    generate_livesync_bridge_config(config)
+
+    print("[configure] Generating hermes envdir")
+    generate_hermes_env(config)
 
     print("[configure] Configuration complete")
 
