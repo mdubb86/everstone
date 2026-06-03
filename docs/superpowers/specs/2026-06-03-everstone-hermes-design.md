@@ -17,12 +17,12 @@ reachable from a phone via Telegram.
 - **Tasks link to notes** via `obsidian://` deeplinks the agent maintains.
 - **Backups** continue via the existing git HTTP backend.
 
-There is **one agent per person** (e.g. "Jarvis"). In your **private DM** it has
-full power; in a **shared family group** it is restricted — by a fail-closed,
-per-chat tool allowlist — to task operations only, so it can file tasks but cannot
-touch notes there. Serving another person (a spouse) is just running a second
-container; their agent ("Helper Guy") joins the same group, and the two agents let
-either of you assign tasks to the other.
+There is **one agent per person** (e.g. "Jarvis"). **Only you** can make it use
+your notes — in your DM or the shared family group; **anyone else** (your spouse,
+in the group) can only have it file tasks, never read your notes, enforced by a
+fail-closed **per-sender** tool allowlist. Serving another person (a spouse) is
+just running a second container; their agent ("Helper Guy") joins the same group,
+and the two agents let either of you assign tasks to the other.
 
 We are **not** mirroring markdown checkboxes into VTODOs. Tasks and notes are
 independent stores; the only link is a deeplink, and the intelligence tying them
@@ -40,7 +40,7 @@ Tasks.org (phone) ──────┴─⇄ Radicale (/caldav) ◄── evers
                                                         (MCP+CLI)   │  │ (search+edit)│
                                                                     │  │              │
                                               Hermes Agent ─────────┴──┴──────────────┘
-                                       DM (you): all tools  |  Group: tasks-only (hook)
+                                  owner asks: all tools  |  non-owner asks: tasks-only (per-sender hook)
 ```
 
 **Services under s6:** `caddy · couchdb · radicale · git/fcgiwrap ·
@@ -120,10 +120,12 @@ Installed via `pip`; one agent runs as an s6 longrun (`hermes gateway run`,
   codex-oauth`), `gpt-5-codex` family — no API key, no per-token billing.
 - **`terminal.backend = local`** — code exec runs in the container.
 - **Tools:** direct file access, the engraph MCP, and the `everstone_tasks` MCP.
-- **Access hook:** a `pre_tool_call` hook enforces the per-chat tool allowlist
+- **Access hook:** a `pre_tool_call` hook enforces the per-sender tool allowlist
   (§4).
 - **Telegram:** one bot (display name = `instance.name`), in your DM and the shared
-  group.
+  group. It responds to **every** message in your DM (no @mention needed); in the
+  **group** it responds **only when @mentioned** (`group_trigger = mentions_only`),
+  so the other agent never sees or answers a message aimed at this one.
 
 ### 3.7 configure.py
 
@@ -131,8 +133,8 @@ Merges `config.yaml` + defaults, validates against the schema, creates data
 directories, and templates every service config: Caddyfile, CouchDB `local.ini`,
 `setupuri`, Radicale config + htpasswd, livesync-bridge `dat/config.json`, the
 Hermes environment (model, `EVERSTONE_AGENT_NAME`, CalDAV creds, the Telegram
-allowlists), and the **access hook's policy** (the `group_chat_id` and the
-group-allowed tool set).
+allowlists, the group-trigger), and the **access hook's policy** (`owner_user_id`
+→ all tools; other allowlisted senders → tasks-only).
 
 ## 4. Privacy & access control
 
@@ -153,45 +155,61 @@ everyone unauthorized**, default-deny:
 This is mandatory: the agent has shell access, so an open bot would be remote code
 execution for any stranger.
 
-### Layer 2 — per-chat tool allowlist (what it may do)
+### Layer 2 — per-sender tool allowlist (what it may do)
 
 A `pre_tool_call` hook fires before **every** tool call (built-in, plugin, MCP —
-including the shell) and decides by **chat context**:
+including the shell) and decides by **who sent the request** driving it (the
+Telegram user id), not by which chat it is:
 
 ```
 on every tool call:
-    chat = identify_chat(session_key)        # which chat is this serving?
-    allowed = ALLOWLIST_FOR[chat]            # per-chat policy (allowlist, not denylist)
+    sender = identify_sender(request)        # the Telegram user behind this call
+    allowed = ALLOWLIST_FOR[sender]          # per-sender policy (allowlist, not denylist)
     if tool_name not in allowed: BLOCK       # default-deny; unknown tools blocked
 ```
 
-| `identify_chat(...)` | Allowed tools |
+| `identify_sender(...)` | Allowed tools |
 |---|---|
-| owner's **DM** | everything (shell, files, engraph, tasks) |
-| the **shared group** (`group_chat_id`) | **only** `everstone_tasks` |
-| **anything else / unknown / missing** | **deny** (fail-closed) |
+| the **owner** (`owner_user_id`) | everything (shell, files, engraph, tasks) |
+| any **other** allowlisted user (e.g. the spouse, in the group) | **only** `everstone_tasks` |
+| **unknown / missing** | **deny** (fail-closed) |
 
-It is an **allowlist, not a denylist**, on purpose: we never have to enumerate
-every tool to block it. In the group, anything not explicitly allowed dies —
-including the shell, file reads, engraph, *spawning a subagent*, web fetches, and
-any future/unknown tool. The agent cannot create a sub-context to escape the group
-policy, because creating that context is itself a blocked tool. Because the task
-capability is a **discrete MCP tool**, the group allowlist is a clean exact match
-and `terminal` is simply absent there — so there is no shell to `cat` a note and
-no command-injection surface.
+So **only the owner can make the agent touch the owner's notes — anywhere,
+including the group.** The spouse can ask it to file tasks but can never make it
+read notes, because the notes tools (shell, files, engraph) are not on a
+non-owner's allowlist. It is an **allowlist, not a denylist**: anything not
+explicitly permitted for that sender dies — the shell, file reads, engraph,
+*spawning a subagent*, web fetches, any unknown/future tool. A non-owner cannot
+spawn a sub-context to escape the policy, because that spawn is itself a blocked
+tool. Because the task capability is a **discrete MCP tool**, the non-owner
+allowlist is a clean exact match with no shell in it — no command-injection
+surface.
 
-The whole model rests on one load-bearing assumption, made explicit: **the hook
-must receive a trustworthy chat identity on every tool call (including from
-subagents, cron, and background actions) and fail closed when it cannot.** This is
-verified by the e2e battery (§10).
+**Consequence:** if the owner queries notes *in the group*, the agent's reply is
+visible to the group — sender-gating controls who may *invoke* notes access, not
+who can *see a reply the owner asked for*. The owner is trusted with their own
+output; the spouse simply cannot invoke it.
+
+The model rests on one load-bearing assumption, made explicit: **the hook must
+receive a trustworthy *sender* identity for every tool call** — the user whose
+request drives it — including across multi-turn reasoning, subagents, cron, and
+background actions, and must fail closed when it cannot. **If Hermes cannot
+reliably attribute a tool call to the requesting user** (e.g. a group runs as one
+shared session), we fall back to the more conservative **chat-based** policy
+(group → tasks-only for everyone, including the owner). Verified by the e2e
+battery (§10).
 
 ### Cross-person assignment
 
 Both agents (e.g. Jarvis and Helper Guy) sit in the shared group with both humans.
-A message addressed to an agent's **name** (`EVERSTONE_AGENT_NAME`, via Telegram
-group-trigger) is acted on by *that* agent, which files the task on **its owner's
-local Radicale** — restricted to tasks-only by Layer 2. No cross-container
-credentials are needed; notes are never reachable in the group.
+Each agent responds **only when @mentioned** (`group_trigger = mentions_only`); the
+other agent never even receives a message aimed at this one (Telegram delivers an
+@mention only to the mentioned bot), so there is no cross-chatter. The mentioned
+agent files the task on **its owner's local Radicale**, and because the sender is a
+non-owner it is restricted to tasks-only by Layer 2. No cross-container credentials
+are needed; a non-owner can never reach the owner's notes. (You @mention the
+*target person's* agent, e.g. "@helper_guy_bot add …" to put a task on the
+spouse's list.)
 
 > Optional later refinement: the task tool can scope *non-owner* senders to
 > add-only (give tasks, not complete/delete them). Baseline is both-users,
@@ -220,7 +238,7 @@ livesync:
 obsidian:
   vault_name: <Obsidian vault name>
 instance:
-  name: Jarvis                       # public identity + group trigger word
+  name: Jarvis                       # public display identity (group routing is by @mention)
 telegram:
   owner_user_id: 123456789           # DM: only you, at full power
   group_chat_id: -1001234567890      # the shared family group
@@ -232,13 +250,14 @@ hermes:
 
 `configure.py` maps these to Hermes's `TELEGRAM_ALLOWED_USERS` (DM owner),
 `TELEGRAM_GROUP_ALLOWED_CHATS` + `TELEGRAM_GROUP_ALLOWED_USERS` (group),
-`unknown_user_action = ignore`, group-trigger by name, `EVERSTONE_AGENT_NAME`, and
-the access hook's policy (`group_chat_id` → tasks-only). It never enables
-`GATEWAY_ALLOW_ALL_USERS`.
+`unknown_user_action = ignore`, `group_trigger = mentions_only`,
+`EVERSTONE_AGENT_NAME`, and the access hook's policy (`owner_user_id` → all tools;
+other senders → tasks-only). It never enables `GATEWAY_ALLOW_ALL_USERS`.
 
 **Public agent name.** `instance.name` becomes container-wide
-`EVERSTONE_AGENT_NAME` — the bot's Telegram display name and its group **trigger
-word**, used to route which agent acts in the shared group.
+`EVERSTONE_AGENT_NAME` — the bot's Telegram **display name**. Group routing is by
+**@mention** of the bot, so the other agent never receives a message aimed at this
+one.
 
 ## 6. Deeplink convention
 
@@ -270,8 +289,9 @@ Mostly Hermes configuration (skills + cron) once the plumbing works:
    hermes auth add codex-oauth'` (device-code flow in a browser; token then
    auto-rotates on the volume).
 4. One-time gateway setup (`hermes gateway setup` → Telegram; allowlists already
-   applied). Disable the bot's **privacy mode** in BotFather so name-triggering
-   works in the group.
+   applied). Leave the bot's **privacy mode ON** (the default) — with
+   `mentions_only`, Telegram still delivers @mentions, and the bot does not see the
+   group's other messages.
 5. Point clients: Obsidian via `setupuri`; the Mac CalDAV client and phone at
    `/caldav`.
 
@@ -300,8 +320,8 @@ GUI in CI is rejected as too brittle.
 - **configure.py:** rendering of Radicale / bridge / Hermes / hook configs from a
   sample `config.yaml`, plus schema-validation failures.
 - **access hook:** unit-test the hook script directly — given a tool name + a
-  simulated chat context, assert allow/deny per the policy table, including
-  fail-closed on missing/unknown context.
+  simulated **sender** identity, assert allow/deny per the policy table, including
+  fail-closed on missing/unknown sender.
 
 **E2E battery (against a live container):**
 
@@ -313,11 +333,11 @@ GUI in CI is rejected as too brittle.
   under `/opt/data/vault`.
 - **Notes round-trip:** a file written under `/opt/data/vault` reaches CouchDB as a
   valid LiveSync doc and back (two-`livesync-bridge` harness, encryption on).
-- **Access-control (the headline):** simulate a **group-context** tool call —
-  assert `everstone_tasks` is **allowed** while shell, file read, engraph, and
-  subagent-spawn are **blocked**; simulate a **DM-context** call — assert they are
-  **allowed**; simulate **missing/unknown context** — assert **denied**. (Confirms
-  the hook fires for every tool and is fail-closed.)
+- **Access-control (the headline):** simulate a tool call from a **non-owner**
+  sender — assert `everstone_tasks` is **allowed** while shell, file read, engraph,
+  and subagent-spawn are **blocked**; from the **owner** — assert they are
+  **allowed**; from a **missing/unknown** sender — assert **denied**. (Confirms the
+  hook fires for every tool, keys on sender, and is fail-closed.)
 - **Gateway lockdown (config level):** generated Hermes config is fail-closed —
   Telegram allowlists set, `unknown_user_action = ignore`, allow-all unset.
 - **Config + permissions:** generated configs contain expected values; file modes
@@ -361,16 +381,19 @@ before pointing at the real one.
 ## 12. Risks & open questions
 
 - **Access hook is load-bearing — verify hard:** confirm `pre_tool_call` fires for
-  **every** tool incl. the shell and subagent-spawn; that it reliably receives the
-  chat identity (`session_key` → DM vs `group_chat_id`); that it is fail-closed on
-  missing context; and that nothing routes around it. The e2e access-control tests
-  exist to prove this; if any assumption fails, fall back to a separate restricted
-  agent for the group.
+  **every** tool incl. the shell and subagent-spawn; that it reliably receives a
+  trustworthy **sender** identity (the requesting Telegram user) on every call,
+  including across multi-turn reasoning and subagents; that it is fail-closed on
+  missing/unknown sender; and that nothing routes around it. The e2e access-control
+  tests prove this. **If the sender cannot be reliably attributed** (e.g. a group
+  runs as one shared session), fall back to the chat-based policy (group →
+  tasks-only for everyone, including the owner).
 - **LiveSync passphrase correctness:** a mismatch can corrupt sync; validate on a
   throwaway vault first.
-- **Telegram bot privacy mode / open-bot RCE:** privacy mode must be **off** for
-  group name-triggering; allowlists must be set and never allow-all (open bot =
-  RCE via the shell). Verified by the gateway-lockdown test.
+- **Open-bot RCE:** allowlists must be set, `unknown_user_action = ignore`, and
+  never allow-all — an open bot is RCE via the shell. Verified by the
+  gateway-lockdown test. (Privacy mode stays **on** since we use `mentions_only`,
+  which also keeps the bot from seeing the group's other messages.)
 - **Codex OAuth in a headless container:** one-time interactive device-code login
   via `docker exec`; confirm it works without a host browser.
 - **Subscription rate limits:** keep cron cadence conservative.
