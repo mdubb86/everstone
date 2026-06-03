@@ -1,0 +1,5 @@
+#!/command/execlineb -P
+with-contenv
+s6-envdir -fn /opt/config/hermes/envdir
+export HERMES_HOME /opt/data/hermes
+hermes gateway run

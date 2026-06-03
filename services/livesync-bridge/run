@@ -1,0 +1,4 @@
+#!/command/execlineb -P
+with-contenv
+cd /opt/livesync-bridge
+deno task run

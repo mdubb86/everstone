@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+engraph index /opt/data/vault
+echo "[setup_engraph] index built."
