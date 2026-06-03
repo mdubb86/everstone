@@ -39,7 +39,7 @@ The access model rests on two facts about Hermes. Confirm them **before** buildi
 
 **Files:** none (throwaway probe)
 
-- [ ] **Step 1: Install Hermes in a scratch container and register a logging hook**
+- [x] **Step 1: Install Hermes in a scratch container and register a logging hook**
 
 Run:
 ```bash
@@ -62,7 +62,7 @@ EOF
 ```
 Expected: prints `ready` (adjust the install command to the current Hermes package name if it differs).
 
-- [ ] **Step 2: Drive one tool call from a DM and one from a group, capture payloads**
+- [x] **Step 2: Drive one tool call from a DM and one from a group, capture payloads**
 
 Run a minimal CLI/gateway interaction that triggers a tool call in each chat type (or, if a live gateway is impractical in CI, run `hermes` CLI which uses a `private`-equivalent session). Inspect `/tmp/hook-payloads.jsonl`:
 ```bash
@@ -71,15 +71,30 @@ jq -r '.session_id' /tmp/hook-payloads.jsonl | sort -u
 ```
 Expected: **either** `session_id` values like `agent:main:telegram:private:123…` / `agent:main:telegram:group:-100…` (structured — PROCEED with chat_type gating) **or** opaque `sess_…` (FALLBACK).
 
-- [ ] **Step 3: Record the outcome in the plan**
+- [x] **Step 3: Record the outcome in the plan**
 
-Edit this task's checkbox note with one line: `RESULT: structured key | opaque`. If **opaque**, before continuing: either (a) confirm a session-store lookup maps `session_id → chat_type` (read `~/.hermes` state), or (b) switch Phase 4/5 to the two-bot fallback (a second `hermes` profile/bot whose `hermes tools` excludes everything but `everstone_tasks`). The rest of the plan assumes the structured-key path; the fallback only changes Task 12 + the hermes service.
+**RESULT: OPAQUE — FALLBACK (empirically verified 2026-06-03, hermes-agent 0.15.2)**
 
-- [ ] **Step 4: Confirm the hook fires for the terminal tool specifically**
+Source-level findings from `/usr/local/lib/python3.11/site-packages/agent/`:
+- `tool_executor.py` calls `get_pre_tool_call_block_message(name, args, task_id=...)` — `session_id` is NOT passed; defaults to `""` in the hook payload.
+- The structured gateway session key (e.g. `agent:main:telegram:dm:123`) is stored only as a Python `ContextVar` (`_SESSION_KEY` in `gateway/session_context.py`). ContextVars do NOT propagate to subprocesses; the shell hook cannot read it.
+- The sessions SQLite DB (`hermes_state.py`) has **no `chat_type` column** — no session-store lookup is possible without schema changes.
+- Additional bug in plan: `matcher: "*"` is **invalid Python regex** and silently matches nothing. Use `".*"` or omit.
+- Additional bug in plan: Telegram adapter normalises `private` → `dm` (not `private`) in session keys.
 
-In the same probe, trigger a shell command and confirm a payload with `"tool_name":"terminal"` was logged.
-Run: `grep -c '"tool_name":"terminal"' /tmp/hook-payloads.jsonl`
-Expected: ≥ 1. (If terminal calls bypass the hook, the wall is unsound — escalate to the two-bot fallback.)
+**Chosen fallback: Python plugin hook** (in-process, ContextVar-readable).
+
+Replace the shell-script hook with a **Python plugin** that registers a `pre_tool_call` hook callback in-process. It reads `HERMES_SESSION_KEY` from `get_session_env("HERMES_SESSION_KEY")` (ContextVar-backed), parses `dm`/`group` (not `private`/`group`), and returns allow/block accordingly. Unit tests call the policy function directly (no subprocess needed). See Task 7 revision below.
+
+Two-bot fallback (Task 12) remains documented as the no-code-in-Hermes alternative.
+
+- [x] **Step 4: Confirm the hook fires for the terminal tool specifically**
+
+Confirmed via `hermes hooks test pre_tool_call --for-tool terminal` (after fixing matcher to `".*"`):
+```json
+{"hook_event_name": "pre_tool_call", "tool_name": "terminal", "tool_input": {"command": "echo hello"}, "session_id": "test-session", "cwd": "/", "extra": {"task_id": "test-task", "tool_call_id": "test-call"}}
+```
+Hook fires correctly for `terminal`. The `session_id` field is `""` at runtime (synthetic test uses `"test-session"`). **Policy must read `HERMES_SESSION_KEY` from env/ContextVar, not `session_id`.**
 
 ---
 
@@ -470,89 +485,131 @@ def run():
 
 ## Phase 2 — The access hook (TDD)
 
-### Task 7: `pre_tool_call` policy script
+### Task 7: `pre_tool_call` policy — Python plugin hook
 
 **Files:** Create `access_hook/everstone_access_hook.py`, `access_hook/tests/test_access_hook.py`
 
-Policy: parse `session_id` of form `agent:main:{platform}:{chat_type}:{chat_id}`; `private` → allow all; `group`/`supergroup` → allow only the tasks tool; unparseable → deny. Allowed-in-group tool names come from env `EVERSTONE_GROUP_TOOLS` (comma-sep), default `everstone_tasks`.
+> **Phase 0 result applied:** shell-script approach dropped. Using a Python plugin instead, because:
+> - `session_id` in the shell hook payload is `""` at runtime — tool_executor doesn't pass it
+> - The structured gateway key (`agent:main:telegram:dm:123`) is a Python ContextVar and not visible to subprocesses
+> - A Python plugin runs **in-process** and can call `get_session_env("HERMES_SESSION_KEY")` directly
+>
+> Note: Hermes normalises Telegram `private` → `dm` (not `private`). Use `"dm"` as the allow condition.
+> Note: `matcher: "*"` is invalid Python regex — use `".*"` or omit.
 
-- [ ] **Step 1: Failing tests**
+Policy: read `HERMES_SESSION_KEY` from the session context (ContextVar); parse `{chat_type}` from `agent:main:{platform}:{chat_type}:{chat_id}`; `dm` → allow all; any other type (or unparseable/empty) → tasks-only (fail-closed). Allowed-in-group tool names from env `EVERSTONE_GROUP_TOOLS` (comma-sep), default `everstone_tasks`.
+
+Registration: installed as a Hermes plugin package (`pip install /opt/access_hook`); declares entry point `hermes_plugins = everstone_access_hook:HermesPlugin`.
+
+- [ ] **Step 1: Failing tests** (direct Python function calls — no subprocess)
 ```python
-import json, subprocess, sys, os
+import os
+import importlib.util
 from pathlib import Path
-HOOK = Path(__file__).resolve().parents[1] / "everstone_access_hook.py"
 
-def run_hook(payload, env=None):
-    p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
-                       capture_output=True, text=True, env={**os.environ, **(env or {})})
-    return json.loads(p.stdout or "{}")
+spec = importlib.util.spec_from_file_location(
+    "everstone_access_hook",
+    Path(__file__).resolve().parents[1] / "everstone_access_hook.py"
+)
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+
+def run_policy(tool_name, session_key, env=None):
+    """Call the policy function directly with a mocked session env."""
+    original = os.environ.copy()
+    try:
+        if env:
+            os.environ.update(env)
+        # Patch HERMES_SESSION_KEY in os.environ (simulates ContextVar fallback)
+        if session_key is not None:
+            os.environ["HERMES_SESSION_KEY"] = session_key
+        elif "HERMES_SESSION_KEY" in os.environ:
+            del os.environ["HERMES_SESSION_KEY"]
+        return mod.policy(tool_name)
+    finally:
+        os.environ.clear(); os.environ.update(original)
 
 def test_dm_allows_terminal():
-    out = run_hook({"tool_name": "terminal", "session_id": "agent:main:telegram:private:111"})
-    assert out == {}  # allow
+    assert run_policy("terminal", "agent:main:telegram:dm:111") is None  # None = allow
 
 def test_group_blocks_terminal():
-    out = run_hook({"tool_name": "terminal", "session_id": "agent:main:telegram:group:-100"})
-    assert out.get("decision") == "block"
+    result = run_policy("terminal", "agent:main:telegram:group:-100")
+    assert result is not None and "block" in str(result)
 
 def test_group_allows_tasks():
-    out = run_hook({"tool_name": "everstone_tasks", "session_id": "agent:main:telegram:supergroup:-100"})
-    assert out == {}
+    assert run_policy("everstone_tasks", "agent:main:telegram:group:-100") is None
 
-def test_unparseable_denies_notes():
-    out = run_hook({"tool_name": "terminal", "session_id": "sess_opaque"})
-    assert out.get("decision") == "block"
+def test_unparseable_denies_terminal():
+    result = run_policy("terminal", "sess_opaque")
+    assert result is not None and "block" in str(result)
 
-def test_unparseable_allows_tasks_only_if_configured_strict():
-    # default: opaque/unknown => fail closed => only tasks allowed
-    assert run_hook({"tool_name": "everstone_tasks", "session_id": "sess_opaque"}) == {}
+def test_unparseable_allows_tasks():
+    assert run_policy("everstone_tasks", "sess_opaque") is None
+
+def test_no_session_key_denies_terminal():
+    result = run_policy("terminal", None)
+    assert result is not None and "block" in str(result)
 ```
 
 - [ ] **Step 2: Run, expect fail.**
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Implement `access_hook/everstone_access_hook.py`**
 ```python
-#!/usr/bin/env python3
-"""pre_tool_call access hook: allow all tools in private chats; tasks-only elsewhere.
+"""Hermes pre_tool_call plugin: tasks-only in group chats; all tools in owner DM.
 
-Reads the JSON payload on stdin, prints a JSON decision on stdout.
-Fail-closed: any chat that is not clearly the owner's private DM is tasks-only.
+Install: pip install /opt/access_hook
+Entry point: hermes_plugins = everstone_access_hook:HermesPlugin
 """
-import json, os, sys
+import os
+from typing import Optional
 
-def allowed_group_tools():
-    return set(t.strip() for t in os.environ.get("EVERSTONE_GROUP_TOOLS", "everstone_tasks").split(",") if t.strip())
+_BLOCK = {"action": "block", "message": "Tool not permitted outside a private DM."}
 
-def chat_type_of(session_id: str):
-    # expected: agent:main:{platform}:{chat_type}:{chat_id}
-    parts = session_id.split(":") if session_id else []
+def _allowed_group_tools() -> set:
+    return {t.strip() for t in os.environ.get("EVERSTONE_GROUP_TOOLS", "everstone_tasks").split(",") if t.strip()}
+
+def _chat_type() -> Optional[str]:
+    """Parse chat_type from HERMES_SESSION_KEY = agent:main:{platform}:{chat_type}:{chat_id}."""
+    key = os.environ.get("HERMES_SESSION_KEY", "")
+    parts = key.split(":") if key else []
     if len(parts) >= 5 and parts[0] == "agent":
         return parts[3]
     return None
 
-def main():
-    try:
-        payload = json.load(sys.stdin)
-    except Exception:
-        print(json.dumps({"decision": "block", "reason": "unreadable hook payload"})); return
-    tool = payload.get("tool_name", "")
-    ctype = chat_type_of(payload.get("session_id", ""))
-    if ctype == "private":
-        print("{}"); return                      # owner DM → allow everything
-    # group / supergroup / channel / unknown / unparseable → tasks-only (fail-closed)
-    if tool in allowed_group_tools():
-        print("{}"); return
-    print(json.dumps({"decision": "block",
-                      "reason": f"'{tool}' not permitted outside a private chat"}))
+def policy(tool_name: str) -> Optional[dict]:
+    """Return None to allow, or a block dict to deny."""
+    ctype = _chat_type()
+    if ctype == "dm":
+        return None  # owner DM → allow everything
+    # group / channel / empty / unparseable → fail-closed (tasks-only)
+    if tool_name in _allowed_group_tools():
+        return None
+    return _BLOCK
 
-if __name__ == "__main__":
-    main()
+class HermesPlugin:
+    """Hermes plugin entry-point class."""
+    def pre_tool_call(self, tool_name: str, **kwargs):
+        return policy(tool_name)
 ```
 
-- [ ] **Step 4: Run, expect pass** (5 passed).
-- [ ] **Step 5: Commit** — `git add access_hook && git commit -m "feat(hook): fail-closed pre_tool_call chat-type access policy"`
+- [ ] **Step 4: `access_hook/pyproject.toml`** (makes it pip-installable as a Hermes plugin):
+```toml
+[project]
+name = "everstone-access-hook"
+version = "0.1.0"
+requires-python = ">=3.11"
 
-> If Phase 0 found an **opaque** session_id: replace `chat_type_of` to look up the chat from Hermes's session store keyed by `session_id`, OR adopt the two-bot fallback and drop this hook for the group bot. Either way, keep the tests.
+[project.entry-points."hermes_plugins"]
+everstone_access_hook = "everstone_access_hook:HermesPlugin"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+```
+
+- [ ] **Step 5: Run, expect pass** (6 passed).
+- [ ] **Step 6: Commit** — `git add access_hook && git commit -m "feat(hook): fail-closed pre_tool_call plugin (dm=all, group=tasks-only)"`
+
+> **Two-bot alternative (Task 12):** if the Python plugin approach causes issues (e.g. Hermes plugin API changes), fall back to running two Hermes instances: one DM-only (full tools), one group-only (configured with `hermes tools` to expose only `everstone_tasks`). Policy is enforced by Hermes tool config, not a hook.
 
 ---
 

@@ -1,8 +1,8 @@
-couchdb:
-  user: everstone
-  password: null
-  database: everstone
-
-git:
-  user: everstone
-  password: null
+couchdb: {user: everstone, password: null, database: everstone}
+git: {user: everstone, password: null}
+caldav: {user: everstone, password: null}
+livesync: {passphrase: null, obfuscate_passphrase: null}
+obsidian: {vault_name: everstone}
+instance: {name: Jarvis}
+telegram: {owner_user_id: null, bot_token: null}
+hermes: {model: null}

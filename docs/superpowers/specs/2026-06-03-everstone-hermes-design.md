@@ -188,22 +188,23 @@ remote code execution for any stranger.
 
 ### Layer 2 — per-chat tool allowlist (what it may do)
 
-A `pre_tool_call` hook fires before **every** tool call (built-in, plugin, MCP —
-including the shell) and decides by **which chat the session belongs to**, read
-from the session key (`agent:main:{platform}:{chat_type}:{chat_id}`):
+A `pre_tool_call` **Python plugin hook** fires before **every** tool call
+(built-in, plugin, MCP — including the shell) and decides by **which chat the
+session belongs to**, read from the `HERMES_SESSION_KEY` ContextVar
+(`agent:main:{platform}:{chat_type}:{chat_id}`):
 
 ```
 on every tool call:
-    chat = parse(session_key)                # platform / chat_type / chat_id
+    chat = parse(HERMES_SESSION_KEY)         # platform / chat_type / chat_id
     allowed = ALLOWLIST_FOR[chat]            # allowlist, not denylist
     if tool_name not in allowed: BLOCK       # default-deny; unknown tools blocked
 ```
 
 | chat (from the session key) | Allowed tools |
 |---|---|
-| owner's **DM** (`chat_type = private`) | everything (shell, files, engraph, tasks) |
+| owner's **DM** (`chat_type = dm`) | everything (shell, files, engraph, tasks) |
 | **any group** (`chat_type` = `group`/`supergroup`) | **only** `everstone_tasks` |
-| **unknown / unparseable** | **deny** (fail-closed) |
+| **unknown / unparseable / empty** | **deny** (fail-closed) |
 
 So **in the group, the agent is strictly tasks-only — for everyone, including the
 owner.** Anything not explicitly allowed dies: the shell, file reads, engraph,
@@ -212,19 +213,25 @@ capability is a **discrete MCP tool**, the group allowlist is a clean exact matc
 with no shell in it — no command-injection surface, nothing to `cat` a note. To
 use notes, the owner goes to the **DM** (where they have full tools).
 
-Gating is by **chat, not sender**: Hermes exposes the chat (via the session key)
-to the hook but not the individual sender within a group, so per-sender
-distinction *inside* a group is intentionally out of scope (it would require a
-second bot for negligible benefit — see §11). The hook keys on the **`chat_type`**
-field (`private` vs `group`/`supergroup`), so **no group chat id is hardcoded** —
-any group is treated conservatively as tasks-only (fail-safe).
+Gating is by **chat, not sender**: the hook keys on the **`chat_type`** field
+(`dm` vs `group`/`supergroup`), so **no group chat id is hardcoded** — any group
+is treated conservatively as tasks-only (fail-safe). Per-sender distinction inside
+a group is intentionally out of scope (second bot for negligible benefit — §11).
 
-Two load-bearing assumptions, both **verified at build / by the e2e battery (§10)**:
-(1) the `pre_tool_call` payload's `session_id` is the structured key carrying
-`chat_type`/`chat_id` (if it is opaque, map it via Hermes's session store, else
-fall back to a separate tasks-only group bot); (2) the hook fires before **every**
-tool incl. the shell and subagent-spawn, and nothing routes around it. Fail-closed
-on any uncertainty.
+**Implementation note (verified hermes-agent 0.15.2, 2026-06-03):** The
+`pre_tool_call` shell hook payload receives `session_id: ""` at runtime —
+`tool_executor.py` does not pass it. The structured gateway session key is a
+Python `ContextVar` (`_SESSION_KEY` in `gateway/session_context.py`), visible
+to in-process code but not to subprocess hooks. The sessions DB has no
+`chat_type` column. Therefore the hook is implemented as a **Python plugin**
+(installed via pip, registered via `hermes_plugins` entry point) that reads
+`os.environ.get("HERMES_SESSION_KEY")` — which resolves from the ContextVar
+via `get_session_env`. Note also: Telegram normalises `private` → `dm` in
+session keys; the policy checks for `"dm"`, not `"private"`.
+
+One load-bearing assumption, **verified at build / by the e2e battery (§10)**:
+the hook fires before **every** tool incl. the shell and subagent-spawn, and
+nothing routes around it. Fail-closed on any uncertainty.
 
 ### Cross-person assignment
 

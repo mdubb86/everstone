@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["couchdb", "git"],
+  "required": ["couchdb", "git", "caldav", "livesync", "obsidian", "instance", "telegram", "hermes"],
   "properties": {
     "couchdb": {
       "type": "object",
@@ -18,6 +18,51 @@
       "properties": {
         "user": { "type": "string", "minLength": 1 },
         "password": { "type": "string", "minLength": 1 }
+      }
+    },
+    "caldav": {
+      "type": "object",
+      "required": ["user", "password"],
+      "properties": {
+        "user": { "type": "string", "minLength": 1 },
+        "password": { "type": "string", "minLength": 1 }
+      }
+    },
+    "livesync": {
+      "type": "object",
+      "required": ["passphrase", "obfuscate_passphrase"],
+      "properties": {
+        "passphrase": { "type": "string", "minLength": 1 },
+        "obfuscate_passphrase": { "type": "string", "minLength": 1 }
+      }
+    },
+    "obsidian": {
+      "type": "object",
+      "required": ["vault_name"],
+      "properties": {
+        "vault_name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "instance": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "telegram": {
+      "type": "object",
+      "required": ["owner_user_id", "bot_token"],
+      "properties": {
+        "owner_user_id": { "type": "integer" },
+        "bot_token": { "type": "string", "minLength": 1 }
+      }
+    },
+    "hermes": {
+      "type": "object",
+      "required": ["model"],
+      "properties": {
+        "model": { "type": "string", "minLength": 1 }
       }
     }
   }
