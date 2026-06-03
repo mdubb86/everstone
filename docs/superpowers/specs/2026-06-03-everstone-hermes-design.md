@@ -126,8 +126,11 @@ Radicale on `http://localhost:5232`. Exposed **two ways**:
 - **CLI** — the same logic as a command, for the DM agent's convenience, scripts,
   and tests.
 
-Capabilities: `list`, `add` (optionally with `--note` to stamp an `obsidian://`
-deeplink), `done`, `update`, `link`. JSON output.
+Capabilities: `list`, `add` (optionally `--note` for an `obsidian://` deeplink and
+`--remind-at` to attach a CalDAV **VALARM**), `done`, `update`, `link`. JSON output.
+Whenever a reminder/alarm is requested, the **VALARM is always persisted to the
+CalDAV VTODO** — the durable source of truth that syncs to every client and
+survives restarts.
 
 ### 3.6 Hermes Agent
 
@@ -164,12 +167,17 @@ isolation is *not* relied upon.
 A Telegram bot is reachable by anyone who finds it, so the bot must **ignore
 everyone unauthorized**, default-deny:
 
-- **DM:** `TELEGRAM_ALLOWED_USERS` = the owner only.
-- **Group:** `TELEGRAM_GROUP_ALLOWED_USERS` = the household members (you + spouse)
-  — **required**. `TELEGRAM_GROUP_ALLOWED_CHATS` (pinning *which* group) is
-  **optional**: set it to restrict to one group, or omit to allow any group those
-  users add the bot to (still tasks-only by Layer 2's `chat_type` gate).
-- `unknown_user_action = ignore`; **never** `GATEWAY_ALLOW_ALL_USERS`.
+- **DM (full access):** allowlisted to the **owner id only** — the critical gate,
+  since only the DM grants the shell/full tools, so RCE is closed to a single id.
+- **Groups (tasks-only):** the bot answers @mentions in groups, but Layer 2's
+  `chat_type` gate restricts groups to tasks, so **no per-user/per-group
+  enumeration is required** — the worst a group member can do is add/edit a task.
+  (Optional defense-in-depth: `TELEGRAM_GROUP_ALLOWED_USERS` /
+  `TELEGRAM_GROUP_ALLOWED_CHATS` to also restrict group senders/chats.)
+- `unknown_user_action = ignore`; **never** `GATEWAY_ALLOW_ALL_USERS` for full
+  (DM) access. Simplifying the group config away makes the `chat_type` tool-gate
+  the sole group barrier — acceptable because groups carry no full-tool access, and
+  the gate is verified hard (§10, §12).
 
 These allowlists are **declared in `config.yaml` and injected as container env** by
 `configure.py` — the policy is version-controlled and reproducible, not mutable
@@ -255,10 +263,10 @@ obsidian:
 instance:
   name: Jarvis                       # public display identity (group routing is by @mention)
 telegram:
-  owner_user_id: 123456789           # DM: only you, at full power
-  group_allowed_user_ids: [123456789, 987654321]  # you + spouse may @mention it in groups
-  group_chat_id: -1001234567890      # OPTIONAL: pin to one group (Layer 1). The access
-                                     # hook gates by chat_type, so no group id is required.
+  owner_user_id: 123456789           # the ONLY required id — DM full access = you only
+  # No group ids/members needed: any group is tasks-only (gated by chat_type).
+  # Optional hardening only: group_allowed_user_ids / group_chat_id to also
+  # restrict who/which group may issue task commands (defense-in-depth).
 hermes:
   model: openai-codex                # confirm exact id with `hermes model`
   telegram_bot_token: <bot token>
@@ -288,6 +296,11 @@ Mostly Hermes configuration (skills + cron) once the plumbing works:
 
 - **Capture & triage** (DM): a message → a note (file write) and/or a task
   (`everstone_tasks`), filed with due dates and a deeplink.
+- **Reminders** (DM): when an alarm is requested, the agent **always persists a
+  CalDAV `VALARM`** on the task (the durable record) — **whether that becomes a
+  notification is up to Tasks.org's settings** on your phone. The agent **may
+  additionally** schedule a **Hermes cron** Telegram self-ping for agent-owned
+  delivery, if that's what you asked for (not hardcoded).
 - **Proactive briefings** (cron): scheduled summaries of due/stale tasks + relevant
   notes pushed to Telegram. Paced to respect subscription limits.
 - **Q&A over the vault** (DM): engraph semantic + link-aware search, surfacing
