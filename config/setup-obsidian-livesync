@@ -1,11 +1,22 @@
 #!/bin/sh
+# Interactive Obsidian LiveSync onboarding walkthrough. Run inside the
+# container; an interactive TTY is required.
+#
+# Generates a one-shot encrypted setup URI for THIS server (couchDB_URI,
+# credentials, passphrase, sync settings — all baked in), then walks the
+# operator through the 5 stages of LiveSync's onboarding wizard, pausing
+# for Return between each stage so the operator can act in Obsidian.
+
 set -eu
 
-# Generate an Obsidian LiveSync setup URI for this server.
-# Based on the upstream: utils/flyio/generate_setupuri.ts in vrtmrz/obsidian-livesync.
-#
-# Per upstream docs (lib/src/cli/APITest.sample.ts and docs/settings.md), the
-# plugin has only one passphrase setting; `usePathObfuscation: true` reuses it.
+if [ ! -t 0 ] && [ ! -t 1 ]; then
+    cat >&2 <<EOF
+Error: setup-obsidian-livesync needs an interactive terminal.
+Try:    just setup-livesync
+   or:  docker exec -it everstone setup-obsidian-livesync
+EOF
+    exit 1
+fi
 
 # Values injected by configure.py at container startup:
 export DB_USER='{{COUCHDB_USER}}'
@@ -18,6 +29,10 @@ ts_file="/tmp/setupuri.$$.ts"
 trap 'rm -f "$ts_file"' EXIT
 
 cat > "$ts_file" <<'TYPESCRIPT_EOF'
+// Minimal URI generator. Prints two lines to stdout:
+//   line 1: the obsidian:// setup URI
+//   line 2: the one-shot decryption passphrase
+
 import { encrypt } from "npm:octagonal-wheels@0.1.30/encryption/encryption";
 
 const noun = ["waterfall","river","breeze","moon","rain","wind","sea","morning","snow","lake","sunset","pine","shadow","leaf","dawn","glitter","forest","hill","cloud","meadow","sun","glade","bird","brook","butterfly","bush","dew","dust","field","fire","flower","firefly","feather","grass","haze","mountain","night","pond","darkness","snowflake","silence","sound","sky","shape","surf","thunder","violet","water","wildflower","wave","resonance","log","dream","cherry","tree","fog","frost","voice","paper","frog","smoke","star"];
@@ -40,10 +55,7 @@ async function main() {
 
     try {
         const u = new URL(couchDB_URI);
-        if (!/^https?:$/.test(u.protocol)) {
-            console.error("Error: base URL must be http:// or https://");
-            Deno.exit(1);
-        }
+        if (!/^https?:$/.test(u.protocol)) throw new Error("not http/https");
     } catch (_e) {
         console.error(`Error: invalid URL: ${couchDB_URI}`);
         Deno.exit(1);
@@ -51,8 +63,8 @@ async function main() {
 
     const uri_passphrase = friendlyString();
 
-    // Conf shape matches the upstream `generate_setupuri.ts` exactly.
-    // Plugin has only `passphrase` as a setting; `usePathObfuscation` reuses it.
+    // Conf shape matches upstream `generate_setupuri.ts` plus Config Doctor's
+    // current recommendations (chunk size 60, v3 splitter, usePluginSyncV2).
     const conf = {
         couchDB_URI,
         couchDB_USER: username,
@@ -70,10 +82,10 @@ async function main() {
         batches_limit: 50,
         useHistory: true,
         disableRequestURI: true,
-        customChunkSize: 60,                       // Config Doctor's recommended default
-        usePluginSyncV2: true,                     // Per-file-saved customization sync
-        chunkSplitterVersion: "v3-rabin-karp",     // V3: Fine deduplication (current best)
-        syncMode: "LIVESYNC",                      // Real-time bidirectional; matches our use case
+        customChunkSize: 60,
+        usePluginSyncV2: true,
+        chunkSplitterVersion: "v3-rabin-karp",
+        syncMode: "LIVESYNC",
         syncAfterMerge: false,
         concurrencyOfReadChunksOnline: 100,
         minimumIntervalOfReadChunksOnline: 100,
@@ -86,96 +98,117 @@ async function main() {
     const encryptedConf = encodeURIComponent(
         await encrypt(JSON.stringify(conf), uri_passphrase, false)
     );
-    const theURI = `${URIBASE}${encryptedConf}`;
 
-    const bar = "=".repeat(76);
-    const sub = "-".repeat(76);
-    console.log("");
-    console.log(bar);
-    console.log("Obsidian LiveSync onboarding — one device at a time");
-    console.log(bar);
-    console.log("");
-    console.log("Server:  " + couchDB_URI);
-    console.log("");
-    console.log(sub);
-    console.log("STEP 1. Install and enable the LiveSync plugin");
-    console.log(sub);
-    console.log("");
-    console.log("  Obsidian → Settings → Community plugins → Browse →");
-    console.log("    search 'Self-hosted LiveSync' → Install → Enable.");
-    console.log("");
-    console.log("  As soon as it's enabled, LiveSync shows a Welcome dialog.");
-    console.log("  Answer:");
-    console.log("");
-    console.log("    Welcome to Self-hosted LiveSync");
-    console.log("    \t→ I am setting this up for the first time");
-    console.log("");
-    console.log(sub);
-    console.log("STEP 2. Paste the URI INSIDE Obsidian (not in a browser)");
-    console.log(sub);
-    console.log("");
-    console.log("  In Obsidian, hit Cmd-P / Ctrl-P, then:");
-    console.log("    'Self-hosted LiveSync: Use the copied setup URI'");
-    console.log("");
-    console.log("  Paste this URI when prompted:");
-    console.log("");
-    console.log("    " + theURI);
-    console.log("");
-    console.log("  Then enter this one-shot passphrase to decrypt it:");
-    console.log("");
-    console.log("    " + uri_passphrase);
-    console.log("");
-    console.log(sub);
-    console.log("STEP 3. Click through the wizard");
-    console.log(sub);
-    console.log("");
-    console.log("  LiveSync prompts a sequence of dialogs. The order may vary by");
-    console.log("  plugin version, but the right answer for each title is:");
-    console.log("");
-    console.log("  Could not fetch configuration from remote");
-    console.log("  \t→ Skip and Proceed");
-    console.log("  \t  (expected on a fresh empty database — there is nothing to fetch)");
-    console.log("");
-    console.log("  Setup Complete: Preparing to Initialise Server");
-    console.log("  \t→ Restart and Initialise Server");
-    console.log("  \t  (applies the URI's settings to the empty server)");
-    console.log("");
-    console.log("  Final Confirmation: Overwrite Server Data with This Device's Files");
-    console.log("  \t→ check ALL agreement boxes, then confirm");
-    console.log("  \t  (your Mac is the authoritative source; nothing exists on the");
-    console.log("  \t   server yet, so 'overwrite' is overwriting an empty DB)");
-    console.log("");
-    console.log("  Setting up database size notification");
-    console.log("  \t→ accept the default");
-    console.log("  \t  (the URI already sets a sensible 800 MB threshold)");
-    console.log("");
-    console.log("  Do you want to send all chunks before replication?");
-    console.log("  \t→ Yes");
-    console.log("  \t  (only appears in some flows; pre-uploads chunks before file");
-    console.log("  \t   docs so there are no orphan-chunk states mid-sync)");
-    console.log("");
-    console.log("  Customisation Sync and Hidden File Sync will be disabled");
-    console.log("  \t→ OK");
-    console.log("  \t  (informational; leave both off unless you specifically want");
-    console.log("  \t   themes/snippets or `.obsidian/` workspace state to sync)");
-    console.log("");
-    console.log(sub);
-    console.log("STEP 4. Switch sync mode to LiveSync (real-time)");
-    console.log(sub);
-    console.log("");
-    console.log("  Settings → Self-hosted LiveSync → Sync Settings →");
-    console.log("    Presets → LiveSync → Apply");
-    console.log("");
-    console.log("  This is needed even though the URI sets it — the plugin");
-    console.log("  initialises with 'On Events' for the wizard's safety, and");
-    console.log("  the Preset > Apply step actually flips it.");
-    console.log("");
-    console.log("  Status bar should show ↻ briefly, then ✔ (synced).");
-    console.log("");
-    console.log(bar);
-    console.log("");
+    // Two-line output: URI, then passphrase. Consumed by the shell wrapper.
+    console.log(`${URIBASE}${encryptedConf}`);
+    console.log(uri_passphrase);
 }
 await main();
 TYPESCRIPT_EOF
 
-deno run --allow-net --allow-env "$ts_file"
+# Run the generator. Two lines come back: URI then passphrase.
+gen=$(deno run --allow-net --allow-env "$ts_file")
+URI=$(printf '%s\n' "$gen" | sed -n 1p)
+PASSPHRASE=$(printf '%s\n' "$gen" | sed -n 2p)
+
+bar()     { printf -- '%s\n' "============================================================================"; }
+sub()     { printf -- '%s\n' "----------------------------------------------------------------------------"; }
+pause()   {
+    printf "\n  → Press Return to continue (Ctrl-C to abort): "
+    IFS= read -r _ || true
+    printf '\n'
+}
+
+bar
+echo "Obsidian LiveSync onboarding — one device at a time"
+bar
+echo ""
+echo "  Server: $COUCHDB_URI"
+echo "  This walkthrough is per-device. Re-run it on each Mac/iPhone you add."
+echo ""
+
+sub
+echo "STAGE 1 of 5 — Install and enable the LiveSync plugin"
+sub
+echo ""
+echo "  Obsidian → Settings → Community plugins → Browse →"
+echo "    search 'Self-hosted LiveSync' → Install → Enable."
+pause
+
+sub
+echo "STAGE 2 of 5 — Welcome wizard (two quick prompts on enable)"
+sub
+echo ""
+echo "  Welcome to Self-hosted LiveSync"
+echo "      → I am setting this up for the first time"
+echo ""
+echo "  Connection Method"
+echo "      → Use a Setup URI  (Recommended)"
+pause
+
+sub
+echo "STAGE 3 of 5 — Paste the setup URI"
+sub
+echo ""
+echo "  In Obsidian: Cmd-P / Ctrl-P →"
+echo "    'Self-hosted LiveSync: Use the copied setup URI'"
+echo ""
+echo "  Setup URI (copy the WHOLE line):"
+echo ""
+echo "    $URI"
+echo ""
+echo "  One-shot decryption passphrase (Obsidian will prompt for this):"
+echo ""
+echo "    $PASSPHRASE"
+echo ""
+echo "  (One-shot — discarded after this device decrypts. Never asked again.)"
+pause
+
+sub
+echo "STAGE 4 of 5 — Click through the remaining wizard dialogs"
+sub
+echo ""
+echo "  Order can vary by plugin version. For each title, pick the answer below:"
+echo ""
+echo "  Could not fetch configuration from remote"
+echo "      → Skip and Proceed"
+echo "        (expected on a fresh empty database — nothing to fetch)"
+echo ""
+echo "  Setup Complete: Preparing to Initialise Server"
+echo "      → Restart and Initialise Server"
+echo "        (applies the URI's settings to the empty server)"
+echo ""
+echo "  Final Confirmation: Overwrite Server Data with This Device's Files"
+echo "      → check ALL agreement boxes, then confirm"
+echo "        (your Mac is the authoritative source; the server is empty)"
+echo ""
+echo "  Setting up database size notification"
+echo "      → accept the default"
+echo "        (URI already sets a sensible 800 MB threshold)"
+echo ""
+echo "  Do you want to send all chunks before replication?"
+echo "      → Yes"
+echo "        (avoids orphan-chunk states mid-sync; only appears in some flows)"
+echo ""
+echo "  Customisation Sync and Hidden File Sync will be disabled"
+echo "      → OK"
+echo "        (informational; enable later only if you specifically want them)"
+pause
+
+sub
+echo "STAGE 5 of 5 — Apply the LiveSync sync mode preset"
+sub
+echo ""
+echo "  Settings → Self-hosted LiveSync → Sync Settings →"
+echo "    Presets → LiveSync → Apply"
+echo ""
+echo "  Status bar should show ↻ briefly, then ✔ (synced)."
+pause
+
+bar
+echo "  Done. Onboarding complete for this device."
+echo ""
+echo "  Verify from any terminal:"
+echo "    docker exec everstone sync-state"
+bar
+echo ""
