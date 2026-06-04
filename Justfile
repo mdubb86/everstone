@@ -63,6 +63,20 @@ hermes-auth:
     docker exec -it -e HERMES_HOME=/opt/data/hermes {{DEV_NAME}} \
         hermes auth add openai-codex --type oauth --manual-paste
 
+# Interactive Hermes chat REPL — visible reasoning + tool calls. The same
+# agent (same SOUL, AGENTS.md, tools, model) that Telegram talks to.
+chat:
+    docker exec -it -e HERMES_HOME=/opt/data/hermes {{DEV_NAME}} hermes chat
+
+# List recent Hermes sessions (CLI + Telegram both show up here).
+sessions:
+    docker exec -e HERMES_HOME=/opt/data/hermes {{DEV_NAME}} hermes sessions list
+
+# Replay a session by id (full trace, including tool calls).
+session-show SESSION_ID:
+    docker exec -it -e HERMES_HOME=/opt/data/hermes {{DEV_NAME}} \
+        hermes sessions show {{SESSION_ID}}
+
 # Remove the dev container (preserves data dir and image)
 down:
     docker rm -f {{DEV_NAME}} 2>/dev/null || true
