@@ -98,11 +98,17 @@ async function main() {
     console.log("Server:  " + couchDB_URI);
     console.log("");
     console.log(sub);
-    console.log("STEP 1. On the device, install the LiveSync plugin");
+    console.log("STEP 1. Install and enable the LiveSync plugin");
     console.log(sub);
     console.log("");
     console.log("  Obsidian → Settings → Community plugins → Browse →");
     console.log("    search 'Self-hosted LiveSync' → Install → Enable.");
+    console.log("");
+    console.log("  As soon as it's enabled, LiveSync shows a Welcome dialog.");
+    console.log("  Answer:");
+    console.log("");
+    console.log("    Welcome to Self-hosted LiveSync");
+    console.log("    \t→ I am setting this up for the first time");
     console.log("");
     console.log(sub);
     console.log("STEP 2. Paste the URI INSIDE Obsidian (not in a browser)");

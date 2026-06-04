@@ -63,17 +63,17 @@ bar "bridge"
 if [ -d /run/s6-rc/servicedirs/livesync-bridge ]; then
     echo "  s6:     $(s6-svstat /run/s6-rc/servicedirs/livesync-bridge 2>&1)"
 fi
+runner_pid=$(pgrep -f "livesync-bridge-run" | head -1)
+if [ -n "${runner_pid:-}" ]; then
+    echo "  runner: pid $runner_pid (Python watchdog)"
+else
+    echo "  runner: NOT RUNNING (watchdog absent)"
+fi
 deno_pid=$(pgrep -f "deno run.*main\.ts" | head -1)
 if [ -n "${deno_pid:-}" ]; then
-    echo "  deno:   pid $deno_pid (alive)"
+    echo "  deno:   pid $deno_pid (bridge alive)"
 else
     echo "  deno:   NOT RUNNING"
-fi
-awk_pid=$(pgrep -f "awk.*ChangeManager" | head -1)
-if [ -n "${awk_pid:-}" ]; then
-    echo "  awk:    pid $awk_pid (watching)"
-else
-    echo "  awk:    NOT RUNNING (watchdog absent)"
 fi
 echo ""
 
