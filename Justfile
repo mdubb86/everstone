@@ -76,13 +76,19 @@ clean: down
 # DESTRUCTIVE: stop container + wipe data dir. Notes, tasks, CouchDB — gone.
 # After this, `just dev` boots a fresh empty container. You also need to delete
 # the matching vault folder on every Mac/phone that was synced.
+#
+# Uses a privileged container to delete: CouchDB writes as uid 5984, so files
+# end up owned by uid 5984 on the host bind-mount — your user can't rm them.
 reset: down
     @echo ""
     @echo "  This will delete {{DATA_DIR}} (notes, tasks, CouchDB)."
     @echo "  Press Ctrl-C within 5 seconds to abort."
     @echo ""
     @sleep 5
-    rm -rf {{DATA_DIR}}
+    @if [ -d {{DATA_DIR}} ]; then \
+        docker run --rm -v {{DATA_DIR}}:/wipe alpine sh -c 'find /wipe -mindepth 1 -delete' ; \
+        rmdir {{DATA_DIR}} 2>/dev/null || true ; \
+    fi
     @echo "  Wiped. Next: 'just dev' to start fresh."
 
 # Internal: bail out unless config.yaml exists
