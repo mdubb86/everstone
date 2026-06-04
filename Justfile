@@ -46,6 +46,10 @@ stop:
 status:
     docker exec {{DEV_NAME}} s6-rc -a list
 
+# One-screen LiveSync diagnostic: container, CouchDB, vault, bridge, activity
+sync-state:
+    @bash scripts/sync-state
+
 # Generate an Obsidian LiveSync setup URI for this server's public_url
 setup-livesync:
     docker exec -it {{DEV_NAME}} setup-obsidian-livesync
