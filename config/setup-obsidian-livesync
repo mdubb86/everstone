@@ -70,7 +70,8 @@ async function main() {
         batches_limit: 50,
         useHistory: true,
         disableRequestURI: true,
-        customChunkSize: 50,
+        customChunkSize: 60,        // Config Doctor: V3 Rabin-Karp recommended default
+        usePluginSyncV2: true,      // Per-file-saved customization sync (modern default)
         syncAfterMerge: false,
         concurrencyOfReadChunksOnline: 100,
         minimumIntervalOfReadChunksOnline: 100,
