@@ -8,6 +8,7 @@ and generates all service config files.
 
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -102,6 +103,44 @@ def generate_setupuri_script(config: dict) -> None:
     output_path.chmod(0o744)
 
 
+_SOUL_TOKEN_RE = re.compile(r"<([a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*)>")
+
+
+def render_soul_template(template: str, config: dict) -> str:
+    """Substitute `<a.b.c>` tokens in `template` with values from `config`.
+
+    Unknown / unresolvable tokens are left as-is so the user can see what
+    went wrong instead of silently losing content.
+    """
+    def lookup(path: str):
+        node = config
+        for key in path.split("."):
+            if isinstance(node, dict) and key in node:
+                node = node[key]
+            else:
+                return None
+        return node if isinstance(node, (str, int, float)) else None
+
+    def replace(match):
+        val = lookup(match.group(1))
+        return str(val) if val is not None else match.group(0)
+
+    return _SOUL_TOKEN_RE.sub(replace, template)
+
+
+def generate_hermes_soul(config: dict) -> None:
+    """Render `agent.soul` from config and write it to $HERMES_HOME/SOUL.md.
+
+    Always overwrites: config.yaml is the source of truth for the persona.
+    To customize, edit `agent.soul` in config.yaml and restart the container.
+    """
+    data_dir = _data_dir()
+    hermes_dir = data_dir / "hermes"
+    hermes_dir.mkdir(parents=True, exist_ok=True)
+    rendered = render_soul_template(config["agent"]["soul"], config)
+    (hermes_dir / "SOUL.md").write_text(rendered)
+
+
 def generate_radicale_config(config: dict) -> None:
     """Copy radicale config template and write htpasswd from config."""
     config_dir = _config_dir()
@@ -166,7 +205,8 @@ def generate_hermes_env(config: dict) -> None:
         "EVERSTONE_CALDAV_USER": config["caldav"]["user"],
         "EVERSTONE_CALDAV_PASSWORD": config["caldav"]["password"],
         "EVERSTONE_VAULT_NAME": config["obsidian"]["vault_name"],
-        "EVERSTONE_AGENT_NAME": config["agent_name"],
+        "EVERSTONE_AGENT_NAME": config["agent"]["name"],
+        "EVERSTONE_OWNER_NAME": config["name"],
         "HERMES_MODEL": config["hermes"]["model"],
         "TELEGRAM_BOT_TOKEN": config["telegram"]["bot_token"],
         "TELEGRAM_OWNER_USER_ID": owner_id,
@@ -259,6 +299,9 @@ def main():
 
     print("[configure] Generating hermes envdir")
     generate_hermes_env(config)
+
+    print("[configure] Rendering Hermes SOUL.md from config.agent.soul")
+    generate_hermes_soul(config)
 
     print("[configure] Configuration complete")
 

@@ -1,5 +1,6 @@
 public_url: null
-agent_name: Everstone
+name: null
+agent: {name: null, soul: null}
 couchdb: {user: everstone, password: null, database: everstone}
 caldav: {user: everstone, password: null}
 livesync: {passphrase: null}

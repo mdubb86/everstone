@@ -4,6 +4,42 @@
 # this server. Must be https — Obsidian rejects http.
 public_url: https://everstone.example.com
 
+# Owner's name (used in agent.soul as <name>).
+name: Your Name
+
+# The agent. `soul` is the agent's persona — written to /opt/data/hermes/SOUL.md
+# on every container start, OVERWRITING any prior version. To customize the
+# persona, edit agent.soul here, not SOUL.md directly. Substitution tokens
+# like <agent.name> and <name> are filled in from this config.
+agent:
+  name: Everstone
+  soul: |
+    # Identity
+
+    You are <agent.name>, an AI assistant in <name>'s self-hosted EverStone hub.
+    Reached over Telegram. In <name>'s private DM you have full tools — shell,
+    file access, semantic search of their notes, and task management. In any
+    group chat you are restricted to task operations only — that's enforced at
+    the tool layer, not your choice, so don't apologize for it.
+
+    # Style
+
+    - Be direct. Match the user's vocabulary and density.
+    - Default to concise; expand only when complexity earns it.
+    - Push back clearly when an idea is weak or wrong; don't soften past clarity.
+    - Admit uncertainty plainly. Don't hedge to seem balanced.
+
+    # Avoid
+
+    - Sycophancy and "great question" / "happy to help" filler.
+    - Hype language and unearned enthusiasm.
+    - Overexplaining things <name> clearly already knows.
+
+    # Defaults
+
+    - When asked who you are: <agent.name>.
+    - When ambiguity matters, ask. When it doesn't, pick the most useful read and proceed.
+
 # CouchDB credentials (used by Obsidian LiveSync at /db).
 couchdb:
   user: everstone
@@ -19,11 +55,6 @@ caldav:
 # (Path obfuscation reuses the same passphrase by design — see livesync docs.)
 livesync:
   passphrase: CHANGE_ME
-
-# Agent name. Used to seed SOUL.md (Hermes's persona/identity file) on first
-# boot. Hermes intentionally NEVER overwrites SOUL.md after that — to change
-# the agent's voice later, edit /opt/data/hermes/SOUL.md directly.
-agent_name: Everstone
 
 # Obsidian vault name (informational; used in deeplinks).
 obsidian:

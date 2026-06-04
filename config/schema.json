@@ -1,17 +1,25 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["public_url", "agent_name", "couchdb", "caldav", "livesync", "obsidian", "telegram", "hermes"],
+  "required": ["public_url", "name", "agent", "couchdb", "caldav", "livesync", "obsidian", "telegram", "hermes"],
   "properties": {
     "public_url": {
       "type": "string",
       "pattern": "^https://[^/]+/?$",
       "description": "Public HTTPS URL clients reach the server at. No path, no port unless non-standard."
     },
-    "agent_name": {
+    "name": {
       "type": "string",
       "minLength": 1,
-      "description": "Used to seed SOUL.md on first run (Hermes never overwrites once seeded)."
+      "description": "Owner's name. Substituted as <name> in agent.soul."
+    },
+    "agent": {
+      "type": "object",
+      "required": ["name", "soul"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "description": "Agent's name. Substituted as <agent.name> in agent.soul." },
+        "soul": { "type": "string", "minLength": 1, "description": "SOUL.md template. <a.b> tokens are substituted from the config tree." }
+      }
     },
     "couchdb": {
       "type": "object",

@@ -6,7 +6,8 @@ configure = importlib.util.module_from_spec(spec); spec.loader.exec_module(confi
 
 SAMPLE = {
   "public_url": "https://example.com",
-  "agent_name": "Jarvis",
+  "name": "Michael",
+  "agent": {"name": "Jarvis", "soul": "I am <agent.name>, in <name>'s hub. Vault: <obsidian.vault_name>."},
   "couchdb": {"user":"u","password":"p","database":"vault"},
   "caldav": {"user":"cu","password":"cp"},
   "livesync": {"passphrase":"ph"},
@@ -49,6 +50,41 @@ def test_generate_livesync_bridge_config(tmp_path):
         assert couchdb_peer["group"] == storage_peer["group"]
     finally:
         del os.environ["EVERSTONE_CONFIG_DIR"]
+
+def test_render_soul_template_substitution():
+    assert configure.render_soul_template(
+        "I am <agent.name>, owner is <name>.", SAMPLE
+    ) == "I am Jarvis, owner is Michael."
+
+def test_render_soul_template_unknown_token_left_intact():
+    # Unresolvable tokens stay as-is so the user can see what broke.
+    assert configure.render_soul_template(
+        "Hi <nonexistent.key>, hello <agent.name>.", SAMPLE
+    ) == "Hi <nonexistent.key>, hello Jarvis."
+
+def test_generate_hermes_soul_writes_rendered_soul(tmp_path):
+    os.environ["EVERSTONE_DATA_DIR"] = str(tmp_path)
+    try:
+        configure.generate_hermes_soul(SAMPLE)
+        soul = (tmp_path / "hermes" / "SOUL.md").read_text()
+        assert "I am Jarvis" in soul
+        assert "Michael's hub" in soul
+        assert "Vault: myvault" in soul
+        assert "<" not in soul  # no unrendered tokens
+    finally:
+        del os.environ["EVERSTONE_DATA_DIR"]
+
+def test_generate_hermes_soul_overwrites_each_time(tmp_path):
+    os.environ["EVERSTONE_DATA_DIR"] = str(tmp_path)
+    try:
+        (tmp_path / "hermes").mkdir()
+        (tmp_path / "hermes" / "SOUL.md").write_text("stale custom content")
+        configure.generate_hermes_soul(SAMPLE)
+        # always-overwrite: stale content gone, new render in place
+        assert "stale custom content" not in (tmp_path / "hermes" / "SOUL.md").read_text()
+        assert "I am Jarvis" in (tmp_path / "hermes" / "SOUL.md").read_text()
+    finally:
+        del os.environ["EVERSTONE_DATA_DIR"]
 
 def test_generate_setupuri_script(tmp_path):
     out = tmp_path / "setupuri"
