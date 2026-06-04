@@ -57,6 +57,11 @@ def test_generate_hermes_env(tmp_path):
         assert (envdir / "HERMES_MODEL").read_text() == "openai/gpt-5-codex"
         assert (envdir / "TELEGRAM_BOT_TOKEN").read_text() == "TKN"
         assert (envdir / "TELEGRAM_OWNER_USER_ID").read_text() == "111"
+        assert (envdir / "TELEGRAM_ALLOWED_USERS").read_text() == "111"
         assert (envdir / "EVERSTONE_GROUP_TOOLS").read_text() == "everstone_tasks"
+        # sourceable env file for setup_hermes
+        env_file = (tmp_path / "hermes" / "env").read_text()
+        assert "export TELEGRAM_ALLOWED_USERS=111" in env_file
+        assert "export HERMES_MODEL=openai/gpt-5-codex" in env_file
     finally:
         del os.environ["EVERSTONE_CONFIG_DIR"]

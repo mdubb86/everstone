@@ -8,6 +8,7 @@ and generates all service config files.
 
 import json
 import os
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -94,10 +95,13 @@ def generate_setupuri_script(config: dict) -> None:
 
 
 def generate_radicale_config(config: dict) -> None:
-    """Generate radicale htpasswd file from config."""
+    """Copy radicale config template and write htpasswd from config."""
     config_dir = _config_dir()
     output_dir = config_dir / "radicale"
     output_dir.mkdir(parents=True, exist_ok=True)
+    template_path = DEFAULTS_CONFIG_DIR / "radicale" / "config"
+    if template_path.exists():
+        shutil.copy(template_path, output_dir / "config")
     htpasswd_path = output_dir / "htpasswd"
     htpasswd_path.write_text(f"{config['caldav']['user']}:{config['caldav']['password']}\n")
 
@@ -131,11 +135,13 @@ def generate_livesync_bridge_config(config: dict) -> None:
 
 
 def generate_hermes_env(config: dict) -> None:
-    """Generate s6 envdir files for hermes from config."""
+    """Generate s6 envdir AND sourceable env file for hermes from config."""
     config_dir = _config_dir()
-    envdir = config_dir / "hermes" / "envdir"
+    hermes_dir = config_dir / "hermes"
+    envdir = hermes_dir / "envdir"
     envdir.mkdir(parents=True, exist_ok=True)
 
+    owner_id = str(config["telegram"]["owner_user_id"])
     env_vars = {
         "EVERSTONE_CALDAV_URL": "http://localhost:5232",
         "EVERSTONE_CALDAV_USER": config["caldav"]["user"],
@@ -144,11 +150,17 @@ def generate_hermes_env(config: dict) -> None:
         "EVERSTONE_AGENT_NAME": config["instance"]["name"],
         "HERMES_MODEL": config["hermes"]["model"],
         "TELEGRAM_BOT_TOKEN": config["telegram"]["bot_token"],
-        "TELEGRAM_OWNER_USER_ID": str(config["telegram"]["owner_user_id"]),
+        "TELEGRAM_OWNER_USER_ID": owner_id,
+        "TELEGRAM_ALLOWED_USERS": owner_id,
         "EVERSTONE_GROUP_TOOLS": "everstone_tasks",
     }
     for name, value in env_vars.items():
         (envdir / name).write_text(value)
+
+    env_file = hermes_dir / "env"
+    env_file.write_text(
+        "\n".join(f'export {k}={shlex.quote(v)}' for k, v in env_vars.items()) + "\n"
+    )
 
 
 def setup_data_directories() -> None:

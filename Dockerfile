@@ -90,8 +90,18 @@ COPY access_hook /opt/access_hook
 RUN pip install --break-system-packages /opt/access_hook
 
 # livesync-bridge (requires github.com access at build time)
-RUN git clone --depth 1 https://github.com/vrtmrz/livesync-bridge /opt/livesync-bridge || \
+# --recurse-submodules: bridge embeds `lib/` as a submodule (main.ts imports from it)
+RUN git clone --depth 1 --recurse-submodules --shallow-submodules \
+        https://github.com/vrtmrz/livesync-bridge /opt/livesync-bridge || \
     echo "[livesync-bridge] clone failed — /opt/livesync-bridge absent; install manually at runtime"
+
+# Pre-cache deno deps (jsr.io + npm) so the bridge starts offline-tolerantly
+RUN if [ -f /opt/livesync-bridge/main.ts ]; then \
+        cd /opt/livesync-bridge && \
+        deno install --node-modules-dir=auto --entrypoint main.ts 2>&1 | tail -20 || \
+        deno cache --node-modules-dir=auto main.ts 2>&1 | tail -20 || \
+        echo "[livesync-bridge] deno dep pre-cache failed — will retry at runtime"; \
+    fi
 
 COPY scripts /scripts
 COPY services /services

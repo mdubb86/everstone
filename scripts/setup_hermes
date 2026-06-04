@@ -5,7 +5,7 @@ export HERMES_HOME=/opt/data/hermes
 hermes config set model "$HERMES_MODEL"
 hermes config set terminal.backend local
 hermes config set TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
-hermes config set messaging.telegram.allowed_users "$TELEGRAM_OWNER_USER_ID"
+hermes config set messaging.telegram.allowed_users "$TELEGRAM_ALLOWED_USERS"
 hermes config set messaging.telegram.unknown_user_action ignore
 hermes config set messaging.telegram.group_trigger mentions_only
 python3 /scripts/merge_hermes_mcp.py
