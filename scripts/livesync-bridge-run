@@ -25,8 +25,13 @@ sleep 2
 cd /opt/livesync-bridge
 deno run -A --node-modules-dir=auto main.ts 2>&1 | awk '
     { print; fflush() }
-    /"error": "not_found"/ && /"reason": "Database does not exist"/ {
-        print "[bridge-runner] FATAL: database disappeared — exiting for s6 restart"
+    # Either of these is unrecoverable — the bridge logs it then stops syncing.
+    # NOTE: the not_found JSON is pretty-printed across many lines, so
+    # multi-line patterns are unreliable. ChangeManager Error is a single
+    # bridge-emitted log line that always precedes the JSON dump.
+    /ChangeManager Error watching changes/ ||
+    /"reason": "Database does not exist"/ {
+        print "[bridge-runner] FATAL: bridge lost the changes feed — exiting for s6 restart"
         exit 1
     }
 '
