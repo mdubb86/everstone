@@ -18,6 +18,10 @@ dist/
 # Local runtimes / data
 .pyenv/
 radfire_data/
+.everstone-data/
+
+# User config (template lives in config.example.yaml)
+/config.yaml
 
 # OS
 .DS_Store
