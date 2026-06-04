@@ -46,9 +46,10 @@ stop:
 status:
     docker exec {{DEV_NAME}} s6-rc -a list
 
-# One-screen LiveSync diagnostic: container, CouchDB, vault, bridge, activity
+# One-screen LiveSync diagnostic. Runs sync-state inside the container.
+# (Operator equivalent: `docker exec everstone sync-state`)
 sync-state:
-    @bash scripts/sync-state
+    @docker exec {{DEV_NAME}} sync-state
 
 # Generate an Obsidian LiveSync setup URI for this server's public_url
 setup-livesync:
