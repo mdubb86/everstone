@@ -73,6 +73,18 @@ clean: down
     docker rmi {{IMAGE}} 2>/dev/null || true
     @echo "Data dir preserved at {{DATA_DIR}}"
 
+# DESTRUCTIVE: stop container + wipe data dir. Notes, tasks, CouchDB — gone.
+# After this, `just dev` boots a fresh empty container. You also need to delete
+# the matching vault folder on every Mac/phone that was synced.
+reset: down
+    @echo ""
+    @echo "  This will delete {{DATA_DIR}} (notes, tasks, CouchDB)."
+    @echo "  Press Ctrl-C within 5 seconds to abort."
+    @echo ""
+    @sleep 5
+    rm -rf {{DATA_DIR}}
+    @echo "  Wiped. Next: 'just dev' to start fresh."
+
 # Internal: bail out unless config.yaml exists
 _check-config:
     @test -f {{CONFIG}} || (echo "Missing config.yaml at {{CONFIG}}." && \

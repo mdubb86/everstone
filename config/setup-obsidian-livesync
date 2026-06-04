@@ -70,8 +70,10 @@ async function main() {
         batches_limit: 50,
         useHistory: true,
         disableRequestURI: true,
-        customChunkSize: 60,        // Config Doctor: V3 Rabin-Karp recommended default
-        usePluginSyncV2: true,      // Per-file-saved customization sync (modern default)
+        customChunkSize: 60,                       // Config Doctor's recommended default
+        usePluginSyncV2: true,                     // Per-file-saved customization sync
+        chunkSplitterVersion: "v3-rabin-karp",     // V3: Fine deduplication (current best)
+        syncMode: "LIVESYNC",                      // Real-time bidirectional; matches our use case
         syncAfterMerge: false,
         concurrencyOfReadChunksOnline: 100,
         minimumIntervalOfReadChunksOnline: 100,
