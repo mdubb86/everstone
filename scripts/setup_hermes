@@ -8,6 +8,12 @@ export HERMES_HOME=/opt/data/hermes
 # /opt/data/hermes/SOUL.md directly.
 
 hermes config set model "$HERMES_MODEL"
+# Derive provider from the model's slash-prefix (e.g. "openai-codex/gpt-5-codex"
+# → "openai-codex"). Hermes uses `provider` to pick credentials from auth.json;
+# without it, the gateway falls through to "no inference provider configured".
+case "$HERMES_MODEL" in
+    */*) hermes config set provider "${HERMES_MODEL%%/*}" ;;
+esac
 hermes config set terminal.backend local
 hermes config set TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
 hermes config set messaging.telegram.allowed_users "$TELEGRAM_ALLOWED_USERS"

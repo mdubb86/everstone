@@ -82,8 +82,10 @@ COPY --from=caddy /out/caddy /opt/bin/caddy
 COPY --from=couchdb /out /opt/bin/couchdb
 COPY --from=engraph /usr/local/bin/engraph /usr/local/bin/engraph
 
-# Python services
-RUN pip install --break-system-packages "radicale>=3.2" "hermes-agent"
+# Python services. python-telegram-bot is required for hermes's Telegram
+# adapter — without it, the gateway logs "No adapter available for telegram"
+# and the bot never connects to api.telegram.org.
+RUN pip install --break-system-packages "radicale>=3.2" "hermes-agent" "python-telegram-bot>=21"
 COPY everstone_tasks /opt/everstone_tasks
 RUN pip install --break-system-packages /opt/everstone_tasks
 COPY access_hook /opt/access_hook
