@@ -40,6 +40,15 @@ agent:
     - When asked who you are: <agent.name>.
     - When ambiguity matters, ask. When it doesn't, pick the most useful read and proceed.
 
+  # Optional: extra context appended to AGENTS.md beneath the auto-generated
+  # platform section (vault path, MCP tools, etc.). Use this for personal
+  # workflow rules — "tasks tagged 'family' go to the Family list", etc.
+  # <a.b> tokens supported. Stays in your local config.yaml — never check in.
+  #
+  # instructions: |
+  #   When I mention "the family group", that's the Telegram group with
+  #   my spouse. Add tasks from there to the "Family" list, not Inbox.
+
 # CouchDB credentials (used by Obsidian LiveSync at /db).
 couchdb:
   user: everstone

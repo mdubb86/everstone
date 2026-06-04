@@ -18,7 +18,11 @@
       "required": ["name", "soul"],
       "properties": {
         "name": { "type": "string", "minLength": 1, "description": "Agent's name. Substituted as <agent.name> in agent.soul." },
-        "soul": { "type": "string", "minLength": 1, "description": "SOUL.md template. <a.b> tokens are substituted from the config tree." }
+        "soul": { "type": "string", "minLength": 1, "description": "SOUL.md template. <a.b> tokens are substituted from the config tree." },
+        "instructions": {
+          "type": ["string", "null"],
+          "description": "Optional operator-authored section appended to AGENTS.md beneath the auto-generated platform section. <a.b> tokens supported. Stays on the operator's local config.yaml — never check in."
+        }
       }
     },
     "couchdb": {

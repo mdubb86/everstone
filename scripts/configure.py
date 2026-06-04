@@ -141,6 +141,76 @@ def generate_hermes_soul(config: dict) -> None:
     (hermes_dir / "SOUL.md").write_text(rendered)
 
 
+# Platform section of AGENTS.md. Container-architectural truth — not
+# operator-overridable. `<...>` tokens get pre-substituted at render time
+# so the resulting file reads cleanly without templating noise.
+_AGENTS_PLATFORM_TEMPLATE = """\
+## EverStone platform
+
+You are running inside EverStone, <name>'s self-hosted personal hub.
+Everything below is fact about your environment — not stylistic guidance
+(that lives in SOUL.md).
+
+### Notes — Obsidian vault
+
+- Plaintext markdown files live at `/opt/data/vault/`.
+- Read and edit them directly with the file tools. Every change there
+  propagates to <name>'s Obsidian within ~1s via the LiveSync bridge.
+- Do not search outside `/opt/data/vault/` for notes.
+- The Obsidian vault name is `<obsidian.vault_name>`. When you create
+  task deeplinks, use:
+    `obsidian://open?vault=<obsidian.vault_name>&file=<url-encoded-path>`
+- Semantic search across notes: call the `engraph` MCP tool. Fall back to
+  exact-string matching only when you need a literal occurrence.
+
+### Tasks — CalDAV
+
+- Call the `everstone_tasks` MCP tool for add / list / complete / link.
+  Do not shell out to CalDAV directly.
+- The equivalent CLI is `everstone-tasks` (e.g.
+  `everstone-tasks add "Buy milk" --list inbox --note "Inbox.md"`).
+- Tasks can deeplink to notes using the obsidian:// URL above.
+
+### Who is who
+
+- The user's name is <name>. Address them by name when natural;
+  don't force it.
+
+### Chat-context constraints
+
+- In <name>'s private DM you have your full configured tool set.
+- In any group chat the tool layer enforces tasks-only — only
+  `everstone_tasks` is callable. Other tool calls fail at the runtime
+  layer; don't apologize for the restriction, it's structural.
+"""
+
+
+def generate_agents_md(config: dict) -> None:
+    """Render /opt/data/AGENTS.md from platform truth + agent.instructions.
+
+    The file is in two sections:
+      ## EverStone platform           — auto-generated, always present
+      ## Custom instructions          — operator-authored, optional
+
+    Always overwrites: config.yaml is the source of truth. Manual edits
+    to AGENTS.md are lost on next container restart. To change the file,
+    edit `agent.instructions` in config.yaml.
+
+    Hermes finds this file by scanning TERMINAL_CWD for AGENTS.md, so the
+    hermes envdir also exports HERMES_TERMINAL_CWD=/opt/data (handled in
+    generate_hermes_env).
+    """
+    data_dir = _data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    platform = render_soul_template(_AGENTS_PLATFORM_TEMPLATE, config)
+    instructions = (config.get("agent") or {}).get("instructions")
+    parts = [platform.rstrip()]
+    if isinstance(instructions, str) and instructions.strip():
+        rendered_instructions = render_soul_template(instructions, config)
+        parts.append("## Custom instructions\n\n" + rendered_instructions.strip())
+    (data_dir / "AGENTS.md").write_text("\n\n".join(parts) + "\n")
+
+
 def generate_radicale_config(config: dict) -> None:
     """Copy radicale config template and write htpasswd from config."""
     config_dir = _config_dir()
@@ -212,6 +282,10 @@ def generate_hermes_env(config: dict) -> None:
         "TELEGRAM_OWNER_USER_ID": owner_id,
         "TELEGRAM_ALLOWED_USERS": owner_id,
         "EVERSTONE_GROUP_TOOLS": "everstone_tasks",
+        # Hermes scans TERMINAL_CWD for AGENTS.md / .cursorrules / context
+        # files. /opt/data is where configure.py drops the generated
+        # AGENTS.md, so the agent picks it up automatically on startup.
+        "HERMES_TERMINAL_CWD": "/opt/data",
     }
     for name, value in env_vars.items():
         (envdir / name).write_text(value)
@@ -302,6 +376,9 @@ def main():
 
     print("[configure] Rendering Hermes SOUL.md from config.agent.soul")
     generate_hermes_soul(config)
+
+    print("[configure] Rendering AGENTS.md from platform + config.agent.instructions")
+    generate_agents_md(config)
 
     print("[configure] Configuration complete")
 

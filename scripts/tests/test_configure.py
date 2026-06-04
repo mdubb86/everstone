@@ -74,6 +74,50 @@ def test_generate_hermes_soul_writes_rendered_soul(tmp_path):
     finally:
         del os.environ["EVERSTONE_DATA_DIR"]
 
+def test_generate_agents_md_platform_only(tmp_path):
+    os.environ["EVERSTONE_DATA_DIR"] = str(tmp_path)
+    try:
+        sample = {**SAMPLE, "agent": {**SAMPLE["agent"], "instructions": None}}
+        configure.generate_agents_md(sample)
+        body = (tmp_path / "AGENTS.md").read_text()
+        # Tokens pre-substituted at render time.
+        assert "<name>" not in body and "<obsidian.vault_name>" not in body
+        # Concrete platform facts present.
+        assert "Michael's self-hosted personal hub" in body
+        assert "/opt/data/vault/" in body
+        assert "obsidian://open?vault=myvault" in body
+        assert "everstone_tasks" in body
+        assert "everstone-tasks" in body
+        # No operator section if instructions is null.
+        assert "## Custom instructions" not in body
+    finally:
+        del os.environ["EVERSTONE_DATA_DIR"]
+
+def test_generate_agents_md_appends_instructions(tmp_path):
+    os.environ["EVERSTONE_DATA_DIR"] = str(tmp_path)
+    try:
+        sample = {**SAMPLE, "agent": {**SAMPLE["agent"],
+            "instructions": "Tasks from <name>'s family chat go to the Family list."}}
+        configure.generate_agents_md(sample)
+        body = (tmp_path / "AGENTS.md").read_text()
+        # Tokens substituted inside instructions too (same render pass).
+        assert "Michael's family chat" in body
+        # Order: platform first, then custom instructions header.
+        platform_idx = body.index("## EverStone platform")
+        custom_idx = body.index("## Custom instructions")
+        assert platform_idx < custom_idx
+    finally:
+        del os.environ["EVERSTONE_DATA_DIR"]
+
+def test_generate_hermes_env_sets_terminal_cwd(tmp_path):
+    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
+    try:
+        configure.generate_hermes_env(SAMPLE)
+        envdir = tmp_path / "hermes" / "envdir"
+        assert (envdir / "HERMES_TERMINAL_CWD").read_text() == "/opt/data"
+    finally:
+        del os.environ["EVERSTONE_CONFIG_DIR"]
+
 def test_generate_hermes_soul_overwrites_each_time(tmp_path):
     os.environ["EVERSTONE_DATA_DIR"] = str(tmp_path)
     try:
