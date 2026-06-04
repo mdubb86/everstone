@@ -55,9 +55,13 @@ sync-state:
 setup-livesync:
     docker exec -it {{DEV_NAME}} setup-obsidian-livesync
 
-# Interactive Hermes Codex OAuth flow (one-time agent auth)
+# Interactive Hermes OpenAI-Codex OAuth flow (one-time agent auth).
+# --manual-paste: skip the loopback callback listener (the VM has no browser
+# anyway, so you'll authorize in your Mac browser and paste the failed
+# redirect URL back here).
 hermes-auth:
-    docker exec -it -e HERMES_HOME=/opt/data/hermes {{DEV_NAME}} hermes auth add codex-oauth
+    docker exec -it -e HERMES_HOME=/opt/data/hermes {{DEV_NAME}} \
+        hermes auth add openai-codex --type oauth --manual-paste
 
 # Remove the dev container (preserves data dir and image)
 down:
