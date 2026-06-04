@@ -71,7 +71,11 @@ RUN apk update && apk add --no-cache \
     deno \
     jq \
     py3-yaml \
-    py3-jsonschema && \
+    py3-jsonschema \
+    bash \
+    ripgrep \
+    findutils \
+    coreutils && \
     ARCH=$( [ "$TARGETARCH" = "arm64" ] && echo aarch64 || echo x86_64 ) && \
     curl -fsSL "${S6_OVERLAY_BASE_URL}/s6-overlay-${ARCH}.tar.xz" | tar xJ -C / && \
     curl -fsSL "${S6_OVERLAY_BASE_URL}/s6-overlay-noarch.tar.xz" | tar xJ -C / && \

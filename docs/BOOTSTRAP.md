@@ -271,3 +271,25 @@ Radicale collections, Hermes state and previous backups across upgrades.
 * Access hook source: `access_hook/everstone_access_hook.py`
 * Config schema: `config/schema.json`
 * Config defaults: `config/defaults.yaml`
+
+## Known limitations
+
+### Telegram slash-command menu shows Hermes built-ins
+
+When you open the bot in Telegram, the autocomplete menu (`/`) shows
+~30 Hermes-internal slash commands (`/help`, `/new`, `/stop`, `/status`,
+`/resume`, `/sessions`, `/model`, …). These come from Hermes itself and
+its `set_my_commands` registration call cannot currently be disabled via
+config — the call site in `gateway/platforms/telegram.py` is unconditional.
+
+**Impact:** UX clutter only. The commands are still functional (type `/new`
+in Telegram and a fresh session does start). EverStone's own `telegram.commands`
+config value gets overwritten by Hermes a few seconds later at gateway boot.
+
+**Workarounds (none deployed):**
+- Upstream PR to add `messaging.telegram.publish_menu_commands` config
+- Post-hermes-start oneshot that re-calls `setMyCommands` after Hermes registers
+- Live with it
+
+**Status:** Won't-fix for now. Revisit if upstream adds a knob or the menu
+becomes a real friction point.
