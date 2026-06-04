@@ -81,15 +81,15 @@ def generate_caddy_config(config: dict) -> None:
     shutil.copy(template_path, output_dir / "Caddyfile")
 
 
-def generate_setupuri_script(config: dict) -> None:
-    """Generate setupuri script with injected config values.
+def generate_setup_livesync_script(config: dict) -> None:
+    """Generate the setup-obsidian-livesync script with injected values.
 
     Bakes the live CouchDB credentials AND the LiveSync passphrase into the
     template at container-startup time, so running the script needs no prompts:
-        docker exec everstone setupuri https://test.everstone.waage.haus
+        docker exec everstone setup-obsidian-livesync
     """
-    template_path = DEFAULTS_CONFIG_DIR / "setupuri"
-    output_path = Path(os.environ.get("EVERSTONE_SETUPURI_PATH", "/scripts/setupuri"))
+    template_path = DEFAULTS_CONFIG_DIR / "setup-obsidian-livesync"
+    output_path = Path(os.environ.get("EVERSTONE_SETUP_LIVESYNC_PATH", "/scripts/setup-obsidian-livesync"))
 
     template = template_path.read_text()
     result = template.replace("{{COUCHDB_USER}}", config["couchdb"]["user"])
@@ -288,8 +288,8 @@ def main():
     print("[configure] Generating Caddy config")
     generate_caddy_config(config)
 
-    print("[configure] Generating setupuri script")
-    generate_setupuri_script(config)
+    print("[configure] Generating setup-obsidian-livesync script")
+    generate_setup_livesync_script(config)
 
     print("[configure] Generating radicale config")
     generate_radicale_config(config)

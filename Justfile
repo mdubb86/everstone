@@ -47,8 +47,8 @@ status:
     docker exec {{DEV_NAME}} s6-rc -a list
 
 # Generate an Obsidian LiveSync setup URI for this server's public_url
-setupuri:
-    docker exec -it {{DEV_NAME}} setupuri
+setup-livesync:
+    docker exec -it {{DEV_NAME}} setup-obsidian-livesync
 
 # Interactive Hermes Codex OAuth flow (one-time agent auth)
 hermes-auth:

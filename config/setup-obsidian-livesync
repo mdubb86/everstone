@@ -14,7 +14,7 @@ export DB_NAME='{{COUCHDB_DATABASE}}'
 export LIVESYNC_PASSPHRASE='{{LIVESYNC_PASSPHRASE}}'
 export COUCHDB_URI='{{PUBLIC_URL}}/db'
 
-ts_file=$(mktemp /tmp/setupuri.XXXXXX.ts)
+ts_file="/tmp/setupuri.$$.ts"
 trap 'rm -f "$ts_file"' EXIT
 
 cat > "$ts_file" <<'TYPESCRIPT_EOF'

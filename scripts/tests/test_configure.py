@@ -86,13 +86,13 @@ def test_generate_hermes_soul_overwrites_each_time(tmp_path):
     finally:
         del os.environ["EVERSTONE_DATA_DIR"]
 
-def test_generate_setupuri_script(tmp_path):
-    out = tmp_path / "setupuri"
-    os.environ["EVERSTONE_SETUPURI_PATH"] = str(out)
+def test_generate_setup_livesync_script(tmp_path):
+    out = tmp_path / "setup-obsidian-livesync"
+    os.environ["EVERSTONE_SETUP_LIVESYNC_PATH"] = str(out)
     saved_defaults = configure.DEFAULTS_CONFIG_DIR
     configure.DEFAULTS_CONFIG_DIR = ROOT / "config"
     try:
-        configure.generate_setupuri_script(SAMPLE)
+        configure.generate_setup_livesync_script(SAMPLE)
         body = out.read_text()
         # all substitutions made (no template tokens left behind)
         for tok in ("{{COUCHDB_USER}}", "{{COUCHDB_PASSWORD}}", "{{COUCHDB_DATABASE}}",
@@ -105,7 +105,7 @@ def test_generate_setupuri_script(tmp_path):
         # executable
         assert out.stat().st_mode & 0o100
     finally:
-        del os.environ["EVERSTONE_SETUPURI_PATH"]
+        del os.environ["EVERSTONE_SETUP_LIVESYNC_PATH"]
         configure.DEFAULTS_CONFIG_DIR = saved_defaults
 
 
