@@ -1,34 +1,95 @@
-"""Hermes pre_tool_call plugin: tasks-only in group chats; all tools in owner DM.
+"""Hermes pre_tool_call plugin: per-chat tool gating for EverStone.
 
 Install: pip install /opt/access_hook
 Entry point: hermes_plugins = everstone_access_hook:HermesPlugin
+
+Policy (current, post CLI-first refactor):
+
+- DM (owner's private chat) — no restriction; you trust yourself with
+  your own VM and the assistant persona is shaped via SOUL.md/AGENTS.md
+  rather than hard ACL.
+- Groups — only the `everstone-tasks` CLI is callable, invoked via the
+  terminal/shell tool. We check tool_name AND argv[0] AND reject shell
+  composition (pipes, &&, ;) to keep group reach surgical.
+- Empty / unparseable chat key — fail closed.
+
+The argv check is shallow on purpose: we want a simple, auditable rule.
+If `EVERSTONE_GROUP_BINARIES` is set in env we use that allowlist
+instead of the default {"everstone-tasks"}.
 """
+
+from __future__ import annotations
+
 import os
-from typing import Optional
+import shlex
+from typing import Any, Optional
 
 _BLOCK = {"action": "block", "message": "Tool not permitted outside a private DM."}
 
-def _allowed_group_tools() -> set:
-    return {t.strip() for t in os.environ.get("EVERSTONE_GROUP_TOOLS", "everstone_tasks").split(",") if t.strip()}
+# Tool names that mean "run a shell command." Hermes's primary one is
+# "terminal"; we accept aliases for safety in case future versions rename it.
+_SHELL_TOOL_NAMES = {"terminal", "shell", "bash"}
+
+# Shell composition operators we reject in group chats. The agent in a group
+# should only run a single discrete `everstone-tasks ...` invocation.
+_GROUP_FORBIDDEN_SUBSTRINGS = ("|", ";", "&&", "||", "`", "$(", ">", "<", "\n")
+
 
 def _chat_type() -> Optional[str]:
-    """Parse chat_type from HERMES_SESSION_KEY = agent:main:{platform}:{chat_type}:{chat_id}."""
+    """Parse chat_type from HERMES_SESSION_KEY (= agent:main:<platform>:<chat_type>:<chat_id>)."""
     key = os.environ.get("HERMES_SESSION_KEY", "")
     parts = key.split(":") if key else []
     if len(parts) >= 5 and parts[0] == "agent":
         return parts[3]
     return None
 
-def policy(tool_name: str) -> Optional[dict]:
-    """Return None to allow, or a block dict to deny."""
+
+def _group_allowed_binaries() -> set:
+    raw = os.environ.get("EVERSTONE_GROUP_BINARIES", "everstone-tasks")
+    return {b.strip() for b in raw.split(",") if b.strip()}
+
+
+def _extract_argv0(command: str) -> Optional[str]:
+    """Return the leading binary name in a shell command, or None if unparseable."""
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    return argv[0] if argv else None
+
+
+def policy(tool_name: str, tool_input: Optional[dict] = None) -> Optional[dict]:
+    """Return None to allow the call, or a block dict to deny."""
     ctype = _chat_type()
+
+    # Owner DM — no restriction. Persona/AGENTS guide the agent's behavior.
     if ctype == "dm":
         return None
-    if tool_name in _allowed_group_tools():
-        return None
-    return _BLOCK
+
+    # Anywhere else (group, supergroup, channel, unknown, missing) — fail closed
+    # unless the call is a single `everstone-tasks ...` shell invocation.
+    if tool_name not in _SHELL_TOOL_NAMES:
+        return _BLOCK
+
+    command = ""
+    if isinstance(tool_input, dict):
+        command = str(tool_input.get("command", "")).strip()
+    if not command:
+        return _BLOCK
+
+    # No shell composition in groups — sharp, single binary.
+    if any(op in command for op in _GROUP_FORBIDDEN_SUBSTRINGS):
+        return _BLOCK
+
+    argv0 = _extract_argv0(command)
+    if argv0 is None or argv0 not in _group_allowed_binaries():
+        return _BLOCK
+
+    return None
+
 
 class HermesPlugin:
     """Hermes plugin entry-point class."""
-    def pre_tool_call(self, tool_name: str, **kwargs):
-        return policy(tool_name)
+
+    def pre_tool_call(self, tool_name: str, **kwargs: Any):
+        return policy(tool_name, kwargs.get("args") or kwargs.get("tool_input"))

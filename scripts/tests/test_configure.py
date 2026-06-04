@@ -12,7 +12,7 @@ SAMPLE = {
   "caldav": {"user":"cu","password":"cp"},
   "livesync": {"passphrase":"ph"},
   "obsidian": {"vault_name":"myvault"},
-  "telegram": {"owner_user_id":111,"bot_token":"TKN"}, "hermes": {"model":"openai/gpt-5-codex"},
+  "telegram": {"owner_user_id":111,"bot_token":"TKN","commands":[]}, "hermes": {"model":"openai/gpt-5-codex"},
 }
 
 def test_deep_merge():
@@ -86,8 +86,9 @@ def test_generate_agents_md_platform_only(tmp_path):
         assert "Michael's self-hosted personal hub" in body
         assert "/opt/data/vault/" in body
         assert "obsidian://open?vault=myvault" in body
-        assert "everstone_tasks" in body
         assert "everstone-tasks" in body
+        # No more MCP reference — CLI is the whole interface for tasks.
+        assert "everstone_tasks" not in body
         # No operator section if instructions is null.
         assert "## Custom instructions" not in body
     finally:
@@ -115,6 +116,32 @@ def test_generate_hermes_env_sets_terminal_cwd(tmp_path):
         configure.generate_hermes_env(SAMPLE)
         envdir = tmp_path / "hermes" / "envdir"
         assert (envdir / "HERMES_TERMINAL_CWD").read_text() == "/opt/data"
+    finally:
+        del os.environ["EVERSTONE_CONFIG_DIR"]
+
+def test_generate_hermes_env_telegram_commands_default_empty(tmp_path):
+    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
+    try:
+        sample = {**SAMPLE, "telegram": {**SAMPLE["telegram"], "commands": []}}
+        configure.generate_hermes_env(sample)
+        envdir = tmp_path / "hermes" / "envdir"
+        assert (envdir / "TELEGRAM_COMMANDS").read_text() == "[]"
+    finally:
+        del os.environ["EVERSTONE_CONFIG_DIR"]
+
+def test_generate_hermes_env_telegram_commands_translated(tmp_path):
+    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
+    try:
+        sample = {**SAMPLE, "telegram": {**SAMPLE["telegram"], "commands": [
+            {"cmd": "tasks", "desc": "Show open tasks"},
+            {"cmd": "today", "desc": "What's on for today"},
+        ]}}
+        configure.generate_hermes_env(sample)
+        body = (tmp_path / "hermes" / "envdir" / "TELEGRAM_COMMANDS").read_text()
+        # Our cmd/desc → Bot API command/description
+        assert '"command": "tasks"' in body
+        assert '"description": "Show open tasks"' in body
+        assert '"command": "today"' in body
     finally:
         del os.environ["EVERSTONE_CONFIG_DIR"]
 
@@ -167,7 +194,7 @@ def test_generate_hermes_env(tmp_path):
         assert (envdir / "TELEGRAM_BOT_TOKEN").read_text() == "TKN"
         assert (envdir / "TELEGRAM_OWNER_USER_ID").read_text() == "111"
         assert (envdir / "TELEGRAM_ALLOWED_USERS").read_text() == "111"
-        assert (envdir / "EVERSTONE_GROUP_TOOLS").read_text() == "everstone_tasks"
+        assert (envdir / "EVERSTONE_GROUP_BINARIES").read_text() == "everstone-tasks"
         # sourceable env file for setup_hermes
         env_file = (tmp_path / "hermes" / "env").read_text()
         assert "export TELEGRAM_ALLOWED_USERS=111" in env_file

@@ -34,10 +34,13 @@ agent:
     - Sycophancy and "great question" / "happy to help" filler.
     - Hype language and unearned enthusiasm.
     - Overexplaining things <name> clearly already knows.
+    - Listing your tools or capabilities unsolicited.
 
     # Defaults
 
     - When asked who you are: <agent.name>.
+    - When greeted ("hi", "/start", etc.), reply briefly (e.g. "Hey <name>,
+      what's up?") and wait for the actual request. Don't dump capabilities.
     - When ambiguity matters, ask. When it doesn't, pick the most useful read and proceed.
 
   # Optional: extra context appended to AGENTS.md beneath the auto-generated
@@ -70,9 +73,17 @@ obsidian:
   vault_name: Everstone
 
 # Telegram bot. Get bot_token from @BotFather; owner_user_id from @userinfobot.
+#
+# `commands` registers slash-command autocomplete (via setMyCommands). Default
+# is [] — no autocomplete clutter, you just chat with the agent. Add entries
+# only if you specifically want them in the slash menu.
 telegram:
   owner_user_id: 123456789         # integer, your Telegram user id
   bot_token: 1234567890:CHANGE_ME  # from BotFather
+  commands: []
+  # commands:
+  #   - {cmd: tasks, desc: "Show open tasks"}
+  #   - {cmd: today, desc: "What's on for today"}
 
 # LLM model the agent uses. Format: <provider>/<model-name>.
 #

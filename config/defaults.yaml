@@ -5,5 +5,5 @@ couchdb: {user: everstone, password: null, database: everstone}
 caldav: {user: everstone, password: null}
 livesync: {passphrase: null}
 obsidian: {vault_name: Everstone}
-telegram: {owner_user_id: null, bot_token: null}
+telegram: {owner_user_id: null, bot_token: null, commands: []}
 hermes: {model: null}

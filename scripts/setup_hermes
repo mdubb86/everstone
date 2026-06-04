@@ -20,4 +20,17 @@ hermes config set messaging.telegram.allowed_users "$TELEGRAM_ALLOWED_USERS"
 hermes config set messaging.telegram.unknown_user_action ignore
 hermes config set messaging.telegram.group_trigger mentions_only
 python3 /scripts/merge_hermes_mcp.py
-echo "[setup_hermes] applied. Run 'hermes auth add codex-oauth' once (see docs/BOOTSTRAP.md)."
+
+# Register slash-command autocomplete with Telegram (setMyCommands).
+# TELEGRAM_COMMANDS is a JSON array of {command, description} objects,
+# already in the Bot API's expected shape. Default is "[]" — that's
+# fine: passing an empty array CLEARS any previous commands so the
+# bot starts with no autocomplete clutter.
+curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMyCommands" \
+    -H "Content-Type: application/json" \
+    -d "{\"commands\": ${TELEGRAM_COMMANDS}}" \
+    --max-time 10 >/dev/null \
+    && echo "[setup_hermes] Telegram slash-commands set (count: $(echo "$TELEGRAM_COMMANDS" | grep -o '"command"' | wc -l))." \
+    || echo "[setup_hermes] WARN: setMyCommands call failed (network? wrong token?). Bot still functional."
+
+echo "[setup_hermes] applied. Run 'just hermes-auth' once (see docs/BOOTSTRAP.md)."

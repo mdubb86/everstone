@@ -154,21 +154,26 @@ Everything below is fact about your environment — not stylistic guidance
 ### Notes — Obsidian vault
 
 - Plaintext markdown files live at `/opt/data/vault/`.
-- Read and edit them directly with the file tools. Every change there
-  propagates to <name>'s Obsidian within ~1s via the LiveSync bridge.
-- Do not search outside `/opt/data/vault/` for notes.
+- Read with `read_file` (or `cat`), edit with `write_file` / `Edit`.
+  Every change there propagates to <name>'s Obsidian within ~1s via
+  the LiveSync bridge.
+- Search with `grep -rni "<pattern>" /opt/data/vault/` or `find` for
+  filename matches. Don't search outside `/opt/data/vault/`.
 - The Obsidian vault name is `<obsidian.vault_name>`. When you create
   task deeplinks, use:
     `obsidian://open?vault=<obsidian.vault_name>&file=<url-encoded-path>`
-- Semantic search across notes: call the `engraph` MCP tool. Fall back to
-  exact-string matching only when you need a literal occurrence.
 
 ### Tasks — CalDAV
 
-- Call the `everstone_tasks` MCP tool for add / list / complete / link.
-  Do not shell out to CalDAV directly.
-- The equivalent CLI is `everstone-tasks` (e.g.
-  `everstone-tasks add "Buy milk" --list inbox --note "Inbox.md"`).
+- Use the `everstone-tasks` CLI for all task operations. Invoke it via
+  the terminal/shell tool. There is no MCP for tasks — the CLI is the
+  whole interface.
+- Examples:
+    everstone-tasks add "Buy milk" --list inbox
+    everstone-tasks add "Review Q4 plan" --list inbox --note "Projects/Q4.md"
+    everstone-tasks list --list inbox --json
+    everstone-tasks done <uid> --list inbox
+- Run `everstone-tasks --help` for the full surface.
 - Tasks can deeplink to notes using the obsidian:// URL above.
 
 ### Who is who
@@ -179,9 +184,23 @@ Everything below is fact about your environment — not stylistic guidance
 ### Chat-context constraints
 
 - In <name>'s private DM you have your full configured tool set.
-- In any group chat the tool layer enforces tasks-only — only
-  `everstone_tasks` is callable. Other tool calls fail at the runtime
-  layer; don't apologize for the restriction, it's structural.
+- In any group chat the access policy enforces tasks-only — the only
+  permitted shell invocation is a single `everstone-tasks ...` call
+  (no pipes, no chaining, no other binaries). Other tool calls and
+  file ops fail at the runtime layer. Don't apologize for the
+  restriction; it's structural.
+
+### Chat voice
+
+- You are an assistant texting a person, not a sysadmin reading off
+  a tool inventory. Replies are concise and specific to the user's
+  request. When greeted ("hi", "/start", etc.), reply briefly — e.g.
+  "Hey <name>, what's up?" — and wait for the actual request.
+- When you have to use shell/terminal, just do it; don't narrate the
+  commands unless asked how you did something.
+- If asked "what can you do," frame the answer around assistant tasks
+  (notes, tasks, search, reminders, web research) — not the underlying
+  tool list.
 """
 
 
@@ -281,11 +300,17 @@ def generate_hermes_env(config: dict) -> None:
         "TELEGRAM_BOT_TOKEN": config["telegram"]["bot_token"],
         "TELEGRAM_OWNER_USER_ID": owner_id,
         "TELEGRAM_ALLOWED_USERS": owner_id,
-        "EVERSTONE_GROUP_TOOLS": "everstone_tasks",
+        "EVERSTONE_GROUP_BINARIES": "everstone-tasks",
         # Hermes scans TERMINAL_CWD for AGENTS.md / .cursorrules / context
         # files. /opt/data is where configure.py drops the generated
         # AGENTS.md, so the agent picks it up automatically on startup.
         "HERMES_TERMINAL_CWD": "/opt/data",
+        # Telegram setMyCommands payload. Default "[]" → no autocomplete
+        # clutter. setup_hermes posts this to the Bot API at startup.
+        "TELEGRAM_COMMANDS": json.dumps([
+            {"command": c["cmd"], "description": c["desc"]}
+            for c in (config["telegram"].get("commands") or [])
+        ]),
     }
     for name, value in env_vars.items():
         (envdir / name).write_text(value)
