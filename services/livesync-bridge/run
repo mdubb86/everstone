@@ -1,4 +1,3 @@
 #!/command/execlineb -P
 with-contenv
-cd /opt/livesync-bridge
-deno run -A --node-modules-dir=auto main.ts
+/scripts/livesync-bridge-run

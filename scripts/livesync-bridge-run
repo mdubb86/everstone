@@ -1,0 +1,32 @@
+#!/bin/sh
+# livesync-bridge runner. Invoked by services/livesync-bridge/run via s6.
+#
+# The bridge can wedge into a "process alive but not syncing" state in two
+# scenarios — both produce the same log line and both are unrecoverable
+# without restart:
+#
+#   1. Bridge boots against an empty/missing everstone CouchDB DB (fresh
+#      container, Obsidian hasn't run setup yet).
+#   2. LiveSync DROPS the database mid-run (Rebuild Remote, certain Doctor
+#      flows).
+#
+# In both cases the bridge logs:
+#     {"error":"not_found","reason":"Database does not exist.","status":404}
+# then stops watching changes. s6-supervise sees a healthy process and won't
+# restart it.
+#
+# Fix: run the bridge under an awk that watches stdout/stderr for that exact
+# pattern. On match, awk exits 1 → pipeline collapses → this script exits
+# non-zero → s6 restarts. The brief sleep before exec keeps tight restart
+# loops from spinning the CPU while we wait for Obsidian's first push.
+
+sleep 2
+
+cd /opt/livesync-bridge
+deno run -A --node-modules-dir=auto main.ts 2>&1 | awk '
+    { print; fflush() }
+    /"error": "not_found"/ && /"reason": "Database does not exist"/ {
+        print "[bridge-runner] FATAL: database disappeared — exiting for s6 restart"
+        exit 1
+    }
+'
