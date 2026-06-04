@@ -1,3 +1,8 @@
+> **SUPERSEDED.** This document describes the original bidirectional
+> markdown↔CalDAV bridge approach. The current design replaces it with a
+> Hermes-centred hub. See `docs/superpowers/specs/2026-06-03-everstone-hermes-design.md`
+> for the active design.
+
 # EverStone - Building Blocks Documentation
 
 ## Overview

@@ -1,5 +1,13 @@
 # EverStone Routing Documentation
 
+> **Design status:** The current EverStone design is the Hermes hub described
+> in [`docs/superpowers/specs/2026-06-03-everstone-hermes-design.md`](docs/superpowers/specs/2026-06-03-everstone-hermes-design.md).
+> The previous `radfire` / `taskite` bidirectional bridge has been removed —
+> CalDAV is now stock Radicale exposed at `/caldav`, and the agent
+> (`everstone_tasks` MCP) is the only thing that writes to it. The Git HTTP
+> backend has likewise been removed; backups are tar.gz snapshots of
+> `/opt/data` produced by `scripts/backup`.
+
 ## Overview
 
 EverStone uses Caddy as a reverse proxy to route requests to different backend services using subpath-based routing. All services are accessible through a single domain with different URL paths.
