@@ -1,5 +1,9 @@
 # EverStone configuration. Copy to config.yaml (gitignored) and fill in.
 
+# Public HTTPS URL that clients (Obsidian, Tasks.org, your phone) use to reach
+# this server. Must be https — Obsidian rejects http.
+public_url: https://everstone.example.com
+
 # CouchDB credentials (used by Obsidian LiveSync at /db).
 couchdb:
   user: everstone
@@ -11,18 +15,19 @@ caldav:
   user: everstone
   password: CHANGE_ME
 
-# LiveSync encryption passphrases. Must match Obsidian LiveSync plugin config.
+# LiveSync E2E encryption passphrase. Must match Obsidian LiveSync plugin.
+# (Path obfuscation reuses the same passphrase by design — see livesync docs.)
 livesync:
-  passphrase: CHANGE_ME            # the E2E encryption passphrase
-  obfuscate_passphrase: CHANGE_ME  # the path obfuscation passphrase
+  passphrase: CHANGE_ME
+
+# Agent name. Used to seed SOUL.md (Hermes's persona/identity file) on first
+# boot. Hermes intentionally NEVER overwrites SOUL.md after that — to change
+# the agent's voice later, edit /opt/data/hermes/SOUL.md directly.
+agent_name: Everstone
 
 # Obsidian vault name (informational; used in deeplinks).
 obsidian:
-  vault_name: everstone
-
-# Agent identity. Shows up in agent self-reference.
-instance:
-  name: Jarvis
+  vault_name: Everstone
 
 # Telegram bot. Get bot_token from @BotFather; owner_user_id from @userinfobot.
 telegram:

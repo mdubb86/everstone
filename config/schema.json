@@ -1,8 +1,18 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["couchdb", "caldav", "livesync", "obsidian", "instance", "telegram", "hermes"],
+  "required": ["public_url", "agent_name", "couchdb", "caldav", "livesync", "obsidian", "telegram", "hermes"],
   "properties": {
+    "public_url": {
+      "type": "string",
+      "pattern": "^https://[^/]+/?$",
+      "description": "Public HTTPS URL clients reach the server at. No path, no port unless non-standard."
+    },
+    "agent_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Used to seed SOUL.md on first run (Hermes never overwrites once seeded)."
+    },
     "couchdb": {
       "type": "object",
       "required": ["user", "password", "database"],
@@ -22,10 +32,9 @@
     },
     "livesync": {
       "type": "object",
-      "required": ["passphrase", "obfuscate_passphrase"],
+      "required": ["passphrase"],
       "properties": {
-        "passphrase": { "type": "string", "minLength": 1 },
-        "obfuscate_passphrase": { "type": "string", "minLength": 1 }
+        "passphrase": { "type": "string", "minLength": 1 }
       }
     },
     "obsidian": {
@@ -33,13 +42,6 @@
       "required": ["vault_name"],
       "properties": {
         "vault_name": { "type": "string", "minLength": 1 }
-      }
-    },
-    "instance": {
-      "type": "object",
-      "required": ["name"],
-      "properties": {
-        "name": { "type": "string", "minLength": 1 }
       }
     },
     "telegram": {

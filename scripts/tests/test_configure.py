@@ -5,10 +5,12 @@ spec = importlib.util.spec_from_file_location("configure", ROOT/"scripts"/"confi
 configure = importlib.util.module_from_spec(spec); spec.loader.exec_module(configure)
 
 SAMPLE = {
+  "public_url": "https://example.com",
+  "agent_name": "Jarvis",
   "couchdb": {"user":"u","password":"p","database":"vault"},
   "caldav": {"user":"cu","password":"cp"},
-  "livesync": {"passphrase":"ph","obfuscate_passphrase":"ob"},
-  "obsidian": {"vault_name":"myvault"}, "instance": {"name":"Jarvis"},
+  "livesync": {"passphrase":"ph"},
+  "obsidian": {"vault_name":"myvault"},
   "telegram": {"owner_user_id":111,"bot_token":"TKN"}, "hermes": {"model":"openai/gpt-5-codex"},
 }
 
@@ -40,11 +42,36 @@ def test_generate_livesync_bridge_config(tmp_path):
         assert couchdb_peer["database"] == "vault"
         assert couchdb_peer["username"] == "u"
         assert couchdb_peer["passphrase"] == "ph"
+        # Per upstream livesync: obfuscatePassphrase must equal passphrase.
+        assert couchdb_peer["obfuscatePassphrase"] == "ph"
         assert "name" in couchdb_peer and "name" in storage_peer
         assert storage_peer["baseDir"] == "/opt/data/vault/"
         assert couchdb_peer["group"] == storage_peer["group"]
     finally:
         del os.environ["EVERSTONE_CONFIG_DIR"]
+
+def test_generate_setupuri_script(tmp_path):
+    out = tmp_path / "setupuri"
+    os.environ["EVERSTONE_SETUPURI_PATH"] = str(out)
+    saved_defaults = configure.DEFAULTS_CONFIG_DIR
+    configure.DEFAULTS_CONFIG_DIR = ROOT / "config"
+    try:
+        configure.generate_setupuri_script(SAMPLE)
+        body = out.read_text()
+        # all substitutions made (no template tokens left behind)
+        for tok in ("{{COUCHDB_USER}}", "{{COUCHDB_PASSWORD}}", "{{COUCHDB_DATABASE}}",
+                    "{{LIVESYNC_PASSPHRASE}}", "{{PUBLIC_URL}}"):
+            assert tok not in body, f"template token {tok} not substituted"
+        # injected values present
+        assert "export COUCHDB_URI='https://example.com/db'" in body
+        assert "export LIVESYNC_PASSPHRASE='ph'" in body
+        assert "export DB_USER='u'" in body
+        # executable
+        assert out.stat().st_mode & 0o100
+    finally:
+        del os.environ["EVERSTONE_SETUPURI_PATH"]
+        configure.DEFAULTS_CONFIG_DIR = saved_defaults
+
 
 def test_generate_hermes_env(tmp_path):
     os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)

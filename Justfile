@@ -46,6 +46,14 @@ stop:
 status:
     docker exec {{DEV_NAME}} s6-rc -a list
 
+# Generate an Obsidian LiveSync setup URI for this server's public_url
+setupuri:
+    docker exec -it {{DEV_NAME}} setupuri
+
+# Interactive Hermes Codex OAuth flow (one-time agent auth)
+hermes-auth:
+    docker exec -it -e HERMES_HOME=/opt/data/hermes {{DEV_NAME}} hermes auth add codex-oauth
+
 # Remove the dev container (preserves data dir and image)
 down:
     docker rm -f {{DEV_NAME}} 2>/dev/null || true

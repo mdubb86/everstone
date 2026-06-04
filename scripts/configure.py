@@ -81,15 +81,23 @@ def generate_caddy_config(config: dict) -> None:
 
 
 def generate_setupuri_script(config: dict) -> None:
-    """Generate setupuri script with injected config values."""
+    """Generate setupuri script with injected config values.
+
+    Bakes the live CouchDB credentials AND the LiveSync passphrase into the
+    template at container-startup time, so running the script needs no prompts:
+        docker exec everstone setupuri https://test.everstone.waage.haus
+    """
     template_path = DEFAULTS_CONFIG_DIR / "setupuri"
-    output_path = Path("/scripts/setupuri")
+    output_path = Path(os.environ.get("EVERSTONE_SETUPURI_PATH", "/scripts/setupuri"))
 
     template = template_path.read_text()
     result = template.replace("{{COUCHDB_USER}}", config["couchdb"]["user"])
     result = result.replace("{{COUCHDB_PASSWORD}}", config["couchdb"]["password"])
     result = result.replace("{{COUCHDB_DATABASE}}", config["couchdb"]["database"])
+    result = result.replace("{{LIVESYNC_PASSPHRASE}}", config["livesync"]["passphrase"])
+    result = result.replace("{{PUBLIC_URL}}", config["public_url"].rstrip("/"))
 
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(result)
     output_path.chmod(0o744)
 
@@ -125,8 +133,12 @@ def generate_livesync_bridge_config(config: dict) -> None:
                 "database": config["couchdb"]["database"],
                 "username": config["couchdb"]["user"],
                 "password": config["couchdb"]["password"],
+                # Per livesync upstream (lib/src/cli/APITest.sample.ts): the bridge's
+                # obfuscatePassphrase "should be the same as passphrase". The plugin
+                # has only one setting key (`passphrase`) and uses it for both
+                # content encryption and path obfuscation.
                 "passphrase": config["livesync"]["passphrase"],
-                "obfuscatePassphrase": config["livesync"]["obfuscate_passphrase"],
+                "obfuscatePassphrase": config["livesync"]["passphrase"],
                 "baseDir": "",
             },
             {
@@ -154,7 +166,7 @@ def generate_hermes_env(config: dict) -> None:
         "EVERSTONE_CALDAV_USER": config["caldav"]["user"],
         "EVERSTONE_CALDAV_PASSWORD": config["caldav"]["password"],
         "EVERSTONE_VAULT_NAME": config["obsidian"]["vault_name"],
-        "EVERSTONE_AGENT_NAME": config["instance"]["name"],
+        "EVERSTONE_AGENT_NAME": config["agent_name"],
         "HERMES_MODEL": config["hermes"]["model"],
         "TELEGRAM_BOT_TOKEN": config["telegram"]["bot_token"],
         "TELEGRAM_OWNER_USER_ID": owner_id,

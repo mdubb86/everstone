@@ -1,7 +1,8 @@
+public_url: null
+agent_name: Everstone
 couchdb: {user: everstone, password: null, database: everstone}
 caldav: {user: everstone, password: null}
-livesync: {passphrase: null, obfuscate_passphrase: null}
-obsidian: {vault_name: everstone}
-instance: {name: Jarvis}
+livesync: {passphrase: null}
+obsidian: {vault_name: Everstone}
 telegram: {owner_user_id: null, bot_token: null}
 hermes: {model: null}
