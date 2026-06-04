@@ -38,7 +38,9 @@ def test_generate_livesync_bridge_config(tmp_path):
         couchdb_peer = next(p for p in peers if p.get("type") == "couchdb")
         storage_peer = next(p for p in peers if p.get("type") == "storage")
         assert couchdb_peer["database"] == "vault"
+        assert couchdb_peer["username"] == "u"
         assert couchdb_peer["passphrase"] == "ph"
+        assert "name" in couchdb_peer and "name" in storage_peer
         assert storage_peer["baseDir"] == "/opt/data/vault/"
         assert couchdb_peer["group"] == storage_peer["group"]
     finally:

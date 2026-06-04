@@ -96,11 +96,12 @@ RUN git clone --depth 1 --recurse-submodules --shallow-submodules \
     echo "[livesync-bridge] clone failed — /opt/livesync-bridge absent; install manually at runtime"
 
 # Pre-cache deno deps (jsr.io + npm) so the bridge starts offline-tolerantly
-RUN if [ -f /opt/livesync-bridge/main.ts ]; then \
+RUN echo "deno-precache v2" && \
+    if [ -f /opt/livesync-bridge/main.ts ]; then \
         cd /opt/livesync-bridge && \
-        deno install --node-modules-dir=auto --entrypoint main.ts 2>&1 | tail -20 || \
-        deno cache --node-modules-dir=auto main.ts 2>&1 | tail -20 || \
-        echo "[livesync-bridge] deno dep pre-cache failed — will retry at runtime"; \
+        ( deno install --node-modules-dir=auto --entrypoint main.ts || \
+          deno cache --node-modules-dir=auto main.ts || \
+          echo "[livesync-bridge] deno dep pre-cache failed — will retry at runtime" ); \
     fi
 
 COPY scripts /scripts

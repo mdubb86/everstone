@@ -107,7 +107,11 @@ def generate_radicale_config(config: dict) -> None:
 
 
 def generate_livesync_bridge_config(config: dict) -> None:
-    """Generate livesync-bridge config.json from config."""
+    """Generate livesync-bridge config.json from config.
+
+    Schema matches livesync-bridge's `dat/config.sample.json`: peers need
+    `name`, CouchDB peers use `username` (not `user`) and require a `baseDir`.
+    """
     config_dir = _config_dir()
     output_dir = config_dir / "livesync-bridge"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -115,18 +119,21 @@ def generate_livesync_bridge_config(config: dict) -> None:
         "peers": [
             {
                 "type": "couchdb",
+                "name": "couchdb",
+                "group": "everstone",
                 "url": "http://localhost:5984",
                 "database": config["couchdb"]["database"],
-                "user": config["couchdb"]["user"],
+                "username": config["couchdb"]["user"],
                 "password": config["couchdb"]["password"],
                 "passphrase": config["livesync"]["passphrase"],
                 "obfuscatePassphrase": config["livesync"]["obfuscate_passphrase"],
-                "group": "everstone",
+                "baseDir": "",
             },
             {
                 "type": "storage",
-                "baseDir": "/opt/data/vault/",
+                "name": "vault",
                 "group": "everstone",
+                "baseDir": "/opt/data/vault/",
             },
         ]
     }
