@@ -101,7 +101,8 @@ COPY --from=engraph /usr/local/bin/engraph /usr/local/bin/engraph
 RUN pip install --break-system-packages \
         "radicale>=3.2" \
         "hermes-agent" \
-        "python-telegram-bot>=21"
+        "python-telegram-bot>=21" \
+        "typer>=0.12"
 
 COPY everstone_tasks /opt/everstone_tasks
 RUN pip install --break-system-packages /opt/everstone_tasks
@@ -127,7 +128,25 @@ COPY scripts /scripts
 COPY services /services
 COPY config /opt/defaults/config
 
+# Operator CLI: `everstone` -> Typer app at /scripts/everstone_cli.py.
+# Tab-completion: we install the script deterministically rather than
+# calling Typer's --install-completion, because shellingham can't detect
+# the parent shell during a BuildKit build (parent is /bin/sh, not bash)
+# and fails with "Shell None is not supported." The static completion
+# script is identical to what Typer would emit.
+RUN ln -sf /scripts/everstone_cli.py /usr/local/bin/everstone && \
+    chmod +x /scripts/everstone_cli.py && \
+    mkdir -p /root/.bash_completions && \
+    cp /scripts/everstone_completion.sh /root/.bash_completions/everstone.sh && \
+    echo "source /root/.bash_completions/everstone.sh" > /root/.bashrc
+
 ENV PATH="${PATH}:/command:/scripts:/opt/bin:/usr/local/bin"
+# HERMES_HOME at container env level so `docker exec everstone hermes ...`
+# (and `docker exec everstone everstone <cmd>` which exec's into it) find
+# the data-volume profile dir. Services already export this in their s6
+# run files for clarity but the container-level ENV is what makes ad-hoc
+# operator commands work without -e flags.
+ENV HERMES_HOME=/opt/data/hermes
 ENTRYPOINT ["/scripts/entrypoint"]
 EXPOSE 80
 VOLUME ["/opt/config.yaml", "/opt/data"]

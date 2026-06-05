@@ -9,6 +9,8 @@ CONFIG    := justfile_directory() + "/config.yaml"
 default:
     @just --list
 
+# ── Lifecycle (only useful WITH the source repo) ──────────────────────────
+
 # Build the image
 build:
     docker build -t {{IMAGE}} .
@@ -30,63 +32,18 @@ dev: build _check-config
 logs:
     docker logs -f {{DEV_NAME}}
 
-# Open a shell inside the dev container
+# Open a bash shell inside the dev container (everstone tab-completion works here).
 shell:
-    docker exec -it {{DEV_NAME}} sh
+    docker exec -it {{DEV_NAME}} bash
 
-# Restart the dev container (preserves data)
+# Restart / stop / remove the dev container (data preserved on restart + stop)
 restart:
     docker restart {{DEV_NAME}}
-
-# Stop the dev container (preserves data, keeps container)
 stop:
     docker stop {{DEV_NAME}}
-
-# Show s6 service status inside the dev container
-status:
-    docker exec {{DEV_NAME}} s6-rc -a list
-
-# One-screen LiveSync diagnostic. Runs sync-state inside the container.
-# (Operator equivalent: `docker exec everstone sync-state`)
-sync-state:
-    @docker exec {{DEV_NAME}} sync-state
-
-# Generate an Obsidian LiveSync setup URI for this server's public_url
-setup-livesync:
-    docker exec -it {{DEV_NAME}} setup-obsidian-livesync
-
-# Interactive Hermes OpenAI-Codex OAuth flow (one-time agent auth).
-# The credential lands in the 'everstone' profile (created by setup_hermes
-# with --no-skills), so first authorize from your laptop's browser, paste
-# the failed redirect URL back here. --manual-paste skips the loopback
-# callback listener (the VM has no browser anyway).
-hermes-auth:
-    docker exec -it -e HERMES_HOME=/opt/data/hermes {{DEV_NAME}} \
-        hermes -p everstone auth add openai-codex --type oauth --manual-paste
-
-# Interactive Hermes chat REPL — visible reasoning + tool calls. The same
-# agent (same SOUL, AGENTS.md, tools, model) that Telegram talks to.
-chat:
-    docker exec -it -e HERMES_HOME=/opt/data/hermes {{DEV_NAME}} hermes chat
-
-# List recent Hermes sessions (CLI + Telegram both show up here).
-sessions:
-    docker exec -e HERMES_HOME=/opt/data/hermes {{DEV_NAME}} hermes sessions list
-
-# Replay a session by id (full trace, including tool calls).
-session-show SESSION_ID:
-    docker exec -it -e HERMES_HOME=/opt/data/hermes {{DEV_NAME}} \
-        hermes sessions show {{SESSION_ID}}
-
-# Remove the dev container (preserves data dir and image)
 down:
     docker rm -f {{DEV_NAME}} 2>/dev/null || true
     docker rm -f {{E2E_NAME}} 2>/dev/null || true
-
-# Snapshot /opt/data into the data dir's backups/ subfolder
-backup:
-    docker exec {{DEV_NAME}} /scripts/backup
-    @ls -lh {{DATA_DIR}}/backups/ | tail -3
 
 # Run the full e2e suite (builds + boots a throwaway container)
 e2e: build
@@ -117,7 +74,34 @@ reset *FLAGS: down
     fi
     echo "Wiped. Next: 'just dev' to start fresh."
 
-# Internal: bail out unless config.yaml exists
+# ── Operator surface — delegates to the in-container `everstone` CLI ──────
+# `just es --help` lists every subcommand. Everything below is just sugar
+# for `docker exec -it everstone everstone ...` — the in-container CLI is
+# the single source of truth.
+
+# Run any in-container `everstone` subcommand. e.g. `just es auth hermes`.
+# Adapt -it vs -i to whether stdin is a TTY: -t in a script (or piped)
+# breaks with "stdin is not a terminal"; interactive sessions still get
+# the full TTY they need for chat / OAuth paste flows.
+es +ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -t 0 ] && [ -t 1 ]; then DT="-it"; else DT="-i"; fi
+    docker exec $DT {{DEV_NAME}} everstone {{ARGS}}
+
+# Frequent shortcuts (muscle memory). Same as `just es <verb>`.
+chat:
+    #!/usr/bin/env bash
+    if [ -t 0 ] && [ -t 1 ]; then DT="-it"; else DT="-i"; fi
+    docker exec $DT {{DEV_NAME}} everstone chat
+hermes-auth:
+    #!/usr/bin/env bash
+    if [ -t 0 ] && [ -t 1 ]; then DT="-it"; else DT="-i"; fi
+    docker exec $DT {{DEV_NAME}} everstone auth hermes
+
+# ── Internal ──────────────────────────────────────────────────────────────
+
+# Bail out unless config.yaml exists
 _check-config:
     @test -f {{CONFIG}} || (echo "Missing config.yaml at {{CONFIG}}." && \
         echo "Copy config.example.yaml and fill it in:" && \
