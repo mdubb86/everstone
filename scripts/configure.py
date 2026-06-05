@@ -334,6 +334,51 @@ def generate_livesync_bridge_config(config: dict) -> None:
     output_path.write_text(json.dumps(cfg, indent=2))
 
 
+def generate_gcalcli_client_secret(config: dict) -> str:
+    """Materialize an OAuth client_secret.json for gcalcli from config values.
+
+    Google's `gcalcli` reads the standard installed-app JSON format. We build
+    it from operator-supplied client_id + client_secret, with Google's
+    constant auth/token endpoints hardcoded. Written under the CONFIG dir
+    (not DATA) — it's regenerated every boot from config.yaml, so persistence
+    is unnecessary. The OAuth refresh token gcalcli mints after first auth
+    DOES persist (lives under DATA at /opt/data/hermes/gcalcli/).
+
+    Returns the absolute path to the written file, or '' when gcalcli is not
+    configured (so generate_hermes_env can leave GCALCLI_CLIENT_SECRET empty).
+    """
+    gcalcli = config.get("gcalcli")
+    if not gcalcli:
+        return ""
+
+    client_id = gcalcli.get("client_id")
+    client_secret = gcalcli.get("client_secret")
+    if not client_id or not client_secret:
+        return ""
+
+    config_dir = _config_dir()
+    out_dir = config_dir / "hermes" / "gcalcli"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "client_secret.json"
+
+    # Standard installed-application form. auth_uri / token_uri are constants
+    # for Google OAuth — same for every client_id. redirect_uris matches what
+    # `gcalcli --noauth_local_server` expects for the paste-back flow.
+    payload = {
+        "installed": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "redirect_uris": ["http://localhost", "urn:ietf:wg:oauth:2.0:oob"],
+        }
+    }
+    out_path.write_text(json.dumps(payload, indent=2))
+    out_path.chmod(0o600)
+    return str(out_path)
+
+
 def generate_hermes_env(config: dict) -> None:
     """Generate s6 envdir AND sourceable env file for hermes from config."""
     config_dir = _config_dir()
@@ -375,11 +420,11 @@ def generate_hermes_env(config: dict) -> None:
             (config.get("agent") or {}).get("skills") or []
         ),
         # gcalcli wiring — empty strings = "not configured" so the
-        # everstone CLI / wrapper / setup_gcal can branch cleanly.
-        # When set, the `gcal` wrapper script and `everstone auth gcal`
-        # use these to point gcalcli at the operator-supplied OAuth
-        # client and the persistent config folder under /opt/data.
-        "GCALCLI_CLIENT_SECRET": (config.get("gcalcli") or {}).get("client_secret_file") or "",
+        # everstone CLI / wrapper / setup_hermes can branch cleanly.
+        # The client_secret.json is generated under /opt/config from
+        # config.yaml's gcalcli.{client_id, client_secret}; the path
+        # below points at that generated file (or '' when unconfigured).
+        "GCALCLI_CLIENT_SECRET": generate_gcalcli_client_secret(config),
         "EVERSTONE_GCAL_READ_ONLY": " ".join(
             ((config.get("gcalcli") or {}).get("calendars") or {}).get("read_only") or []
         ),

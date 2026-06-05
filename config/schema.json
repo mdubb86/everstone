@@ -103,12 +103,17 @@
     "gcalcli": {
       "type": ["object", "null"],
       "description": "Optional Google Calendar access via the `gcalcli` CLI. Omit / null to disable (agent gets no calendar access). When set, the agent can read + write calendars listed in `calendars`. Auth is one-time interactive: `everstone auth gcal`.",
-      "required": ["client_secret_file", "calendars"],
+      "required": ["client_id", "client_secret", "calendars"],
       "properties": {
-        "client_secret_file": {
+        "client_id": {
           "type": "string",
           "minLength": 1,
-          "description": "Container-side path to the OAuth client_secret.json downloaded from Google Cloud Console (OAuth 2.0 Client IDs → Desktop app). Drop the file into your data bind mount and reference its in-container path here, e.g. /opt/data/hermes/gcalcli/client_secret.json."
+          "description": "OAuth Client ID from Google Cloud Console → Credentials → OAuth Client ID (Desktop app). Looks like '12345-xxxx.apps.googleusercontent.com'. Not secret on its own but combined with client_secret it authenticates the app to Google."
+        },
+        "client_secret": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OAuth Client secret from the same Credentials → OAuth Client ID page. Looks like 'GOCSPX-xxxxxxxxxx'. Stays in your local config.yaml — never check in."
         },
         "calendars": {
           "type": "object",

@@ -189,7 +189,8 @@ def test_generate_hermes_env_gcalcli_configured(tmp_path):
     os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
     try:
         sample = {**SAMPLE, "gcalcli": {
-            "client_secret_file": "/opt/data/hermes/gcalcli/client_secret.json",
+            "client_id": "12345.apps.googleusercontent.com",
+            "client_secret": "GOCSPX-secret",
             "calendars": {
                 "read_only": ["primary", "family@example.com"],
                 "read_write": ["personal@gmail.com", "work@example.com"],
@@ -197,8 +198,15 @@ def test_generate_hermes_env_gcalcli_configured(tmp_path):
         }}
         configure.generate_hermes_env(sample)
         envdir = tmp_path / "hermes" / "envdir"
-        assert (envdir / "GCALCLI_CLIENT_SECRET").read_text() == \
-            "/opt/data/hermes/gcalcli/client_secret.json"
+        # GCALCLI_CLIENT_SECRET points at the generated JSON path; the file
+        # itself should exist and contain the operator's credentials.
+        secret_path = (envdir / "GCALCLI_CLIENT_SECRET").read_text()
+        assert secret_path == str(tmp_path / "hermes" / "gcalcli" / "client_secret.json")
+        body = json.loads(Path(secret_path).read_text())
+        assert body["installed"]["client_id"] == "12345.apps.googleusercontent.com"
+        assert body["installed"]["client_secret"] == "GOCSPX-secret"
+        # Constant Google endpoints baked in — operator doesn't need to know.
+        assert body["installed"]["token_uri"] == "https://oauth2.googleapis.com/token"
         # Space-separated so the gcal wrapper and AGENTS.md render can iterate.
         assert (envdir / "EVERSTONE_GCAL_READ_ONLY").read_text() == \
             "primary family@example.com"
@@ -223,7 +231,8 @@ def test_generate_agents_md_calendar_section_renders_lists(tmp_path):
     os.environ["EVERSTONE_DATA_DIR"] = str(tmp_path)
     try:
         sample = {**SAMPLE, "gcalcli": {
-            "client_secret_file": "/x.json",
+            "client_id": "cid",
+            "client_secret": "csec",
             "calendars": {
                 "read_only": ["primary", "family@example.com"],
                 "read_write": ["personal@gmail.com"],

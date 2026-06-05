@@ -135,18 +135,17 @@ hermes:
 #        initial OAuth, click Advanced → Continue)
 #      - Credentials → Create Credentials → OAuth Client ID
 #        Application type: "Desktop app"
-#      - Download the JSON — this is your client_secret_file
-#   2. Drop the JSON into your data dir (whatever you bind to /opt/data):
-#        mkdir -p .everstone-data/hermes/gcalcli/
-#        mv ~/Downloads/client_secret_*.json \
-#            .everstone-data/hermes/gcalcli/client_secret.json
-#   3. Fill in client_secret_file + calendars below
-#   4. Run: just hermes-auth or `docker exec -it everstone everstone auth gcal`
+#      - Copy the client_id and client_secret values shown in the modal
+#        (or open the credential later — they're shown on the detail
+#        page). You do NOT need the downloaded JSON file.
+#   2. Paste them below + fill in calendars.
+#   3. Run: just hermes-auth or `docker exec -it everstone everstone auth gcal`
 #      - It'll print a Google URL → authorize in your Mac browser
 #      - Paste the code back to the terminal
 #
 # gcalcli:
-#   client_secret_file: /opt/data/hermes/gcalcli/client_secret.json
+#   client_id: 12345-xxxxxxxxx.apps.googleusercontent.com
+#   client_secret: GOCSPX-xxxxxxxxxxxxxxxxxxxx
 #   calendars:
 #     read_only:
 #       - primary
