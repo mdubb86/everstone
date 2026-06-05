@@ -25,6 +25,25 @@ fi
 CONFIG_FOLDER="${EVERSTONE_GCAL_CONFIG_FOLDER:-/opt/data/hermes/gcalcli}"
 mkdir -p "$CONFIG_FOLDER"
 
+# Refuse to invoke gcalcli before EverStone's OAuth flow has run. Without
+# this guard, gcalcli falls back to its OWN interactive auth — random-port
+# localhost server + "Advanced → unsafe" warning, ending in the kind of
+# broken flow EverStone exists to avoid. Direct the operator at the right
+# command instead.
+if [ ! -f "$CONFIG_FOLDER/oauth" ]; then
+    cat >&2 <<EOF
+gcal: not authorized yet.
+
+Run the EverStone OAuth flow first:
+
+    just es auth gcal
+
+That hands off to our Caddy-proxied callback so you just click the URL
+and consent — no localhost port-forwarding needed.
+EOF
+    exit 1
+fi
+
 exec gcalcli \
     --client-id "$GCALCLI_CLIENT_ID" \
     --client-secret "$GCALCLI_CLIENT_SECRET" \
