@@ -175,9 +175,10 @@ def test_generate_hermes_env_gh_token_set(tmp_path):
 def test_generate_hermes_env_gcalcli_unset(tmp_path):
     os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
     try:
-        # SAMPLE has no gcalcli → all three vars empty, never breaks generator.
+        # SAMPLE has no gcalcli → all four vars empty, never breaks generator.
         configure.generate_hermes_env(SAMPLE)
         envdir = tmp_path / "hermes" / "envdir"
+        assert (envdir / "GCALCLI_CLIENT_ID").read_text() == ""
         assert (envdir / "GCALCLI_CLIENT_SECRET").read_text() == ""
         assert (envdir / "EVERSTONE_GCAL_READ_ONLY").read_text() == ""
         assert (envdir / "EVERSTONE_GCAL_READ_WRITE").read_text() == ""
@@ -198,15 +199,11 @@ def test_generate_hermes_env_gcalcli_configured(tmp_path):
         }}
         configure.generate_hermes_env(sample)
         envdir = tmp_path / "hermes" / "envdir"
-        # GCALCLI_CLIENT_SECRET points at the generated JSON path; the file
-        # itself should exist and contain the operator's credentials.
-        secret_path = (envdir / "GCALCLI_CLIENT_SECRET").read_text()
-        assert secret_path == str(tmp_path / "hermes" / "gcalcli" / "client_secret.json")
-        body = json.loads(Path(secret_path).read_text())
-        assert body["installed"]["client_id"] == "12345.apps.googleusercontent.com"
-        assert body["installed"]["client_secret"] == "GOCSPX-secret"
-        # Constant Google endpoints baked in — operator doesn't need to know.
-        assert body["installed"]["token_uri"] == "https://oauth2.googleapis.com/token"
+        # Raw values written through — gcal wrapper passes them to gcalcli
+        # as --client-id / --client-secret flags.
+        assert (envdir / "GCALCLI_CLIENT_ID").read_text() == \
+            "12345.apps.googleusercontent.com"
+        assert (envdir / "GCALCLI_CLIENT_SECRET").read_text() == "GOCSPX-secret"
         # Space-separated so the gcal wrapper and AGENTS.md render can iterate.
         assert (envdir / "EVERSTONE_GCAL_READ_ONLY").read_text() == \
             "primary family@example.com"
@@ -223,6 +220,28 @@ def test_generate_agents_md_calendar_section_absent_when_unconfigured(tmp_path):
         body = (tmp_path / "AGENTS.md").read_text()
         assert "Calendar" not in body
         assert "gcal" not in body
+    finally:
+        del os.environ["EVERSTONE_DATA_DIR"]
+
+
+def test_generate_agents_md_calendar_section_absent_when_lists_empty(tmp_path):
+    """gcalcli configured but with no calendars yet — agent gets no Calendar section.
+
+    This is the "I've pasted my OAuth creds but haven't discovered my calendar
+    IDs yet" intermediate state. Auth works (`everstone auth gcal`, `gcal list`)
+    but the agent doesn't see a Calendar section in AGENTS.md until the
+    operator fills in at least one list.
+    """
+    os.environ["EVERSTONE_DATA_DIR"] = str(tmp_path)
+    try:
+        sample = {**SAMPLE, "gcalcli": {
+            "client_id": "cid",
+            "client_secret": "csec",
+            "calendars": {"read_only": [], "read_write": []},
+        }}
+        configure.generate_agents_md(sample)
+        body = (tmp_path / "AGENTS.md").read_text()
+        assert "Calendar" not in body
     finally:
         del os.environ["EVERSTONE_DATA_DIR"]
 

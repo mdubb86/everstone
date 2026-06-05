@@ -7,8 +7,39 @@ wraps these for dev convenience, but the in-container CLI is the source of
 truth for what an operator can do at runtime.
 """
 import os
+import re
+from pathlib import Path
 
 import typer
+
+
+def _load_env_file(path: str = "/opt/config/hermes/env") -> None:
+    """Load operator config (GCALCLI_*, EVERSTONE_*, etc.) into os.environ.
+
+    The same vars also get exported by s6 service `run` scripts via
+    `s6-envdir`, but ad-hoc `docker exec everstone everstone <cmd>` calls
+    don't go through s6 and therefore don't see them. This is a tiny shell-
+    style parser for the file generate_hermes_env emits — one line per var,
+    `export NAME='value'`. Pre-existing env wins (so a one-off override via
+    `docker exec -e NAME=v ...` keeps working).
+    """
+    try:
+        body = Path(path).read_text()
+    except FileNotFoundError:
+        return
+    pattern = re.compile(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+    for line in body.splitlines():
+        m = pattern.match(line)
+        if not m:
+            continue
+        name, raw = m.group(1), m.group(2)
+        # Strip a matching pair of surrounding single or double quotes.
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+            raw = raw[1:-1]
+        os.environ.setdefault(name, raw)
+
+
+_load_env_file()
 
 app = typer.Typer(
     help="EverStone admin CLI. From the host: `docker exec [-it] everstone everstone <command>`.",
@@ -24,6 +55,9 @@ app.add_typer(session_app, name="session")
 
 setup_app = typer.Typer(help="First-time setup helpers.", no_args_is_help=True)
 app.add_typer(setup_app, name="setup")
+
+calendar_app = typer.Typer(help="Google Calendar utilities (discovery, listing).", no_args_is_help=True)
+app.add_typer(calendar_app, name="calendar")
 
 
 def _exec(*args: str) -> None:
@@ -45,31 +79,20 @@ def auth_hermes() -> None:
 @auth_app.command("gcal")
 def auth_gcal() -> None:
     """OAuth into Google Calendar. Authorize in browser, paste code back. One-time per Google account."""
-    secret = os.environ.get("GCALCLI_CLIENT_SECRET", "")
-    if not secret:
+    if not os.environ.get("GCALCLI_CLIENT_ID") or not os.environ.get("GCALCLI_CLIENT_SECRET"):
         typer.echo(
             "Google Calendar is not configured.\n"
-            "Set config.gcalcli.{client_secret_file, calendars} in config.yaml,\n"
+            "Set config.gcalcli.{client_id, client_secret} in config.yaml,\n"
             "restart the container, then re-run this command.",
             err=True,
         )
         raise typer.Exit(1)
-    if not os.path.isfile(secret):
-        typer.echo(f"Client secret file not found at: {secret}", err=True)
-        typer.echo(
-            "Drop the Google Cloud Console OAuth client_secret.json into your\n"
-            "data bind mount at that path, then re-run.",
-            err=True,
-        )
-        raise typer.Exit(1)
-    # `list` is the lightest read command; on first run gcalcli triggers
-    # the OAuth flow before executing it. --noauth_local_server prints a
-    # URL and reads a code from stdin (matches our paste-back pattern).
-    _exec(
-        "gcal",
-        "--noauth_local_server",
-        "list",
-    )
+    # Delegated to /scripts/auth_gcal.py — runs our own OAuth flow on a
+    # fixed port (gcalcli's built-in flow uses random ports and assumes
+    # the browser can reach the container directly, which doesn't fit
+    # docker-in-VM setups). Result is pickled to <config>/oauth in the
+    # format gcalcli reads on every subsequent call.
+    _exec("python3", "-u", "/scripts/auth_gcal.py")
 
 
 # ─── chat ──────────────────────────────────────────────────────────────────
@@ -94,6 +117,14 @@ def session_show(
 ) -> None:
     """Replay a session — full trace including tool calls."""
     _exec("hermes", "-p", "everstone", "sessions", "show", session_id)
+
+
+# ─── calendar ──────────────────────────────────────────────────────────────
+
+@calendar_app.command("list")
+def calendar_list() -> None:
+    """List calendars the authed Google account can see — use this to discover IDs for config.yaml."""
+    _exec("gcal", "list")
 
 
 # ─── setup ─────────────────────────────────────────────────────────────────

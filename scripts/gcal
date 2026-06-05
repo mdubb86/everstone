@@ -1,28 +1,24 @@
 #!/bin/sh
 # gcal — thin wrapper around gcalcli that always passes the operator's
-# OAuth client_secret + a persistent --config-folder on the data volume.
-# The agent uses `gcal <subcommand>` instead of raw `gcalcli` so it
-# never has to know about secret paths or config locations.
+# OAuth client_id / client_secret (from config.yaml) and a persistent
+# --config-folder on the data volume. The agent uses `gcal <subcommand>`
+# instead of raw `gcalcli` so it never has to know about secrets or
+# config locations.
 #
-# Reads GCALCLI_CLIENT_SECRET from /opt/config/hermes/env (set by
-# configure.py from config.gcalcli.client_secret_file).
+# Reads GCALCLI_CLIENT_ID + GCALCLI_CLIENT_SECRET from /opt/config/
+# hermes/env (set by configure.py from config.gcalcli.{client_id,
+# client_secret}).
 set -eu
 
 . /opt/config/hermes/env
 
-if [ -z "${GCALCLI_CLIENT_SECRET:-}" ]; then
+if [ -z "${GCALCLI_CLIENT_ID:-}" ] || [ -z "${GCALCLI_CLIENT_SECRET:-}" ]; then
     cat >&2 <<EOF
 gcal: Google Calendar is not configured.
 
-Set config.gcalcli.{client_secret_file, calendars} in config.yaml,
+Set config.gcalcli.{client_id, client_secret, calendars} in config.yaml,
 restart the container, then run: everstone auth gcal
 EOF
-    exit 1
-fi
-
-if [ ! -f "$GCALCLI_CLIENT_SECRET" ]; then
-    echo "gcal: client_secret file not found: $GCALCLI_CLIENT_SECRET" >&2
-    echo "       Drop the Google Cloud Console download into your data volume." >&2
     exit 1
 fi
 
@@ -30,6 +26,7 @@ CONFIG_FOLDER="${EVERSTONE_GCAL_CONFIG_FOLDER:-/opt/data/hermes/gcalcli}"
 mkdir -p "$CONFIG_FOLDER"
 
 exec gcalcli \
+    --client-id "$GCALCLI_CLIENT_ID" \
     --client-secret "$GCALCLI_CLIENT_SECRET" \
     --config-folder "$CONFIG_FOLDER" \
     "$@"

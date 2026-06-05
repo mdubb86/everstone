@@ -103,7 +103,7 @@
     "gcalcli": {
       "type": ["object", "null"],
       "description": "Optional Google Calendar access via the `gcalcli` CLI. Omit / null to disable (agent gets no calendar access). When set, the agent can read + write calendars listed in `calendars`. Auth is one-time interactive: `everstone auth gcal`.",
-      "required": ["client_id", "client_secret", "calendars"],
+      "required": ["client_id", "client_secret"],
       "properties": {
         "client_id": {
           "type": "string",
@@ -117,8 +117,7 @@
         },
         "calendars": {
           "type": "object",
-          "required": ["read_only", "read_write"],
-          "description": "Scope-limiting policy: the agent self-respects these lists via AGENTS.md. Any calendar not in either list is off-limits. Use `primary` for the account's primary calendar; otherwise the calendar's email address.",
+          "description": "Scope-limiting policy: the agent self-respects these lists via AGENTS.md. Any calendar not in either list is off-limits. Use `primary` for the account's primary calendar; otherwise the calendar's email address. If omitted or both lists empty, the agent gets no Calendar section in AGENTS.md (auth works, but the agent doesn't know any calendars exist). Use `everstone calendar list` after auth to discover IDs to put here.",
           "properties": {
             "read_only": {
               "type": "array",
