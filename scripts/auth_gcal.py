@@ -47,41 +47,38 @@ def main() -> int:
         scopes=SCOPES,
     )
 
-    # Banner with the explicit "URL is going to fail; here's how to
-    # complete" instructions BEFORE flow.run_local_server() takes over
-    # and prints its own (much terser) URL line.
+    # Banner with explicit "URL is going to fail; here's how to complete"
+    # instructions BEFORE flow.run_local_server() takes over and prints
+    # its own (much terser) URL line.
+    container = os.environ.get("EVERSTONE_CONTAINER_NAME", "everstone")
     print(
         f"""
 EverStone — Google Calendar OAuth
 =================================
 
-A local HTTP server is starting on port {PORT} inside the container,
-waiting for the OAuth callback.
+Step 1: Open the authorization URL below in your browser.
 
-The authorization URL appears below. Open it in your Mac browser and
-click through the consent screen. (The first time, you'll see "Google
-hasn't verified this app" → click Advanced → Continue.)
+        First time only, you'll see "Google hasn't verified this app"
+        → click Advanced → Continue.
 
-After consent your browser will try to redirect to:
-    http://localhost:{PORT}/?code=...
+Step 2: After consent, your browser tries to redirect to
+        http://localhost:{PORT}/?code=...  and shows "site can't be
+        reached". That's expected.
 
-→ If you've port-forwarded {PORT} from your Mac into the container
-  (e.g. via SSH -L {PORT}:localhost:{PORT}), it'll just work — the
-  callback completes automatically and this command exits.
+Step 3: Copy the FULL failed URL from your browser's address bar
+        (the entire thing, including code= and state=).
 
-→ If your browser shows "site can't be reached" — that's expected.
-  COPY the full failed URL from the address bar (it has the auth code
-  in it). Then in a second terminal run:
+Step 4: In a second terminal, run:
 
-      docker exec {os.environ.get("EVERSTONE_CONTAINER_NAME", "everstone")} \\
-          curl -s '<paste the URL here>'
+            docker exec {container} curl -s '<paste the URL here>'
 
-  That delivers the code to the listening server inside the container,
-  and this command will complete and exit.
+        That delivers the code to this command, which will then
+        complete and exit.
 
 ------------------------------------------------------------
 """
     )
+    sys.stdout.flush()
 
     try:
         credentials = flow.run_local_server(open_browser=False, port=PORT)
