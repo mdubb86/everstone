@@ -22,15 +22,23 @@ EOF
     exit 1
 fi
 
-CONFIG_FOLDER="${EVERSTONE_GCAL_CONFIG_FOLDER:-/opt/data/hermes/gcalcli}"
-mkdir -p "$CONFIG_FOLDER"
+# Force gcalcli's data dir onto the persistent volume. gcalcli reads
+# its oauth (and cache) file from platformdirs.user_data_path('gcalcli'),
+# which on Linux is $XDG_DATA_HOME/gcalcli (default ~/.local/share/gcalcli).
+# Its own --config-folder flag is documented as deprecated and is in fact
+# IGNORED for the oauth load path — gcal.data_file_path calls
+# env.data_file_paths(name) without passing config_dir, so the flag never
+# affects which file is loaded. XDG_DATA_HOME is the working override.
+export XDG_DATA_HOME=/opt/data/hermes
+DATA_DIR="$XDG_DATA_HOME/gcalcli"
+mkdir -p "$DATA_DIR"
 
 # Refuse to invoke gcalcli before EverStone's OAuth flow has run. Without
 # this guard, gcalcli falls back to its OWN interactive auth — random-port
 # localhost server + "Advanced → unsafe" warning, ending in the kind of
 # broken flow EverStone exists to avoid. Direct the operator at the right
 # command instead.
-if [ ! -f "$CONFIG_FOLDER/oauth" ]; then
+if [ ! -f "$DATA_DIR/oauth" ]; then
     cat >&2 <<EOF
 gcal: not authorized yet.
 
@@ -47,5 +55,4 @@ fi
 exec gcalcli \
     --client-id "$GCALCLI_CLIENT_ID" \
     --client-secret "$GCALCLI_CLIENT_SECRET" \
-    --config-folder "$CONFIG_FOLDER" \
     "$@"
