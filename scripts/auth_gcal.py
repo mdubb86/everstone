@@ -87,7 +87,7 @@ def main() -> int:
 
     redirect_uri = f"{public_url}{CALLBACK_PATH}"
     flow = _build_flow(client_id, client_secret, redirect_uri)
-    auth_url, _ = flow.authorization_url(
+    auth_url, expected_state = flow.authorization_url(
         access_type="offline",
         prompt="consent",
         include_granted_scopes="true",
@@ -122,6 +122,7 @@ Listening on port {PORT} for the callback...
             params = parse_qs(urlparse(self.path).query)
             error = params.get("error", [None])[0]
             code = params.get("code", [None])[0]
+            received_state = params.get("state", [None])[0]
             if error:
                 state["error"] = error
                 self.send_response(400)
@@ -129,11 +130,17 @@ Listening on port {PORT} for the callback...
                 self.end_headers()
                 self.wfile.write(_FAILURE_HTML.format(error).encode("utf-8"))
                 return
-            if not code:
+            # CSRF protection: the `state` param we sent to Google must
+            # come back unchanged. Without this check, an attacker could
+            # race a malicious link into our callback during the auth
+            # window and cause our flow to exchange THEIR code, storing
+            # their tokens instead of the operator's. Reject and keep
+            # listening (don't terminate the flow over a stray request).
+            if received_state != expected_state or not code:
                 self.send_response(400)
                 self.send_header("Content-Type", "text/plain")
                 self.end_headers()
-                self.wfile.write(b"Missing 'code' parameter")
+                self.wfile.write(b"Bad request (state mismatch or missing code).")
                 return
             state["code"] = code
             self.send_response(200)
@@ -157,16 +164,15 @@ Listening on port {PORT} for the callback...
             return 1
         raise
 
-    # handle_request blocks until exactly one HTTP request is processed.
-    # That's the OAuth callback — after it returns, the listener is closed
-    # and we proceed to token exchange.
-    server.handle_request()
+    # Loop until we either get a valid code or a Google-reported error.
+    # If a stray / malformed request arrives (wrong state, missing code,
+    # random probe), CallbackHandler responds 400 and we keep listening.
+    # That way one bad request doesn't break the real Google redirect.
+    while state["code"] is None and state["error"] is None:
+        server.handle_request()
 
     if state["error"]:
         print(f"\nOAuth error: {state['error']}", file=sys.stderr)
-        return 1
-    if not state["code"]:
-        print("\nOAuth callback arrived without a code.", file=sys.stderr)
         return 1
 
     print("\nCode received. Exchanging for token...")
