@@ -175,13 +175,15 @@ def test_generate_hermes_env_gh_token_set(tmp_path):
 def test_generate_hermes_env_gcalcli_unset(tmp_path):
     os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
     try:
-        # SAMPLE has no gcalcli → all four vars empty, never breaks generator.
+        # SAMPLE has no gcalcli → credentials empty, calendar lists
+        # serialize to empty JSON arrays (the gcal wrapper json.loads
+        # them; "[]" is the safe default).
         configure.generate_hermes_env(SAMPLE)
         envdir = tmp_path / "hermes" / "envdir"
         assert (envdir / "GCALCLI_CLIENT_ID").read_text() == ""
         assert (envdir / "GCALCLI_CLIENT_SECRET").read_text() == ""
-        assert (envdir / "EVERSTONE_GCAL_READ_ONLY").read_text() == ""
-        assert (envdir / "EVERSTONE_GCAL_READ_WRITE").read_text() == ""
+        assert (envdir / "EVERSTONE_GCAL_READ_ONLY").read_text() == "[]"
+        assert (envdir / "EVERSTONE_GCAL_READ_WRITE").read_text() == "[]"
     finally:
         del os.environ["EVERSTONE_CONFIG_DIR"]
 
@@ -204,11 +206,13 @@ def test_generate_hermes_env_gcalcli_configured(tmp_path):
         assert (envdir / "GCALCLI_CLIENT_ID").read_text() == \
             "12345.apps.googleusercontent.com"
         assert (envdir / "GCALCLI_CLIENT_SECRET").read_text() == "GOCSPX-secret"
-        # Space-separated so the gcal wrapper and AGENTS.md render can iterate.
-        assert (envdir / "EVERSTONE_GCAL_READ_ONLY").read_text() == \
-            "primary family@example.com"
-        assert (envdir / "EVERSTONE_GCAL_READ_WRITE").read_text() == \
-            "personal@gmail.com work@example.com"
+        # JSON arrays — names can have spaces / apostrophes (real-world
+        # example: "Allison's Calendar"), so space-separation would break
+        # the wrapper's parsing. The gcal wrapper json.loads these.
+        assert json.loads((envdir / "EVERSTONE_GCAL_READ_ONLY").read_text()) == \
+            ["primary", "family@example.com"]
+        assert json.loads((envdir / "EVERSTONE_GCAL_READ_WRITE").read_text()) == \
+            ["personal@gmail.com", "work@example.com"]
     finally:
         del os.environ["EVERSTONE_CONFIG_DIR"]
 

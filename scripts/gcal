@@ -1,58 +1,144 @@
-#!/bin/sh
-# gcal — thin wrapper around gcalcli that always passes the operator's
-# OAuth client_id / client_secret (from config.yaml) and a persistent
-# --config-folder on the data volume. The agent uses `gcal <subcommand>`
-# instead of raw `gcalcli` so it never has to know about secrets or
-# config locations.
-#
-# Reads GCALCLI_CLIENT_ID + GCALCLI_CLIENT_SECRET from /opt/config/
-# hermes/env (set by configure.py from config.gcalcli.{client_id,
-# client_secret}).
-set -eu
+#!/usr/bin/env python3
+"""gcal — pre-configured wrapper around gcalcli.
 
-. /opt/config/hermes/env
+Three jobs:
+1. Force gcalcli's data dir onto the persistent /opt/data volume via
+   XDG_DATA_HOME (its --config-folder flag is documented-deprecated AND
+   silently ignored for the oauth load path; XDG_DATA_HOME works).
+2. Pass the operator's OAuth client credentials inline so the agent
+   never has to know about them.
+3. ENFORCE the read-only / read-write calendar policy from config.yaml.
+   gcalcli respects no per-calendar permissions — if the OAuth principal
+   has owner access on a calendar (which is true even for shared
+   "read-only-by-policy" calendars), it'll happily modify them. We gate
+   writes here so AGENTS.md isn't the only line of defense.
+"""
+import json
+import os
+import sys
+from pathlib import Path
 
-if [ -z "${GCALCLI_CLIENT_ID:-}" ] || [ -z "${GCALCLI_CLIENT_SECRET:-}" ]; then
-    cat >&2 <<EOF
-gcal: Google Calendar is not configured.
 
-Set config.gcalcli.{client_id, client_secret, calendars} in config.yaml,
-restart the container, then run: everstone auth gcal
-EOF
-    exit 1
-fi
+def _load_envdir(path: str = "/opt/config/hermes/envdir") -> None:
+    """Populate os.environ from s6's envdir (one file per var, raw value).
 
-# Force gcalcli's data dir onto the persistent volume. gcalcli reads
-# its oauth (and cache) file from platformdirs.user_data_path('gcalcli'),
-# which on Linux is $XDG_DATA_HOME/gcalcli (default ~/.local/share/gcalcli).
-# Its own --config-folder flag is documented as deprecated and is in fact
-# IGNORED for the oauth load path — gcal.data_file_path calls
-# env.data_file_paths(name) without passing config_dir, so the flag never
-# affects which file is loaded. XDG_DATA_HOME is the working override.
-export XDG_DATA_HOME=/opt/data/hermes
-DATA_DIR="$XDG_DATA_HOME/gcalcli"
-mkdir -p "$DATA_DIR"
+    The shell-sourceable /opt/config/hermes/env runs values through
+    shlex.quote, which uses '"'"' to escape embedded apostrophes — a
+    nightmare to unparse for values that are themselves JSON or contain
+    quotes. The envdir form has zero quoting. setdefault → explicit -e
+    overrides via `docker exec -e NAME=v` still win.
+    """
+    p = Path(path)
+    if not p.is_dir():
+        return
+    for entry in p.iterdir():
+        if entry.is_file():
+            os.environ.setdefault(entry.name, entry.read_text())
 
-# Refuse to invoke gcalcli before EverStone's OAuth flow has run. Without
-# this guard, gcalcli falls back to its OWN interactive auth — random-port
-# localhost server + "Advanced → unsafe" warning, ending in the kind of
-# broken flow EverStone exists to avoid. Direct the operator at the right
-# command instead.
-if [ ! -f "$DATA_DIR/oauth" ]; then
-    cat >&2 <<EOF
-gcal: not authorized yet.
 
-Run the EverStone OAuth flow first:
+_load_envdir()
 
-    just es auth gcal
 
-That hands off to our Caddy-proxied callback so you just click the URL
-and consent — no localhost port-forwarding needed.
-EOF
-    exit 1
-fi
+# Subcommands that mutate Google's calendar state. Reads (agenda, list,
+# search, updates, conflicts, calw, calm) are unrestricted.
+_WRITE_SUBCOMMANDS = {
+    "add", "edit", "delete", "quick", "import", "remind", "agendaupdate",
+}
 
-exec gcalcli \
-    --client-id "$GCALCLI_CLIENT_ID" \
-    --client-secret "$GCALCLI_CLIENT_SECRET" \
-    "$@"
+# Full subcommand set, used to find where the subcommand boundary is in
+# argv. Anything before it is global args; anything after is per-command.
+_ALL_SUBCOMMANDS = {
+    "init", "list", "search", "edit", "delete", "agenda", "agendaupdate",
+    "updates", "conflicts", "calw", "calm", "quick", "add", "import",
+    "remind", "config", "util",
+}
+
+
+def _parse_calendars(argv: list[str]) -> tuple[str | None, list[str]]:
+    """Pull (subcommand, [calendar_targets]) out of argv.
+
+    Handles both `--calendar X` and `--calendar=X`, plus --default-calendar.
+    Subcommand is the first positional token that matches the known list.
+    """
+    subcommand: str | None = None
+    cals: list[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--calendar", "--default-calendar"):
+            if i + 1 < len(argv):
+                cals.append(argv[i + 1])
+                i += 2
+                continue
+        elif a.startswith("--calendar=") or a.startswith("--default-calendar="):
+            cals.append(a.split("=", 1)[1])
+        elif subcommand is None and not a.startswith("-") and a in _ALL_SUBCOMMANDS:
+            subcommand = a
+        i += 1
+    return subcommand, cals
+
+
+def main() -> int:
+    client_id = os.environ.get("GCALCLI_CLIENT_ID")
+    client_secret = os.environ.get("GCALCLI_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        sys.stderr.write(
+            "gcal: Google Calendar is not configured.\n\n"
+            "Set config.gcalcli.{client_id, client_secret, calendars} in "
+            "config.yaml,\nrestart the container, then run: "
+            "everstone auth gcal\n"
+        )
+        return 1
+
+    # Pin gcalcli's data dir to the persistent volume. See module docstring.
+    os.environ["XDG_DATA_HOME"] = "/opt/data/hermes"
+    data_dir = "/opt/data/hermes/gcalcli"
+    os.makedirs(data_dir, exist_ok=True)
+
+    if not os.path.isfile(f"{data_dir}/oauth"):
+        sys.stderr.write(
+            "gcal: not authorized yet.\n\n"
+            "Run the EverStone OAuth flow first:\n\n"
+            "    just es auth gcal\n\n"
+            "That hands off to our Caddy-proxied callback so you just click\n"
+            "the URL and consent — no localhost port-forwarding needed.\n"
+        )
+        return 1
+
+    # Read-only enforcement. Parse subcommand + --calendar values out of
+    # argv, then reject writes against any calendar in the read-only set.
+    # Defaults to allow if either env var is missing or unparseable —
+    # fail-OPEN here because the consequence of mis-parsing is a refused
+    # legitimate call, and the agent will explain the policy to the user
+    # via AGENTS.md anyway.
+    try:
+        read_only = set(json.loads(os.environ.get("EVERSTONE_GCAL_READ_ONLY", "[]")))
+        read_write = json.loads(os.environ.get("EVERSTONE_GCAL_READ_WRITE", "[]"))
+    except (ValueError, TypeError):
+        read_only, read_write = set(), []
+
+    subcommand, target_cals = _parse_calendars(sys.argv[1:])
+    if subcommand in _WRITE_SUBCOMMANDS:
+        blocked = [c for c in target_cals if c in read_only]
+        if blocked:
+            blocked_list = ", ".join(repr(c) for c in blocked)
+            sys.stderr.write(
+                f"gcal: REFUSED — write to read-only calendar(s): {blocked_list}\n\n"
+                f"You can READ from these calendars (gcal agenda, gcal search,\n"
+                f"gcal calw, etc.) but not add/edit/delete events on them.\n"
+            )
+            if read_write:
+                sys.stderr.write("\nWritable calendars on this instance:\n")
+                for c in read_write:
+                    sys.stderr.write(f"  --calendar {c!r}\n")
+            return 1
+
+    os.execvp("gcalcli", [
+        "gcalcli",
+        "--client-id", client_id,
+        "--client-secret", client_secret,
+    ] + sys.argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

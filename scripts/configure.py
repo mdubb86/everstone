@@ -228,29 +228,37 @@ def _render_calendar_section(config: dict) -> str:
     return f"""\
 ### Calendar — Google Calendar via `gcal`
 
-You have read/write Google Calendar access via the `gcal` CLI wrapper
-(thin pre-configured wrapper around `gcalcli`). Examples:
+You have Google Calendar access through the `gcal` CLI. Run `gcal
+--help` for the full surface. Common verbs:
 
-    gcal agenda                              # what's coming up
-    gcal quick "lunch with Sarah Friday 12pm"  # natural-language add
-    gcal add "1:1 with Alex" --when "2026-06-10 14:00" --calendar work@example.com
+    gcal agenda                                       # upcoming events
+    gcal quick "lunch with Sarah Friday 12pm"         # natural-language add
+    gcal add "1:1 with Alex" --when "2026-06-10 14:00" --calendar "Cal Name"
     gcal search "dentist"
-    gcal --help                              # full surface
+    gcal edit / delete <event-search>
 
-Run `gcal --help` for the full surface (same as `gcalcli --help`).
+Pass `--calendar "Display Name"` to target a specific calendar; the
+name matches what `gcal list` prints. Without `--calendar`, gcalcli
+uses its default (typically the account's primary calendar).
 
-Calendar policy — enforced by YOU, not the tool:
+Calendar policy (read-only / read-write) for this user:
 
-READ-ONLY (look, never modify):
+READ-ONLY:
 {_bulleted(ro)}
 
-READ-WRITE (add/edit/delete freely):
+READ-WRITE:
 {_bulleted(rw)}
 
-ANY OTHER CALENDAR: do not touch — refuse and ask the user to
-configure it in `config.yaml` if they want access. When a request is
-ambiguous about which calendar to use ("add a meeting tomorrow"),
-confirm the calendar before writing.
+Read-only calendars are gated by the `gcal` wrapper — writes against
+them fail with exit code 1 and a refusal message. Don't try to work
+around the gate; explain the policy to the user and suggest moving
+the event to a read-write calendar instead. Calendars NOT in either
+list above are off-limits — refuse and ask the user to add them in
+`config.yaml` if they want agent access.
+
+When a request is ambiguous about which calendar to use ("add a
+meeting tomorrow"), confirm before writing — the operator's personal
+instructions (below) may set defaults, but if they don't, ask.
 """
 
 
@@ -385,10 +393,13 @@ def generate_hermes_env(config: dict) -> None:
         # straight through. The gcal wrapper reads both and forwards.
         "GCALCLI_CLIENT_ID": (config.get("gcalcli") or {}).get("client_id") or "",
         "GCALCLI_CLIENT_SECRET": (config.get("gcalcli") or {}).get("client_secret") or "",
-        "EVERSTONE_GCAL_READ_ONLY": " ".join(
+        # JSON arrays — calendar display names can have spaces, quotes,
+        # apostrophes, so space-separation isn't safe. The gcal wrapper
+        # json.loads these to get the original list back.
+        "EVERSTONE_GCAL_READ_ONLY": json.dumps(
             ((config.get("gcalcli") or {}).get("calendars") or {}).get("read_only") or []
         ),
-        "EVERSTONE_GCAL_READ_WRITE": " ".join(
+        "EVERSTONE_GCAL_READ_WRITE": json.dumps(
             ((config.get("gcalcli") or {}).get("calendars") or {}).get("read_write") or []
         ),
     }

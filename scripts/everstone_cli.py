@@ -7,39 +7,29 @@ wraps these for dev convenience, but the in-container CLI is the source of
 truth for what an operator can do at runtime.
 """
 import os
-import re
 from pathlib import Path
 
 import typer
 
 
-def _load_env_file(path: str = "/opt/config/hermes/env") -> None:
-    """Load operator config (GCALCLI_*, EVERSTONE_*, etc.) into os.environ.
+def _load_envdir(path: str = "/opt/config/hermes/envdir") -> None:
+    """Populate os.environ from s6's envdir (one file per var, raw value).
 
-    The same vars also get exported by s6 service `run` scripts via
-    `s6-envdir`, but ad-hoc `docker exec everstone everstone <cmd>` calls
-    don't go through s6 and therefore don't see them. This is a tiny shell-
-    style parser for the file generate_hermes_env emits — one line per var,
-    `export NAME='value'`. Pre-existing env wins (so a one-off override via
-    `docker exec -e NAME=v ...` keeps working).
+    Same vars are exported by s6 service `run` scripts via s6-envdir but
+    ad-hoc `docker exec everstone everstone <cmd>` calls don't go through
+    s6. Read directly from the envdir form — its values are raw bytes
+    with no shell quoting, so JSON values (gcal calendar lists) round-trip
+    cleanly. setdefault → `docker exec -e NAME=v` overrides still win.
     """
-    try:
-        body = Path(path).read_text()
-    except FileNotFoundError:
+    p = Path(path)
+    if not p.is_dir():
         return
-    pattern = re.compile(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
-    for line in body.splitlines():
-        m = pattern.match(line)
-        if not m:
-            continue
-        name, raw = m.group(1), m.group(2)
-        # Strip a matching pair of surrounding single or double quotes.
-        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
-            raw = raw[1:-1]
-        os.environ.setdefault(name, raw)
+    for entry in p.iterdir():
+        if entry.is_file():
+            os.environ.setdefault(entry.name, entry.read_text())
 
 
-_load_env_file()
+_load_envdir()
 
 app = typer.Typer(
     help="EverStone admin CLI. From the host: `docker exec [-it] everstone everstone <command>`.",
