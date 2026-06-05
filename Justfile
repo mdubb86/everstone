@@ -56,12 +56,13 @@ setup-livesync:
     docker exec -it {{DEV_NAME}} setup-obsidian-livesync
 
 # Interactive Hermes OpenAI-Codex OAuth flow (one-time agent auth).
-# --manual-paste: skip the loopback callback listener (the VM has no browser
-# anyway, so you'll authorize in your Mac browser and paste the failed
-# redirect URL back here).
+# The credential lands in the 'everstone' profile (created by setup_hermes
+# with --no-skills), so first authorize from your laptop's browser, paste
+# the failed redirect URL back here. --manual-paste skips the loopback
+# callback listener (the VM has no browser anyway).
 hermes-auth:
     docker exec -it -e HERMES_HOME=/opt/data/hermes {{DEV_NAME}} \
-        hermes auth add openai-codex --type oauth --manual-paste
+        hermes -p everstone auth add openai-codex --type oauth --manual-paste
 
 # Interactive Hermes chat REPL — visible reasoning + tool calls. The same
 # agent (same SOUL, AGENTS.md, tools, model) that Telegram talks to.

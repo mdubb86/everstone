@@ -22,6 +22,12 @@
         "instructions": {
           "type": ["string", "null"],
           "description": "Optional operator-authored section appended to AGENTS.md beneath the auto-generated platform section. <a.b> tokens supported. Stays on the operator's local config.yaml — never check in."
+        },
+        "skills": {
+          "type": "array",
+          "default": [],
+          "description": "Names of Hermes skills to install at boot via `hermes skills install <name>`. Default [] = clean ship (no bundled skills). Add names to opt in; remove from list does NOT uninstall — call `hermes skills uninstall` for that. Custom skills can also be dropped directly into $HERMES_HOME/skills/<name>/ without going through this list.",
+          "items": { "type": "string", "minLength": 1 }
         }
       }
     },

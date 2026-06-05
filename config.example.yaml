@@ -52,6 +52,16 @@ agent:
   #   When I mention "the family group", that's the Telegram group with
   #   my spouse. Add tasks from there to the "Family" list, not Inbox.
 
+  # Optional: Hermes skills to install at boot. Default [] = clean ship,
+  # no bundled skills. To install registry skills (from skills.sh / GitHub),
+  # list their names here. Custom skills you write yourself can also be
+  # dropped directly into <data-dir>/hermes/skills/<your-name>/SKILL.md
+  # without going through this list.
+  skills: []
+  # skills:
+  #   - obsidian
+  #   - research
+
 # CouchDB credentials (used by Obsidian LiveSync at /db).
 couchdb:
   user: everstone

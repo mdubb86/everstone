@@ -316,6 +316,11 @@ def generate_hermes_env(config: dict) -> None:
         # string means "not configured" (git stays unauth'd, falls back to
         # public clones only).
         "GH_TOKEN": (config.get("github") or {}).get("token") or "",
+        # Space-separated list of Hermes skill names to install at boot.
+        # Default empty = clean ship; setup_hermes loops and installs each.
+        "EVERSTONE_SKILLS": " ".join(
+            (config.get("agent") or {}).get("skills") or []
+        ),
     }
     for name, value in env_vars.items():
         (envdir / name).write_text(value)

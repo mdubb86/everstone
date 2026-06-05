@@ -3,6 +3,17 @@ set -eu
 export HERMES_HOME=/opt/data/hermes
 . /opt/config/hermes/env
 
+# Ensure the `everstone` profile exists (created with --no-skills so the
+# image ships clean, no bundled skill set). Once per-install: idempotent.
+# All subsequent hermes commands here apply to this profile.
+if ! hermes profile list 2>/dev/null | grep -qE "(^|\s)everstone(\s|$)"; then
+    echo "[setup_hermes] creating 'everstone' Hermes profile (--no-skills, clean)"
+    hermes profile create everstone --no-skills --no-alias \
+        --description "EverStone instance — minimal, opt-in skills" \
+        || echo "[setup_hermes] profile create failed (already existed in a race?)"
+fi
+hermes profile use everstone
+
 # Wire GitHub auth for git: if config.yaml supplied a token, set up the
 # `store` credential helper pointing at $HERMES_HOME/.git-credentials.
 # After this, `git clone https://github.com/<private>/repo` (and anything
@@ -45,5 +56,21 @@ curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMyCommand
     --max-time 10 >/dev/null \
     && echo "[setup_hermes] Telegram slash-commands set (count: $(echo "$TELEGRAM_COMMANDS" | grep -o '"command"' | wc -l))." \
     || echo "[setup_hermes] WARN: setMyCommands call failed (network? wrong token?). Bot still functional."
+
+# Install Hermes skills the operator opted into via config.agent.skills.
+# Imperative model: each name in $EVERSTONE_SKILLS gets `hermes skills
+# install`'d. Idempotent — Hermes skips already-installed ones. Removing
+# a name from config.yaml does NOT uninstall (intentional: preserves any
+# learned state). Use `hermes skills uninstall <name>` to drop one.
+if [ -n "${EVERSTONE_SKILLS:-}" ]; then
+    for skill in $EVERSTONE_SKILLS; do
+        if hermes skills install "$skill" 2>&1 | tail -3 | head -1 \
+                | grep -qiE "installed|already|up.to.date"; then
+            echo "[setup_hermes] skill ready: $skill"
+        else
+            echo "[setup_hermes] WARN: skill install may have failed: $skill"
+        fi
+    done
+fi
 
 echo "[setup_hermes] applied. Run 'just hermes-auth' once (see docs/BOOTSTRAP.md)."

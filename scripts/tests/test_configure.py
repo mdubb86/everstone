@@ -7,7 +7,7 @@ configure = importlib.util.module_from_spec(spec); spec.loader.exec_module(confi
 SAMPLE = {
   "public_url": "https://example.com",
   "name": "Michael",
-  "agent": {"name": "Jarvis", "soul": "I am <agent.name>, in <name>'s hub. Vault: <obsidian.vault_name>."},
+  "agent": {"name": "Jarvis", "soul": "I am <agent.name>, in <name>'s hub. Vault: <obsidian.vault_name>.", "skills": []},
   "couchdb": {"user":"u","password":"p","database":"vault"},
   "caldav": {"user":"cu","password":"cp"},
   "livesync": {"passphrase":"ph"},
@@ -126,6 +126,28 @@ def test_generate_hermes_env_telegram_commands_default_empty(tmp_path):
         configure.generate_hermes_env(sample)
         envdir = tmp_path / "hermes" / "envdir"
         assert (envdir / "TELEGRAM_COMMANDS").read_text() == "[]"
+    finally:
+        del os.environ["EVERSTONE_CONFIG_DIR"]
+
+def test_generate_hermes_env_skills_empty_by_default(tmp_path):
+    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
+    try:
+        configure.generate_hermes_env(SAMPLE)
+        envdir = tmp_path / "hermes" / "envdir"
+        # SAMPLE has skills: [] → empty string in envdir
+        assert (envdir / "EVERSTONE_SKILLS").read_text() == ""
+    finally:
+        del os.environ["EVERSTONE_CONFIG_DIR"]
+
+def test_generate_hermes_env_skills_space_separated(tmp_path):
+    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
+    try:
+        sample = {**SAMPLE, "agent": {**SAMPLE["agent"],
+            "skills": ["obsidian", "research", "daily-notes"]}}
+        configure.generate_hermes_env(sample)
+        body = (tmp_path / "hermes" / "envdir" / "EVERSTONE_SKILLS").read_text()
+        # Shell-iterable form: setup_hermes uses `for skill in $EVERSTONE_SKILLS`.
+        assert body == "obsidian research daily-notes"
     finally:
         del os.environ["EVERSTONE_CONFIG_DIR"]
 
