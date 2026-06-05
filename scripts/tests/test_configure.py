@@ -172,6 +172,77 @@ def test_generate_hermes_env_gh_token_set(tmp_path):
     finally:
         del os.environ["EVERSTONE_CONFIG_DIR"]
 
+def test_generate_hermes_env_gcalcli_unset(tmp_path):
+    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
+    try:
+        # SAMPLE has no gcalcli → all three vars empty, never breaks generator.
+        configure.generate_hermes_env(SAMPLE)
+        envdir = tmp_path / "hermes" / "envdir"
+        assert (envdir / "GCALCLI_CLIENT_SECRET").read_text() == ""
+        assert (envdir / "EVERSTONE_GCAL_READ_ONLY").read_text() == ""
+        assert (envdir / "EVERSTONE_GCAL_READ_WRITE").read_text() == ""
+    finally:
+        del os.environ["EVERSTONE_CONFIG_DIR"]
+
+
+def test_generate_hermes_env_gcalcli_configured(tmp_path):
+    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
+    try:
+        sample = {**SAMPLE, "gcalcli": {
+            "client_secret_file": "/opt/data/hermes/gcalcli/client_secret.json",
+            "calendars": {
+                "read_only": ["primary", "family@example.com"],
+                "read_write": ["personal@gmail.com", "work@example.com"],
+            },
+        }}
+        configure.generate_hermes_env(sample)
+        envdir = tmp_path / "hermes" / "envdir"
+        assert (envdir / "GCALCLI_CLIENT_SECRET").read_text() == \
+            "/opt/data/hermes/gcalcli/client_secret.json"
+        # Space-separated so the gcal wrapper and AGENTS.md render can iterate.
+        assert (envdir / "EVERSTONE_GCAL_READ_ONLY").read_text() == \
+            "primary family@example.com"
+        assert (envdir / "EVERSTONE_GCAL_READ_WRITE").read_text() == \
+            "personal@gmail.com work@example.com"
+    finally:
+        del os.environ["EVERSTONE_CONFIG_DIR"]
+
+
+def test_generate_agents_md_calendar_section_absent_when_unconfigured(tmp_path):
+    os.environ["EVERSTONE_DATA_DIR"] = str(tmp_path)
+    try:
+        configure.generate_agents_md(SAMPLE)
+        body = (tmp_path / "AGENTS.md").read_text()
+        assert "Calendar" not in body
+        assert "gcal" not in body
+    finally:
+        del os.environ["EVERSTONE_DATA_DIR"]
+
+
+def test_generate_agents_md_calendar_section_renders_lists(tmp_path):
+    os.environ["EVERSTONE_DATA_DIR"] = str(tmp_path)
+    try:
+        sample = {**SAMPLE, "gcalcli": {
+            "client_secret_file": "/x.json",
+            "calendars": {
+                "read_only": ["primary", "family@example.com"],
+                "read_write": ["personal@gmail.com"],
+            },
+        }}
+        configure.generate_agents_md(sample)
+        body = (tmp_path / "AGENTS.md").read_text()
+        assert "### Calendar — Google Calendar via `gcal`" in body
+        # Calendars must appear in correct section, with the exact name the
+        # operator typed (no munging, so primary / email-form both work).
+        ro_idx = body.index("READ-ONLY")
+        rw_idx = body.index("READ-WRITE")
+        assert body.index("`primary`") < rw_idx
+        assert body.index("`family@example.com`") < rw_idx
+        assert body.index("`personal@gmail.com`") > rw_idx
+    finally:
+        del os.environ["EVERSTONE_DATA_DIR"]
+
+
 def test_generate_hermes_env_telegram_commands_translated(tmp_path):
     os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
     try:

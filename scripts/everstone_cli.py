@@ -42,6 +42,36 @@ def auth_hermes() -> None:
     )
 
 
+@auth_app.command("gcal")
+def auth_gcal() -> None:
+    """OAuth into Google Calendar. Authorize in browser, paste code back. One-time per Google account."""
+    secret = os.environ.get("GCALCLI_CLIENT_SECRET", "")
+    if not secret:
+        typer.echo(
+            "Google Calendar is not configured.\n"
+            "Set config.gcalcli.{client_secret_file, calendars} in config.yaml,\n"
+            "restart the container, then re-run this command.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if not os.path.isfile(secret):
+        typer.echo(f"Client secret file not found at: {secret}", err=True)
+        typer.echo(
+            "Drop the Google Cloud Console OAuth client_secret.json into your\n"
+            "data bind mount at that path, then re-run.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    # `list` is the lightest read command; on first run gcalcli triggers
+    # the OAuth flow before executing it. --noauth_local_server prints a
+    # URL and reads a code from stdin (matches our paste-back pattern).
+    _exec(
+        "gcal",
+        "--noauth_local_server",
+        "list",
+    )
+
+
 # ─── chat ──────────────────────────────────────────────────────────────────
 
 @app.command()

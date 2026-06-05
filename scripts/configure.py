@@ -204,6 +204,56 @@ Everything below is fact about your environment — not stylistic guidance
 """
 
 
+def _render_calendar_section(config: dict) -> str:
+    """Return the Calendar section for AGENTS.md, or '' if gcalcli unconfigured.
+
+    The section names the read-only vs read-write calendars from
+    config.gcalcli.calendars so the agent has explicit, visible policy.
+    Soft enforcement — gcalcli itself has no per-calendar permissions
+    (Google API is all-or-nothing on the calendar scope), so the agent
+    self-respects via these instructions.
+    """
+    gcalcli = config.get("gcalcli")
+    if not gcalcli:
+        return ""
+    cals = gcalcli.get("calendars") or {}
+    ro = cals.get("read_only") or []
+    rw = cals.get("read_write") or []
+    if not ro and not rw:
+        return ""
+
+    def _bulleted(items):
+        return "\n".join(f"  - `{c}`" for c in items) if items else "  - (none)"
+
+    return f"""\
+### Calendar — Google Calendar via `gcal`
+
+You have read/write Google Calendar access via the `gcal` CLI wrapper
+(thin pre-configured wrapper around `gcalcli`). Examples:
+
+    gcal agenda                              # what's coming up
+    gcal quick "lunch with Sarah Friday 12pm"  # natural-language add
+    gcal add "1:1 with Alex" --when "2026-06-10 14:00" --calendar work@example.com
+    gcal search "dentist"
+    gcal --help                              # full surface
+
+Run `gcal --help` for the full surface (same as `gcalcli --help`).
+
+Calendar policy — enforced by YOU, not the tool:
+
+READ-ONLY (look, never modify):
+{_bulleted(ro)}
+
+READ-WRITE (add/edit/delete freely):
+{_bulleted(rw)}
+
+ANY OTHER CALENDAR: do not touch — refuse and ask the user to
+configure it in `config.yaml` if they want access. When a request is
+ambiguous about which calendar to use ("add a meeting tomorrow"),
+confirm the calendar before writing.
+"""
+
+
 def generate_agents_md(config: dict) -> None:
     """Render /opt/data/AGENTS.md from platform truth + agent.instructions.
 
@@ -222,8 +272,11 @@ def generate_agents_md(config: dict) -> None:
     data_dir = _data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
     platform = render_soul_template(_AGENTS_PLATFORM_TEMPLATE, config)
+    calendar = _render_calendar_section(config)
     instructions = (config.get("agent") or {}).get("instructions")
     parts = [platform.rstrip()]
+    if calendar:
+        parts.append(calendar.rstrip())
     if isinstance(instructions, str) and instructions.strip():
         rendered_instructions = render_soul_template(instructions, config)
         parts.append("## Custom instructions\n\n" + rendered_instructions.strip())
@@ -320,6 +373,18 @@ def generate_hermes_env(config: dict) -> None:
         # Default empty = clean ship; setup_hermes loops and installs each.
         "EVERSTONE_SKILLS": " ".join(
             (config.get("agent") or {}).get("skills") or []
+        ),
+        # gcalcli wiring — empty strings = "not configured" so the
+        # everstone CLI / wrapper / setup_gcal can branch cleanly.
+        # When set, the `gcal` wrapper script and `everstone auth gcal`
+        # use these to point gcalcli at the operator-supplied OAuth
+        # client and the persistent config folder under /opt/data.
+        "GCALCLI_CLIENT_SECRET": (config.get("gcalcli") or {}).get("client_secret_file") or "",
+        "EVERSTONE_GCAL_READ_ONLY": " ".join(
+            ((config.get("gcalcli") or {}).get("calendars") or {}).get("read_only") or []
+        ),
+        "EVERSTONE_GCAL_READ_WRITE": " ".join(
+            ((config.get("gcalcli") or {}).get("calendars") or {}).get("read_write") or []
         ),
     }
     for name, value in env_vars.items():

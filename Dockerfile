@@ -102,7 +102,8 @@ RUN pip install --break-system-packages \
         "radicale>=3.2" \
         "hermes-agent" \
         "python-telegram-bot>=21" \
-        "typer>=0.12"
+        "typer>=0.12" \
+        "gcalcli>=4.4"
 
 COPY everstone_tasks /opt/everstone_tasks
 RUN pip install --break-system-packages /opt/everstone_tasks
@@ -136,6 +137,8 @@ COPY config /opt/defaults/config
 # script is identical to what Typer would emit.
 RUN ln -sf /scripts/everstone_cli.py /usr/local/bin/everstone && \
     chmod +x /scripts/everstone_cli.py && \
+    ln -sf /scripts/gcal /usr/local/bin/gcal && \
+    chmod +x /scripts/gcal && \
     mkdir -p /root/.bash_completions && \
     cp /scripts/everstone_completion.sh /root/.bash_completions/everstone.sh && \
     echo "source /root/.bash_completions/everstone.sh" > /root/.bashrc

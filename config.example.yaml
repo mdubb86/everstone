@@ -119,3 +119,38 @@ hermes:
 #
 # github:
 #   token: ghp_xxxxxxxxxxxxxxxxxxxx
+
+# Optional: Google Calendar access via gcalcli. Omit entirely (or leave
+# null) to disable — the agent gets no calendar tools and AGENTS.md
+# doesn't mention them. When set, the agent can read calendars in
+# `read_only` and modify those in `read_write` (anything else is
+# off-limits per AGENTS.md — soft enforcement).
+#
+# Setup (one-time, ~10 min):
+#   1. Google Cloud Console (console.cloud.google.com):
+#      - Create a project, enable the "Google Calendar API"
+#      - OAuth consent screen: User type "External", publishing status
+#        "In production" (skip verification — refresh tokens will be
+#        long-lived; you'll see an "Unverified app" warning once during
+#        initial OAuth, click Advanced → Continue)
+#      - Credentials → Create Credentials → OAuth Client ID
+#        Application type: "Desktop app"
+#      - Download the JSON — this is your client_secret_file
+#   2. Drop the JSON into your data dir (whatever you bind to /opt/data):
+#        mkdir -p .everstone-data/hermes/gcalcli/
+#        mv ~/Downloads/client_secret_*.json \
+#            .everstone-data/hermes/gcalcli/client_secret.json
+#   3. Fill in client_secret_file + calendars below
+#   4. Run: just hermes-auth or `docker exec -it everstone everstone auth gcal`
+#      - It'll print a Google URL → authorize in your Mac browser
+#      - Paste the code back to the terminal
+#
+# gcalcli:
+#   client_secret_file: /opt/data/hermes/gcalcli/client_secret.json
+#   calendars:
+#     read_only:
+#       - primary
+#       - family@example.com
+#     read_write:
+#       - personal@example.com
+#       - work@example.com
