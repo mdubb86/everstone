@@ -343,6 +343,10 @@ def generate_hermes_env(config: dict) -> None:
 
     owner_id = str(config["telegram"]["owner_user_id"])
     env_vars = {
+        # Operator's public HTTPS URL — needed by auth_gcal.py to set the
+        # OAuth redirect_uri to <public_url>/oauth/google/callback and by
+        # any other component that builds a public-facing URL.
+        "EVERSTONE_PUBLIC_URL": config["public_url"].rstrip("/"),
         "EVERSTONE_CALDAV_URL": "http://localhost:5232",
         "EVERSTONE_CALDAV_USER": config["caldav"]["user"],
         "EVERSTONE_CALDAV_PASSWORD": config["caldav"]["password"],

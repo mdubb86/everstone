@@ -23,6 +23,15 @@
 		}
 	}
 
+	# Google OAuth callback for `everstone auth gcal`. Forwarded to the
+	# one-shot HTTP server /scripts/auth_gcal.py spins up on port 8081
+	# while the auth flow is running. Outside the auth window, this
+	# proxies to nothing and 502s — fine, no legitimate traffic ever
+	# hits this path except Google's redirect after consent.
+	handle /oauth/google/callback {
+		reverse_proxy localhost:8081
+	}
+
 	handle /* {
 		respond "EverStone Server" 200
 	}
