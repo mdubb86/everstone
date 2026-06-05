@@ -101,3 +101,11 @@ telegram:
 #   openrouter/openai/gpt-5       (OpenRouter — one key, many models)
 hermes:
   model: openai-codex/gpt-5.5
+
+# Optional: GitHub auth so private repo clones work — e.g. for installing
+# your own private skills repo via `hermes skills tap` + `git clone`. Create
+# a token at https://github.com/settings/tokens with 'repo' scope, paste it
+# here. Skip if you don't need private GitHub access.
+#
+# github:
+#   token: ghp_xxxxxxxxxxxxxxxxxxxx

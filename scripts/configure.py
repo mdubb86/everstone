@@ -311,6 +311,11 @@ def generate_hermes_env(config: dict) -> None:
             {"command": c["cmd"], "description": c["desc"]}
             for c in (config["telegram"].get("commands") or [])
         ]),
+        # Optional GitHub PAT — exposed only when set, so setup_hermes can
+        # branch on its presence to wire the git credential helper. Empty
+        # string means "not configured" (git stays unauth'd, falls back to
+        # public clones only).
+        "GH_TOKEN": (config.get("github") or {}).get("token") or "",
     }
     for name, value in env_vars.items():
         (envdir / name).write_text(value)

@@ -83,6 +83,16 @@
       "properties": {
         "model": { "type": "string", "minLength": 1 }
       }
+    },
+    "github": {
+      "type": "object",
+      "description": "Optional GitHub auth so private repo clones work — e.g. operator's personal skills repo. If token is set, git is configured to use it as a credential helper.",
+      "properties": {
+        "token": {
+          "type": ["string", "null"],
+          "description": "Personal access token (https://github.com/settings/tokens). Needs 'repo' scope for private repo access. Stays in your local config.yaml — never check in."
+        }
+      }
     }
   }
 }

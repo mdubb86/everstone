@@ -3,6 +3,19 @@ set -eu
 export HERMES_HOME=/opt/data/hermes
 . /opt/config/hermes/env
 
+# Wire GitHub auth for git: if config.yaml supplied a token, set up the
+# `store` credential helper pointing at $HERMES_HOME/.git-credentials.
+# After this, `git clone https://github.com/<private>/repo` (and anything
+# that wraps it — `hermes skills tap`, etc.) works without prompting.
+if [ -n "${GH_TOKEN:-}" ]; then
+    mkdir -p "$HERMES_HOME"
+    creds_file="$HERMES_HOME/.git-credentials"
+    git config --global credential.helper "store --file=$creds_file"
+    printf 'https://oauth2:%s@github.com\n' "$GH_TOKEN" > "$creds_file"
+    chmod 600 "$creds_file"
+    echo "[setup_hermes] git configured to use GH_TOKEN for github.com clones"
+fi
+
 # Note: SOUL.md is rendered + overwritten by configure.py on every container
 # start from config.yaml's `agent.soul`. To customize, edit that field, not
 # /opt/data/hermes/SOUL.md directly.

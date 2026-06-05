@@ -129,6 +129,27 @@ def test_generate_hermes_env_telegram_commands_default_empty(tmp_path):
     finally:
         del os.environ["EVERSTONE_CONFIG_DIR"]
 
+def test_generate_hermes_env_gh_token_unset(tmp_path):
+    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
+    try:
+        # No github section at all → empty token, never breaks the generator.
+        sample = {k: v for k, v in SAMPLE.items() if k != "github"}
+        configure.generate_hermes_env(sample)
+        envdir = tmp_path / "hermes" / "envdir"
+        assert (envdir / "GH_TOKEN").read_text() == ""
+    finally:
+        del os.environ["EVERSTONE_CONFIG_DIR"]
+
+def test_generate_hermes_env_gh_token_set(tmp_path):
+    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
+    try:
+        sample = {**SAMPLE, "github": {"token": "ghp_secret123"}}
+        configure.generate_hermes_env(sample)
+        envdir = tmp_path / "hermes" / "envdir"
+        assert (envdir / "GH_TOKEN").read_text() == "ghp_secret123"
+    finally:
+        del os.environ["EVERSTONE_CONFIG_DIR"]
+
 def test_generate_hermes_env_telegram_commands_translated(tmp_path):
     os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
     try:
