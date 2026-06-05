@@ -3,8 +3,16 @@ set shell := ["bash", "-cu"]
 IMAGE     := "everstone:dev"
 DEV_NAME  := "everstone"
 E2E_NAME  := "everstone-e2e"
-DATA_DIR  := justfile_directory() + "/.everstone-data"
-CONFIG    := justfile_directory() + "/config.yaml"
+
+# CONFIG and DATA_DIR default to workspace-local so cloning + `just dev`
+# Just Works for someone hacking on EverStone. When developing inside an
+# ephemeral SBX VM, set EVERSTONE_CONFIG / EVERSTONE_DATA_DIR (in
+# /etc/sandbox-persistent.sh, or per-shell) to point at host-mounted
+# directories so vault / CouchDB / agent state survive a VM rebuild.
+#
+# Both must be ABSOLUTE paths (docker bind mounts reject relative ones).
+DATA_DIR  := env_var_or_default("EVERSTONE_DATA_DIR", justfile_directory() + "/.everstone-data")
+CONFIG    := env_var_or_default("EVERSTONE_CONFIG", justfile_directory() + "/config.yaml")
 
 default:
     @just --list
