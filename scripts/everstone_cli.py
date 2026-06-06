@@ -114,7 +114,11 @@ def session_show(
 @calendar_app.command("list")
 def calendar_list() -> None:
     """List calendars the authed Google account can see — use this to discover IDs for config.yaml."""
-    _exec("gcal", "list")
+    from es.google_auth import calendar_service
+    svc = calendar_service()
+    items = svc.calendarList().list().execute().get("items", [])
+    for c in items:
+        print(f"{c.get('accessRole','?'):>8}  {c.get('summary','')}  ({c.get('id')})")
 
 
 # ─── setup ─────────────────────────────────────────────────────────────────

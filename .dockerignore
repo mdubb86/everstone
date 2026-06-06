@@ -23,6 +23,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# es package local venv — not for the image.
+es/.venv
+
 # Local docs / notes (Dockerfile doesn't read these).
 docs/
 *.md
