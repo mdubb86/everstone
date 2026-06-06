@@ -8,14 +8,12 @@ Policy (current, post CLI-first refactor):
 - DM (owner's private chat) — no restriction; you trust yourself with
   your own VM and the assistant persona is shaped via SOUL.md/AGENTS.md
   rather than hard ACL.
-- Groups — only the `everstone-tasks` CLI is callable, invoked via the
-  terminal/shell tool. We check tool_name AND argv[0] AND reject shell
+- Groups — only `es tasks ...` is callable, invoked via the
+  terminal/shell tool. We check tool_name AND argv[0:2] AND reject shell
   composition (pipes, &&, ;) to keep group reach surgical.
 - Empty / unparseable chat key — fail closed.
 
 The argv check is shallow on purpose: we want a simple, auditable rule.
-If `EVERSTONE_GROUP_BINARIES` is set in env we use that allowlist
-instead of the default {"everstone-tasks"}.
 """
 
 from __future__ import annotations
@@ -31,8 +29,11 @@ _BLOCK = {"action": "block", "message": "Tool not permitted outside a private DM
 _SHELL_TOOL_NAMES = {"terminal", "shell", "bash"}
 
 # Shell composition operators we reject in group chats. The agent in a group
-# should only run a single discrete `everstone-tasks ...` invocation.
+# should only run a single discrete `es tasks ...` invocation.
 _GROUP_FORBIDDEN_SUBSTRINGS = ("|", ";", "&&", "||", "`", "$(", ">", "<", "\n")
+
+# In groups, only `es tasks ...` is allowed (was {everstone-tasks} pre-es).
+_GROUP_ALLOWED = ("es", "tasks")  # (argv[0], argv[1])
 
 
 def _chat_type() -> Optional[str]:
@@ -44,18 +45,13 @@ def _chat_type() -> Optional[str]:
     return None
 
 
-def _group_allowed_binaries() -> set:
-    raw = os.environ.get("EVERSTONE_GROUP_BINARIES", "everstone-tasks")
-    return {b.strip() for b in raw.split(",") if b.strip()}
-
-
-def _extract_argv0(command: str) -> Optional[str]:
-    """Return the leading binary name in a shell command, or None if unparseable."""
+def _es_tasks_invocation(command: str) -> bool:
+    """Return True iff command is an `es tasks ...` invocation (no composition)."""
     try:
         argv = shlex.split(command)
     except ValueError:
-        return None
-    return argv[0] if argv else None
+        return False
+    return len(argv) >= 2 and argv[0] == _GROUP_ALLOWED[0] and argv[1] == _GROUP_ALLOWED[1]
 
 
 def policy(tool_name: str, tool_input: Optional[dict] = None) -> Optional[dict]:
@@ -67,7 +63,7 @@ def policy(tool_name: str, tool_input: Optional[dict] = None) -> Optional[dict]:
         return None
 
     # Anywhere else (group, supergroup, channel, unknown, missing) — fail closed
-    # unless the call is a single `everstone-tasks ...` shell invocation.
+    # unless the call is a single `es tasks ...` shell invocation.
     if tool_name not in _SHELL_TOOL_NAMES:
         return _BLOCK
 
@@ -81,8 +77,7 @@ def policy(tool_name: str, tool_input: Optional[dict] = None) -> Optional[dict]:
     if any(op in command for op in _GROUP_FORBIDDEN_SUBSTRINGS):
         return _BLOCK
 
-    argv0 = _extract_argv0(command)
-    if argv0 is None or argv0 not in _group_allowed_binaries():
+    if not _es_tasks_invocation(command):
         return _BLOCK
 
     return None
@@ -92,4 +87,8 @@ class HermesPlugin:
     """Hermes plugin entry-point class."""
 
     def pre_tool_call(self, tool_name: str, **kwargs: Any):
-        return policy(tool_name, kwargs.get("args") or kwargs.get("tool_input"))
+        try:
+            return policy(tool_name, kwargs.get("args") or kwargs.get("tool_input"))
+        except Exception:
+            # Hermes is fail-OPEN on hook exceptions; we fail CLOSED in groups.
+            return None if _chat_type() == "dm" else _BLOCK

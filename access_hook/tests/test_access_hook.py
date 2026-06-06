@@ -9,6 +9,9 @@ spec = importlib.util.spec_from_file_location(
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
+# Expose top-level names for the new tests that import them directly.
+policy = mod.policy
+
 
 def run_policy(tool_name, session_key, tool_input=None, env=None):
     """Invoke the policy with controlled env. Returns None (allow) or dict (block)."""
@@ -51,8 +54,9 @@ def test_group_blocks_terminal_other_command():
     assert r is not None and "block" in str(r)
 
 def test_group_allows_everstone_tasks_invocation():
+    # Updated: old `everstone-tasks` binary replaced by `es tasks` subcommand.
     r = run_policy("terminal", "agent:main:telegram:group:-100",
-                   {"command": "everstone-tasks list --list inbox --json"})
+                   {"command": "es tasks list --list inbox --json"})
     assert r is None
 
 def test_group_blocks_pipe_chaining():
@@ -76,8 +80,9 @@ def test_group_blocks_redirect():
     assert r is not None and "block" in str(r)
 
 def test_group_supergroup_treated_same():
+    # Updated: old `everstone-tasks` binary replaced by `es tasks` subcommand.
     assert run_policy("terminal", "agent:main:telegram:supergroup:-100",
-                      {"command": "everstone-tasks list"}) is None
+                      {"command": "es tasks list"}) is None
 
 
 # --- Fail-closed fallbacks ---------------------------------------------------
@@ -91,10 +96,42 @@ def test_no_session_blocks_other_tools():
     assert r is not None and "block" in str(r)
 
 
-# --- Operator-configurable allowlist ----------------------------------------
+# --- Operator-configurable allowlist (removed) / es tasks tests --------------
+# EVERSTONE_GROUP_BINARIES env-var allowlist was removed when everstone-tasks
+# was replaced by the `es tasks` subcommand. The allowlist is now hard-coded
+# to (argv[0]=="es", argv[1]=="tasks") and is not runtime-configurable.
 
-def test_group_allowed_binaries_env_widens_scope():
+def test_group_blocks_extra_tool_without_allowlist():
+    # Without the old env-var allowlist, arbitrary binaries are blocked.
     r = run_policy("terminal", "agent:main:telegram:group:-100",
-                   {"command": "extra-tool"},
-                   env={"EVERSTONE_GROUP_BINARIES": "everstone-tasks,extra-tool"})
-    assert r is None
+                   {"command": "extra-tool"})
+    assert r is not None and "block" in str(r)
+
+
+# --- New es tasks / cutover tests -------------------------------------------
+
+def _grp(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_KEY", "agent:main:telegram:group:123")
+
+
+def test_group_allows_es_tasks(monkeypatch):
+    _grp(monkeypatch)
+    assert policy("terminal", {"command": "es tasks list --list inbox"}) is None
+
+
+def test_group_blocks_es_cal(monkeypatch):
+    _grp(monkeypatch)
+    assert policy("terminal", {"command": "es cal agenda 2026-06-08 2026-06-09 --calendar Family"}) == \
+        {"action": "block", "message": "Tool not permitted outside a private DM."}
+
+
+def test_group_blocks_bare_es(monkeypatch):
+    _grp(monkeypatch)
+    assert policy("terminal", {"command": "es"})["action"] == "block"
+
+
+def test_hook_never_raises_on_bad_input(monkeypatch):
+    _grp(monkeypatch)
+    # tool_input not a dict — pre_tool_call must return a dict, never raise.
+    # Use mod.HermesPlugin since the module is loaded via importlib (not on sys.path).
+    assert mod.HermesPlugin().pre_tool_call("terminal", tool_input=12345)["action"] == "block"
