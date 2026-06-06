@@ -18,9 +18,8 @@ def envelope(fn):
         try:
             data = fn(ctx, *args, **kwargs)
         except Exception as e:  # noqa: BLE001 - CLI boundary: never leak a traceback
-            raise typer.Exit(
-                output.emit_error(type(e).__name__, str(e), _pretty(ctx))
-            )
+            code = getattr(e, "es_code", None) or type(e).__name__
+            raise typer.Exit(output.emit_error(code, str(e), _pretty(ctx)))
         raise typer.Exit(output.emit(data, _pretty(ctx)))
 
     return wrapper

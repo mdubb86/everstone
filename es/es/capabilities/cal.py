@@ -109,3 +109,89 @@ def conflicts(ctx: typer.Context,
             out.append({"a": _event_view(a, tzname), "b": _event_view(e, tzname)})
         active.append(e)
     return out
+
+
+class ReadOnlyCalendar(Exception):
+    es_code = "read_only_calendar"
+
+
+def _require_writable(calendar: str) -> None:
+    read_only, _ = cal_support.calendar_policy()
+    if calendar in read_only:
+        raise ReadOnlyCalendar(
+            f"{calendar!r} is read-only by policy; writes are refused. "
+            f"Use a writable calendar instead."
+        )
+
+
+@app.command("add")
+@envelope
+def add(ctx: typer.Context,
+        summary: str = typer.Argument(...),
+        calendar: str = typer.Option(..., "--calendar"),
+        when: str = typer.Option(..., "--when", help="YYYY-MM-DD HH:MM (local)"),
+        duration: int = typer.Option(60, "--duration", help="minutes"),
+        where: Optional[str] = typer.Option(None, "--where"),
+        description: Optional[str] = typer.Option(None, "--description"),
+        tz: Optional[str] = typer.Option(None, "--tz")):
+    _require_writable(calendar)
+    tzname = tz or cal_support.home_tz()
+    svc = calendar_service()
+    cal_id = cal_support.resolve_calendar_id(svc, calendar)
+    start = datetime.fromisoformat(when.replace(" ", "T"))
+    end = start + timedelta(minutes=duration)
+    body = {
+        "summary": summary,
+        "start": {"dateTime": start.isoformat(), "timeZone": tzname},
+        "end": {"dateTime": end.isoformat(), "timeZone": tzname},
+    }
+    if where:
+        body["location"] = where
+    if description:
+        body["description"] = description
+    created = svc.events().insert(calendarId=cal_id, body=body).execute()
+    return {"id": created.get("id"), "summary": summary}
+
+
+@app.command("edit")
+@envelope
+def edit(ctx: typer.Context,
+         event_id: str = typer.Argument(...),
+         calendar: str = typer.Option(..., "--calendar"),
+         summary: Optional[str] = typer.Option(None, "--summary"),
+         when: Optional[str] = typer.Option(None, "--when"),
+         duration: Optional[int] = typer.Option(None, "--duration"),
+         where: Optional[str] = typer.Option(None, "--where"),
+         description: Optional[str] = typer.Option(None, "--description"),
+         tz: Optional[str] = typer.Option(None, "--tz")):
+    _require_writable(calendar)
+    tzname = tz or cal_support.home_tz()
+    svc = calendar_service()
+    cal_id = cal_support.resolve_calendar_id(svc, calendar)
+    patch: dict = {}
+    if summary is not None:
+        patch["summary"] = summary
+    if where is not None:
+        patch["location"] = where
+    if description is not None:
+        patch["description"] = description
+    if when is not None:
+        start = datetime.fromisoformat(when.replace(" ", "T"))
+        patch["start"] = {"dateTime": start.isoformat(), "timeZone": tzname}
+        if duration is not None:
+            end = start + timedelta(minutes=duration)
+            patch["end"] = {"dateTime": end.isoformat(), "timeZone": tzname}
+    updated = svc.events().patch(calendarId=cal_id, eventId=event_id, body=patch).execute()
+    return _event_view(updated, tzname)
+
+
+@app.command("delete")
+@envelope
+def delete(ctx: typer.Context,
+           event_id: str = typer.Argument(...),
+           calendar: str = typer.Option(..., "--calendar")):
+    _require_writable(calendar)
+    svc = calendar_service()
+    cal_id = cal_support.resolve_calendar_id(svc, calendar)
+    svc.events().delete(calendarId=cal_id, eventId=event_id).execute()
+    return {"id": event_id, "deleted": True}
