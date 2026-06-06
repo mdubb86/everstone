@@ -132,6 +132,10 @@
           }
         }
       }
+    },
+    "timezone": {
+      "type": "string",
+      "description": "Operator home IANA timezone for es cal (e.g. America/Chicago). Per-call --tz overrides."
     }
   }
 }

@@ -9,3 +9,4 @@ telegram: {owner_user_id: null, bot_token: null, commands: []}
 hermes: {model: null}
 github: {token: null}
 gcalcli: null
+timezone: America/Chicago
