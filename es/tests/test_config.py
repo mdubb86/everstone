@@ -1,0 +1,21 @@
+import pytest
+from es import config
+
+
+def test_load_reads_yaml(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("caldav:\n  user: alice\n  password: secret\nobsidian:\n  vault_name: Vault\n")
+    monkeypatch.setenv("ES_CONFIG_PATH", str(cfg))
+    data = config.load_config()
+    assert data["caldav"]["user"] == "alice"
+    assert data["obsidian"]["vault_name"] == "Vault"
+
+
+def test_missing_file_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("ES_CONFIG_PATH", str(tmp_path / "nope.yaml"))
+    with pytest.raises(FileNotFoundError):
+        config.load_config()
+
+
+def test_caldav_url_is_the_radicale_constant():
+    assert config.CALDAV_URL == "http://localhost:5232"
