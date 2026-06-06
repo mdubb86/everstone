@@ -74,3 +74,38 @@ def search(ctx: typer.Context,
         calendarId=cal_id, q=query, singleEvents=True, orderBy="startTime",
     ).execute().get("items", [])
     return [_event_view(e, tzname) for e in items]
+
+
+def _instant(e: dict, key: str) -> str:
+    """Comparable RFC3339 instant for ordering/overlap (UTC normalized)."""
+    v = e.get(key, {})
+    raw = v.get("dateTime") or (v.get("date", "") + "T00:00:00+00:00")
+    return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(ZoneInfo("UTC")).isoformat()
+
+
+@app.command("conflicts")
+@envelope
+def conflicts(ctx: typer.Context,
+              start: str = typer.Argument(...),
+              end: str = typer.Argument(...),
+              calendar: str = typer.Option(..., "--calendar"),
+              tz: Optional[str] = typer.Option(None, "--tz")):
+    tzname = tz or cal_support.home_tz()
+    svc = calendar_service()
+    cal_id = cal_support.resolve_calendar_id(svc, calendar)
+    tmin, tmax = _day_bounds(start, end, tzname)
+    items = svc.events().list(
+        calendarId=cal_id, timeMin=tmin, timeMax=tmax,
+        singleEvents=True, orderBy="startTime",
+    ).execute().get("items", [])
+    # chronological sweep (ref: gcalcli/conflicts.py): a pair conflicts when the
+    # later event starts before the earlier one ends.
+    out: List[dict] = []
+    active: List[dict] = []
+    for e in items:
+        s = _instant(e, "start")
+        active = [a for a in active if _instant(a, "end") > s]
+        for a in active:
+            out.append({"a": _event_view(a, tzname), "b": _event_view(e, tzname)})
+        active.append(e)
+    return out
