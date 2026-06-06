@@ -57,16 +57,6 @@ curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMyCommand
     && echo "[setup_hermes] Telegram slash-commands set (count: $(echo "$TELEGRAM_COMMANDS" | grep -o '"command"' | wc -l))." \
     || echo "[setup_hermes] WARN: setMyCommands call failed (network? wrong token?). Bot still functional."
 
-# gcalcli setup — if the operator configured Google Calendar in
-# config.yaml, ensure the persistent config folder exists. The OAuth
-# refresh token lands here after `everstone auth gcal`; without this
-# dir on the data volume, gcalcli would default to $HOME and lose
-# state on container rebuild.
-if [ -n "${GCALCLI_CLIENT_ID:-}" ] && [ -n "${GCALCLI_CLIENT_SECRET:-}" ]; then
-    mkdir -p /opt/data/hermes/gcalcli
-    echo "[setup_hermes] gcalcli configured (client_id: ${GCALCLI_CLIENT_ID%%-*}-...)"
-fi
-
 # Install Hermes skills the operator opted into via config.agent.skills.
 # Imperative model: each name in $EVERSTONE_SKILLS gets `hermes skills
 # install`'d. Idempotent — Hermes skips already-installed ones. Removing
