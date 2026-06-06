@@ -2,6 +2,7 @@
 import typer
 
 from es.capabilities import tasks
+from es.capabilities import cal
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="EverStone agent CLI")
 
@@ -13,6 +14,7 @@ def _root(ctx: typer.Context,
 
 
 app.add_typer(tasks.app, name="tasks", help="CalDAV tasks.")
+app.add_typer(cal.app, name="cal", help="Google Calendar (direct API).")
 
 
 def main() -> None:
