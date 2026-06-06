@@ -78,3 +78,7 @@ class TasksClient:
         if "url" in c:
             del c["url"]
         c.add("url", url); todo.save()
+
+    def delete_task(self, uid, list_name):
+        todo = self._find(uid, list_name)
+        todo.delete()
