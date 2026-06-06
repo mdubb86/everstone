@@ -1,15 +1,18 @@
-"""Shared Google credential consumer for es. Loads the stored OAuth
-credential, refreshes if expired, builds API service objects. The OAuth flow
-is operator-run elsewhere; es only consumes."""
+"""Shared Google credential consumer for es. Reads the JSON credential store,
+refreshes if expired, builds API services. The OAuth flow is operator-run
+(scripts/auth_gcal.py); es only consumes."""
 import os
-import pickle
 from pathlib import Path
 
 from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-# Current store is gcalcli's pickle file; Plan 3 relocates it. Override for tests.
-_DEFAULT_CREDS_PATH = "/opt/data/hermes/gcalcli/oauth"
+# Union of scopes for all enabled Google capabilities. Append here when adding
+# a new Google capability (e.g. gmail.readonly for es mail) — then re-consent.
+GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar"]
+
+_DEFAULT_CREDS_PATH = "/opt/data/hermes/es/google-credentials.json"
 
 
 def _creds_path() -> Path:
@@ -21,15 +24,13 @@ def load_credentials():
     if not path.is_file():
         raise FileNotFoundError(
             f"es: Google not authorized (no creds at {path}). "
-            f"Run the operator auth flow first."
+            f"Operator: run `everstone auth google`."
         )
-    with open(path, "rb") as fh:
-        creds = pickle.load(fh)
+    creds = Credentials.from_authorized_user_file(str(path), GOOGLE_SCOPES)
     if not creds.valid:
         creds.refresh(Request())
     return creds
 
 
 def calendar_service():
-    return build("calendar", "v3", credentials=load_credentials(),
-                 cache_discovery=False)
+    return build("calendar", "v3", credentials=load_credentials(), cache_discovery=False)

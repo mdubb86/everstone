@@ -66,12 +66,12 @@ def auth_hermes() -> None:
     )
 
 
-@auth_app.command("gcal")
-def auth_gcal() -> None:
-    """OAuth into Google Calendar. Authorize in browser, paste code back. One-time per Google account."""
+@auth_app.command("google")
+def auth_google() -> None:
+    """OAuth into Google (Calendar now; more surfaces later). Authorize in browser. One-time per Google account."""
     if not os.environ.get("GCALCLI_CLIENT_ID") or not os.environ.get("GCALCLI_CLIENT_SECRET"):
         typer.echo(
-            "Google Calendar is not configured.\n"
+            "Google is not configured.\n"
             "Set config.gcalcli.{client_id, client_secret} in config.yaml,\n"
             "restart the container, then re-run this command.",
             err=True,
@@ -80,8 +80,8 @@ def auth_gcal() -> None:
     # Delegated to /scripts/auth_gcal.py — runs our own OAuth flow on a
     # fixed port (gcalcli's built-in flow uses random ports and assumes
     # the browser can reach the container directly, which doesn't fit
-    # docker-in-VM setups). Result is pickled to <config>/oauth in the
-    # format gcalcli reads on every subsequent call.
+    # docker-in-VM setups). Result is written as JSON to the es shared
+    # credential store at /opt/data/hermes/es/google-credentials.json.
     _exec("python3", "-u", "/scripts/auth_gcal.py")
 
 

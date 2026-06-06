@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-time Google Calendar OAuth flow for EverStone.
+"""One-time Google OAuth flow for EverStone.
 
 The redirect_uri is set explicitly to <public_url>/oauth/google/callback,
 which Caddy proxies to localhost:8081 (where this script briefly listens).
@@ -9,11 +9,11 @@ browser, and the redirect lands automatically — no URL copy-paste.
 Requires the OAuth client to be of type "Web application" (Desktop-app
 clients are restricted to localhost redirects by Google).
 
-The resulting credentials are pickled to <config>/oauth, exactly the
-format gcalcli's _load_credentials reads on every subsequent command.
+The resulting credentials are written as JSON to the es shared credential
+store (es/google_auth.py: _DEFAULT_CREDS_PATH). Keep GOOGLE_SCOPES and
+CREDS_PATH in sync with es/es/google_auth.py if you change either.
 """
 import os
-import pickle
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -22,9 +22,10 @@ from urllib.parse import parse_qs, urlparse
 from google_auth_oauthlib.flow import Flow
 
 
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
+# Keep in sync with es/es/google_auth.py: GOOGLE_SCOPES / _DEFAULT_CREDS_PATH
+GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar"]
+CREDS_PATH = Path(os.environ.get("ES_GOOGLE_CREDS_PATH", "/opt/data/hermes/es/google-credentials.json"))
 CALLBACK_PATH = "/oauth/google/callback"
-CONFIG_FOLDER = Path(os.environ.get("EVERSTONE_GCAL_CONFIG_FOLDER", "/opt/data/hermes/gcalcli"))
 PORT = int(os.environ.get("EVERSTONE_GCAL_OAUTH_PORT", "8081"))
 
 
@@ -60,7 +61,7 @@ def _build_flow(client_id: str, client_secret: str, redirect_uri: str) -> Flow:
                 "token_uri": "https://oauth2.googleapis.com/token",
             }
         },
-        scopes=SCOPES,
+        scopes=GOOGLE_SCOPES,
     )
     flow.redirect_uri = redirect_uri
     return flow
@@ -158,7 +159,7 @@ Listening on port {PORT} for the callback...
             print(
                 f"\nPort {PORT} is already in use inside the container.\n"
                 "Either another auth flow is running, or override:\n"
-                "    EVERSTONE_GCAL_OAUTH_PORT=8082 everstone auth gcal",
+                "    EVERSTONE_GCAL_OAUTH_PORT=8082 everstone auth google",
                 file=sys.stderr,
             )
             return 1
@@ -179,13 +180,11 @@ Listening on port {PORT} for the callback...
     flow.fetch_token(code=state["code"])
     credentials = flow.credentials
 
-    CONFIG_FOLDER.mkdir(parents=True, exist_ok=True)
-    oauth_path = CONFIG_FOLDER / "oauth"
-    with oauth_path.open("wb") as f:
-        pickle.dump(credentials, f)
-    oauth_path.chmod(0o600)
+    CREDS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CREDS_PATH.write_text(credentials.to_json())
+    CREDS_PATH.chmod(0o600)
 
-    print(f"\n✓ Auth complete. Credentials saved to {oauth_path}")
+    print(f"\n✓ Auth complete. Credentials saved to {CREDS_PATH}")
     print("Next: discover what calendars are available with:")
     print("    just es calendar list")
     print("Then add the IDs you want to config.yaml under gcalcli.calendars.")
