@@ -129,16 +129,22 @@ def render_soul_template(template: str, config: dict) -> str:
 
 
 def generate_hermes_soul(config: dict) -> None:
-    """Render `agent.soul` from config and write it to $HERMES_HOME/SOUL.md.
+    """Render `agent.soul` from config and write it to the active Hermes
+    profile's SOUL.md.
+
+    The gateway runs `hermes -p everstone`, and a profile loads its OWN
+    `profiles/<name>/SOUL.md` — NOT `$HERMES_HOME/SOUL.md`. Writing to the
+    profile dir is what actually makes the persona take effect; the global
+    file is shadowed by the profile's and silently ignored.
 
     Always overwrites: config.yaml is the source of truth for the persona.
     To customize, edit `agent.soul` in config.yaml and restart the container.
     """
-    data_dir = _data_dir()
-    hermes_dir = data_dir / "hermes"
-    hermes_dir.mkdir(parents=True, exist_ok=True)
+    profile = os.environ.get("HERMES_PROFILE", "everstone")
+    profile_dir = _data_dir() / "hermes" / "profiles" / profile
+    profile_dir.mkdir(parents=True, exist_ok=True)
     rendered = render_soul_template(config["agent"]["soul"], config)
-    (hermes_dir / "SOUL.md").write_text(rendered)
+    (profile_dir / "SOUL.md").write_text(rendered)
 
 
 # Platform section of AGENTS.md. Container-architectural truth — not
@@ -165,15 +171,15 @@ Everything below is fact about your environment — not stylistic guidance
 
 ### Tasks — CalDAV
 
-- Use the `everstone-tasks` CLI for all task operations. Invoke it via
+- Use the `es tasks` CLI for all task operations. Invoke it via
   the terminal/shell tool. There is no MCP for tasks — the CLI is the
   whole interface.
 - Examples:
-    everstone-tasks add "Buy milk" --list inbox
-    everstone-tasks add "Review Q4 plan" --list inbox --note "Projects/Q4.md"
-    everstone-tasks list --list inbox --json
-    everstone-tasks done <uid> --list inbox
-- Run `everstone-tasks --help` for the full surface.
+    es tasks add "Buy milk" --list inbox
+    es tasks add "Review Q4 plan" --list inbox --note "Projects/Q4.md"
+    es tasks list --list inbox
+    es tasks done <uid> --list inbox
+- Run `es tasks --help` for the full surface.
 - Tasks can deeplink to notes using the obsidian:// URL above.
 
 ### Who is who
@@ -185,7 +191,7 @@ Everything below is fact about your environment — not stylistic guidance
 
 - In <name>'s private DM you have your full configured tool set.
 - In any group chat the access policy enforces tasks-only — the only
-  permitted shell invocation is a single `everstone-tasks ...` call
+  permitted shell invocation is a single `es tasks ...` call
   (no pipes, no chaining, no other binaries). Other tool calls and
   file ops fail at the runtime layer. Don't apologize for the
   restriction; it's structural.
@@ -226,20 +232,22 @@ def _render_calendar_section(config: dict) -> str:
         return "\n".join(f"  - `{c}`" for c in items) if items else "  - (none)"
 
     return f"""\
-### Calendar — Google Calendar via `gcal`
+### Calendar — Google Calendar via `es cal`
 
-You have Google Calendar access through the `gcal` CLI. Run `gcal
---help` for the full surface. Common verbs:
+You have Google Calendar access through the `es cal` command. Output
+is JSON. Run `es cal --help` for the full surface. Common verbs:
 
-    gcal agenda                                       # upcoming events
-    gcal quick "lunch with Sarah Friday 12pm"         # natural-language add
-    gcal add "1:1 with Alex" --when "2026-06-10 14:00" --calendar "Cal Name"
-    gcal search "dentist"
-    gcal edit / delete <event-search>
+    es cal agenda <start> <end> --calendar "<Name>"   # events in range
+    es cal add --calendar "<Name>" --when "YYYY-MM-DD HH:MM" --duration 60 --where "..."
+    es cal search "dentist" --calendar "<Name>"
+    es cal edit / delete <event-search>
 
 Pass `--calendar "Display Name"` to target a specific calendar; the
-name matches what `gcal list` prints. Without `--calendar`, gcalcli
-uses its default (typically the account's primary calendar).
+name matches what `es cal list` prints. Without `--calendar`, `es cal`
+uses the account's primary calendar.
+
+When a user is away from home, pass `--tz <IANA>` (e.g. `--tz
+Europe/Oslo`) so times are interpreted in the correct timezone.
 
 Calendar policy (read-only / read-write) for this user:
 
@@ -249,7 +257,7 @@ READ-ONLY:
 READ-WRITE:
 {_bulleted(rw)}
 
-Read-only calendars are gated by the `gcal` wrapper — writes against
+Read-only calendars are gated by the `es cal` wrapper — writes against
 them fail with exit code 1 and a refusal message. Don't try to work
 around the gate; explain the policy to the user and suggest moving
 the event to a read-write calendar instead. Calendars NOT in either
@@ -359,13 +367,9 @@ def generate_hermes_env(config: dict) -> None:
         "EVERSTONE_CALDAV_USER": config["caldav"]["user"],
         "EVERSTONE_CALDAV_PASSWORD": config["caldav"]["password"],
         "EVERSTONE_VAULT_NAME": config["obsidian"]["vault_name"],
-        "EVERSTONE_AGENT_NAME": config["agent"]["name"],
-        "EVERSTONE_OWNER_NAME": config["name"],
         "HERMES_MODEL": config["hermes"]["model"],
         "TELEGRAM_BOT_TOKEN": config["telegram"]["bot_token"],
-        "TELEGRAM_OWNER_USER_ID": owner_id,
         "TELEGRAM_ALLOWED_USERS": owner_id,
-        "EVERSTONE_GROUP_BINARIES": "everstone-tasks",
         # Hermes scans TERMINAL_CWD for AGENTS.md / .cursorrules / context
         # files. /opt/data is where configure.py drops the generated
         # AGENTS.md, so the agent picks it up automatically on startup.
@@ -393,15 +397,6 @@ def generate_hermes_env(config: dict) -> None:
         # straight through. The gcal wrapper reads both and forwards.
         "GCALCLI_CLIENT_ID": (config.get("gcalcli") or {}).get("client_id") or "",
         "GCALCLI_CLIENT_SECRET": (config.get("gcalcli") or {}).get("client_secret") or "",
-        # JSON arrays — calendar display names can have spaces, quotes,
-        # apostrophes, so space-separation isn't safe. The gcal wrapper
-        # json.loads these to get the original list back.
-        "EVERSTONE_GCAL_READ_ONLY": json.dumps(
-            ((config.get("gcalcli") or {}).get("calendars") or {}).get("read_only") or []
-        ),
-        "EVERSTONE_GCAL_READ_WRITE": json.dumps(
-            ((config.get("gcalcli") or {}).get("calendars") or {}).get("read_write") or []
-        ),
     }
     for name, value in env_vars.items():
         (envdir / name).write_text(value)
