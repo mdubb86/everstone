@@ -84,8 +84,10 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   **top-level `TELEGRAM_ALLOWED_USERS` key** (`hermes config set` puts it in
   `config.yaml`; Hermes bridges top-level scalars → env). The nested
   `messaging.telegram.allowed_users` is **dead** (never read) — that was the
-  earlier bug. A legacy `configure.py` envdir (+ the gateway's `s6-envdir` load)
-  still provides the same vars as a redundant safety net (see follow-ups).
+  earlier bug. The legacy `configure.py` envdir (+ the gateway's `s6-envdir`
+  load) was retired: the Hermes profile `config.yaml` + `.env` are now the sole
+  source, and `HERMES_TERMINAL_CWD` is exported directly by the gateway's s6
+  run script.
 - **GOTCHA:** `SOUL.md` must be rendered into the **profile dir**
   (`profiles/everstone/SOUL.md`), NOT `$HERMES_HOME/SOUL.md` — the profile's file
   shadows the global one. `AGENTS.md` is found via `HERMES_TERMINAL_CWD` (=`/opt/data`).
@@ -137,10 +139,3 @@ pin + timeouts. (Currently live-set in the profile config — see follow-ups.)
 - `--pretty` is root-only (`es --pretty cal …`); make it per-verb (agents trail it).
 - Bake the `auxiliary.vision` config into `setup_hermes` (currently only live-set
   in the data dir).
-- **Retire the legacy envdir safety net** so the Hermes config file + profile
-  `.env` are the *sole* source: drop `configure.py`'s `generate_hermes_env`
-  envdir + the gateway's `s6-envdir` load, and migrate the remaining envdir
-  consumers (`auth_gcal.py`, `everstone_cli.py`'s `_load_envdir`) to read
-  `config.yaml` directly. Do it with a full gateway-env audit + the allowlist
-  verification (it's the var that broke before). Until then the envdir stays as
-  a redundant net.

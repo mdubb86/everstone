@@ -88,9 +88,9 @@ profile config directly. They survive reboots — EverStone won't overwrite them
 > Run the `hermes -p everstone …` commands inside the container — `just shell`
 > then `hermes -p everstone …`, or `docker exec -it everstone hermes -p everstone …`.
 
-## Note
+## Config source of truth
 
-A legacy `/opt/config/hermes/envdir` (+ a sourceable env file) is still generated
-and loaded as a redundant safety net for the gateway and for `esadmin`/`auth`
-tools. Retiring it (so the Hermes config file + `.env` are the sole source) is a
-tracked follow-up in `docs/architecture.md`.
+`config.yaml` (the Hermes profile config at
+`/opt/data/hermes/profiles/everstone/config.yaml`) is the **sole source** for the
+asserted keys. The legacy `/opt/config/hermes/envdir` envdir was retired — it no
+longer exists and is not generated.

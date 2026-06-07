@@ -120,32 +120,32 @@ def test_lockdown_config_in_image(everstone):
     )
     assert "everstone_access_hook" in r.stdout, r.stdout
 
-    # Verify TELEGRAM_ALLOWED_USERS env is generated and present
-    r = subprocess.run(
-        [
-            "docker",
-            "exec",
-            everstone["container_name"],
-            "cat",
-            "/opt/config/hermes/envdir/TELEGRAM_ALLOWED_USERS",
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert r.stdout.strip() == "123456"  # matches conftest sample config
+    # Verify TELEGRAM_ALLOWED_USERS is written to the Hermes profile config.yaml
+    # by setup_hermes (s6 oneshot), which may finish slightly after /health is up.
+    # Poll up to ~30 s to avoid a race.
+    import time as _time
+    deadline = _time.monotonic() + 30
+    while True:
+        r = subprocess.run(
+            ["docker", "exec", everstone["container_name"],
+             "grep", "-E", "^TELEGRAM_ALLOWED_USERS:",
+             "/opt/data/hermes/profiles/everstone/config.yaml"],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0 and "123456" in r.stdout:
+            break
+        if _time.monotonic() >= deadline:
+            assert False, (
+                f"TELEGRAM_ALLOWED_USERS not found in profile config.yaml after 30 s; "
+                f"grep stdout={r.stdout!r} stderr={r.stderr!r}"
+            )
+        _time.sleep(1)
 
-    # Verify no GATEWAY_ALLOW_ALL_USERS leaks in
+    # Verify no GATEWAY_ALLOW_ALL_USERS leaks into the profile config or .env
     r = subprocess.run(
-        [
-            "docker",
-            "exec",
-            everstone["container_name"],
-            "ls",
-            "/opt/config/hermes/envdir/",
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
+        ["docker", "exec", everstone["container_name"], "sh", "-c",
+         "cat /opt/data/hermes/profiles/everstone/config.yaml"
+         " /opt/data/hermes/profiles/everstone/.env 2>/dev/null"],
+        capture_output=True, text=True, check=True,
     )
     assert "GATEWAY_ALLOW_ALL_USERS" not in r.stdout

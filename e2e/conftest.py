@@ -11,6 +11,11 @@ def _free_port():
 
 def _write_config(cfg_path: Path, port: int) -> None:
     cfg_path.write_text(f"""\
+public_url: https://e2e-test.example.com
+name: Tester
+agent:
+  name: TestBot
+  soul: "You are a test assistant."
 couchdb:
   user: testuser
   password: testpass
@@ -20,16 +25,11 @@ caldav:
   password: testcalpass
 livesync:
   passphrase: testphrase
-  obfuscate_passphrase: testobf
 obsidian:
   vault_name: testvault
-instance:
-  name: TestBot
 telegram:
   owner_user_id: 123456
   bot_token: TEST_TOKEN
-hermes:
-  model: openai/gpt-4o
 """)
 
 @pytest.fixture(scope="session")
