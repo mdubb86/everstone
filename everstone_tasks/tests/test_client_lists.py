@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from everstone_tasks.client import TasksClient
 
 
@@ -38,3 +40,12 @@ def test_delete_list_removes_collection(radicale):
     c.add_task("x", "Beach")
     c.delete_list("Beach")
     assert "Beach" not in [x["name"] for x in c.list_collections()]
+
+
+def test_add_with_tags_and_due_roundtrips(radicale):
+    c = TasksClient(radicale)
+    c.add_task("tagged", "TODO", tags=["errand", "town"],
+               due=datetime(2026, 6, 10, 17, 0))
+    t = c.list_tasks("TODO")[0]
+    assert set(t["tags"]) == {"errand", "town"}
+    assert t["due"] is not None and t["due"].startswith("2026-06-10")

@@ -32,12 +32,18 @@ class TasksClient:
                 supported_calendar_component_set=["VTODO"])
 
     def add_task(self, summary, list_name, url: Optional[str] = None,
-                 remind_at: Optional[datetime] = None) -> str:
+                 remind_at: Optional[datetime] = None,
+                 due: Optional[datetime] = None,
+                 tags: Optional[list] = None) -> str:
         cal = self.ensure_list(list_name); uid = uuid.uuid4().hex
         todo = Todo()
         todo.add("uid", uid); todo.add("summary", summary); todo.add("status", "NEEDS-ACTION")
         if url:
             todo.add("url", url)
+        if due:
+            todo.add("due", due)
+        if tags:
+            todo.add("categories", tags)
         if remind_at:
             alarm = Alarm()
             alarm.add("action", "DISPLAY"); alarm.add("description", summary)
@@ -48,6 +54,24 @@ class TasksClient:
         cal.save_todo(ical=ical.to_ical().decode())
         return uid
 
+    @staticmethod
+    def _read_tags(c):
+        if "categories" not in c:
+            return []
+        cats = c.get("categories")
+        items = cats if isinstance(cats, list) else [cats]
+        out = []
+        for entry in items:
+            out.extend(str(x) for x in getattr(entry, "cats", [entry]))
+        return out
+
+    @staticmethod
+    def _read_due(c):
+        if "due" not in c:
+            return None
+        dt = c["due"].dt
+        return dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+
     def list_tasks(self, list_name):
         out = []
         for todo in self._calendar(list_name).todos(include_completed=True):
@@ -57,6 +81,8 @@ class TasksClient:
                 "status": str(c.get("status", "NEEDS-ACTION")),
                 "url": str(c["url"]) if "url" in c else None,
                 "has_alarm": b"BEGIN:VALARM" in todo.data.encode() if hasattr(todo, 'data') else any(sc.name == "VALARM" for sc in todo.icalendar_instance.walk()),
+                "tags": self._read_tags(c),
+                "due": self._read_due(c),
             })
         return out
 
