@@ -49,3 +49,21 @@ def test_add_with_tags_and_due_roundtrips(radicale):
     t = c.list_tasks("TODO")[0]
     assert set(t["tags"]) == {"errand", "town"}
     assert t["due"] is not None and t["due"].startswith("2026-06-10")
+
+
+def test_edit_task_updates_fields(radicale):
+    c = TasksClient(radicale)
+    uid = c.add_task("draft", "TODO", tags=["old"])
+    c.edit_task(uid, "TODO", summary="final", due=datetime(2026, 6, 11, 9, 0), tags=["new"])
+    t = [x for x in c.list_tasks("TODO") if x["uid"] == uid][0]
+    assert t["summary"] == "final"
+    assert t["tags"] == ["new"]
+    assert t["due"].startswith("2026-06-11")
+
+
+def test_edit_task_replaces_reminder(radicale):
+    c = TasksClient(radicale)
+    uid = c.add_task("ping", "TODO", remind_at=datetime(2026, 6, 11, 8, 0))
+    c.edit_task(uid, "TODO", remind_at=datetime(2026, 6, 12, 8, 0))
+    t = [x for x in c.list_tasks("TODO") if x["uid"] == uid][0]
+    assert t["has_alarm"] is True  # still exactly one alarm, replaced not duplicated

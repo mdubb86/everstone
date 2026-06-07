@@ -99,6 +99,30 @@ class TasksClient:
             c.add("percent-complete", 100)
         todo.save()
 
+    def edit_task(self, uid, list_name, summary: Optional[str] = None,
+                  due: Optional[datetime] = None,
+                  remind_at: Optional[datetime] = None,
+                  tags: Optional[list] = None) -> None:
+        todo = self._find(uid, list_name); c = todo.icalendar_component
+        if summary is not None:
+            c["summary"] = summary
+        if due is not None:
+            if "due" in c:
+                del c["due"]
+            c.add("due", due)
+        if tags is not None:
+            if "categories" in c:
+                del c["categories"]
+            c.add("categories", tags)
+        if remind_at is not None:
+            for sub in [s for s in c.subcomponents if getattr(s, "name", "") == "VALARM"]:
+                c.subcomponents.remove(sub)
+            alarm = Alarm()
+            alarm.add("action", "DISPLAY"); alarm.add("description", c.get("summary", ""))
+            alarm.add("trigger", remind_at)
+            c.add_component(alarm)
+        todo.save()
+
     def set_note_link(self, uid, list_name, url):
         todo = self._find(uid, list_name); c = todo.icalendar_component
         if "url" in c:
