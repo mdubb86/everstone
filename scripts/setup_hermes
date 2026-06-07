@@ -1,7 +1,6 @@
 #!/bin/sh
 set -eu
 export HERMES_HOME=/opt/data/hermes
-. /opt/config/hermes/env
 
 # Ensure the `everstone` profile exists (created with --no-skills so the
 # image ships clean, no bundled skill set). Once per-install: idempotent.
@@ -29,7 +28,8 @@ fi
 # `store` credential helper pointing at $HERMES_HOME/.git-credentials.
 # After this, `git clone https://github.com/<private>/repo` (and anything
 # that wraps it — `hermes skills tap`, etc.) works without prompting.
-if [ -n "${GH_TOKEN:-}" ]; then
+GH_TOKEN="$(config-get github.token)"
+if [ -n "$GH_TOKEN" ]; then
     mkdir -p "$HERMES_HOME"
     creds_file="$HERMES_HOME/.git-credentials"
     git config --global credential.helper "store --file=$creds_file"
@@ -44,24 +44,15 @@ fi
 
 python3 /scripts/merge_hermes_mcp.py
 
-# Register slash-command autocomplete with Telegram (setMyCommands).
-# TELEGRAM_COMMANDS is a JSON array of {command, description} objects,
-# already in the Bot API's expected shape. Default is "[]" — that's
-# fine: passing an empty array CLEARS any previous commands so the
-# bot starts with no autocomplete clutter.
-curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMyCommands" \
-    -H "Content-Type: application/json" \
-    -d "{\"commands\": ${TELEGRAM_COMMANDS}}" \
-    --max-time 10 >/dev/null \
-    && echo "[setup_hermes] Telegram slash-commands set (count: $(echo "$TELEGRAM_COMMANDS" | grep -o '"command"' | wc -l))." \
-    || echo "[setup_hermes] WARN: setMyCommands call failed (network? wrong token?). Bot still functional."
+# Telegram slash-commands (setMyCommands) are set by configure.py now.
 
 # Install Hermes skills the operator opted into via config.agent.skills.
 # Imperative model: each name in $EVERSTONE_SKILLS gets `hermes skills
 # install`'d. Idempotent — Hermes skips already-installed ones. Removing
 # a name from config.yaml does NOT uninstall (intentional: preserves any
 # learned state). Use `hermes skills uninstall <name>` to drop one.
-if [ -n "${EVERSTONE_SKILLS:-}" ]; then
+EVERSTONE_SKILLS="$(config-get agent.skills)"
+if [ -n "$EVERSTONE_SKILLS" ]; then
     for skill in $EVERSTONE_SKILLS; do
         if hermes skills install "$skill" 2>&1 | tail -3 | head -1 \
                 | grep -qiE "installed|already|up.to.date"; then
