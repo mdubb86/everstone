@@ -5,17 +5,19 @@ import subprocess
 _PY_SNIPPET = (
     "import json, os, everstone_access_hook as h, sys;"
     "tool = os.environ['E2E_TOOL'];"
-    "sys.stdout.write(json.dumps(h.policy(tool)))"
+    "cmd = os.environ.get('E2E_COMMAND');"
+    "tool_input = {'command': cmd} if cmd else None;"
+    "sys.stdout.write(json.dumps(h.policy(tool, tool_input)))"
 )
 
 
-def _policy(container, tool_name, session_key=None, group_tools=None):
+def _policy(container, tool_name, session_key=None, command=None):
     """Run the access hook's policy() inside the container with controlled env."""
     env = []
     if session_key is not None:
         env += ["-e", f"HERMES_SESSION_KEY={session_key}"]
-    if group_tools is not None:
-        env += ["-e", f"EVERSTONE_GROUP_TOOLS={group_tools}"]
+    if command is not None:
+        env += ["-e", f"E2E_COMMAND={command}"]
     env += ["-e", f"E2E_TOOL={tool_name}"]
     cmd = ["docker", "exec", *env, container, "python3", "-c", _PY_SNIPPET]
     r = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -56,11 +58,13 @@ def test_group_blocks_shell_and_notes(everstone):
 
 
 def test_group_allows_tasks(everstone):
+    # Group chats allow terminal with an `es tasks ...` command (no composition).
     assert (
         _policy(
             everstone["container_name"],
-            "everstone_tasks",
+            "terminal",
             session_key="agent:main:telegram:group:-100",
+            command="es tasks list --list inbox",
         )
         is None
     )
@@ -68,8 +72,9 @@ def test_group_allows_tasks(everstone):
     assert (
         _policy(
             everstone["container_name"],
-            "everstone_tasks",
+            "terminal",
             session_key="agent:main:telegram:supergroup:-100",
+            command="es tasks list --list inbox",
         )
         is None
     )
@@ -85,19 +90,6 @@ def test_opaque_session_fails_closed(everstone):
 def test_no_session_fails_closed(everstone):
     result = _policy(everstone["container_name"], "terminal", session_key=None)
     assert result is not None and "block" in str(result)
-
-
-def test_group_tools_env_widens_allowlist(everstone):
-    # In group, with the env widened, additional tools are allowed
-    assert (
-        _policy(
-            everstone["container_name"],
-            "extra_tool",
-            session_key="agent:main:telegram:group:-100",
-            group_tools="everstone_tasks,extra_tool",
-        )
-        is None
-    )
 
 
 def test_lockdown_config_in_image(everstone):

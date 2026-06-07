@@ -66,7 +66,7 @@ def test_generate_hermes_soul_writes_rendered_soul(tmp_path):
     os.environ["EVERSTONE_DATA_DIR"] = str(tmp_path)
     try:
         configure.generate_hermes_soul(SAMPLE)
-        soul = (tmp_path / "hermes" / "SOUL.md").read_text()
+        soul = (tmp_path / "hermes" / "profiles" / "everstone" / "SOUL.md").read_text()
         assert "I am Jarvis" in soul
         assert "Michael's hub" in soul
         assert "Vault: myvault" in soul
@@ -86,7 +86,7 @@ def test_generate_agents_md_platform_only(tmp_path):
         assert "Michael's self-hosted personal hub" in body
         assert "/opt/data/vault/" in body
         assert "obsidian://open?vault=myvault" in body
-        assert "everstone-tasks" in body
+        assert "es tasks" in body
         # No more MCP reference — CLI is the whole interface for tasks.
         assert "everstone_tasks" not in body
         # No operator section if instructions is null.
@@ -156,7 +156,7 @@ def test_generate_agents_md_calendar_section_renders_lists(tmp_path):
         }}
         configure.generate_agents_md(sample)
         body = (tmp_path / "AGENTS.md").read_text()
-        assert "### Calendar — Google Calendar via `gcal`" in body
+        assert "### Calendar — Google Calendar via `es cal`" in body
         # Calendars must appear in correct section, with the exact name the
         # operator typed (no munging, so primary / email-form both work).
         ro_idx = body.index("READ-ONLY")
@@ -178,12 +178,13 @@ def test_telegram_commands_empty_default():
 def test_generate_hermes_soul_overwrites_each_time(tmp_path):
     os.environ["EVERSTONE_DATA_DIR"] = str(tmp_path)
     try:
-        (tmp_path / "hermes").mkdir()
-        (tmp_path / "hermes" / "SOUL.md").write_text("stale custom content")
+        soul_path = tmp_path / "hermes" / "profiles" / "everstone" / "SOUL.md"
+        soul_path.parent.mkdir(parents=True, exist_ok=True)
+        soul_path.write_text("stale custom content")
         configure.generate_hermes_soul(SAMPLE)
         # always-overwrite: stale content gone, new render in place
-        assert "stale custom content" not in (tmp_path / "hermes" / "SOUL.md").read_text()
-        assert "I am Jarvis" in (tmp_path / "hermes" / "SOUL.md").read_text()
+        assert "stale custom content" not in soul_path.read_text()
+        assert "I am Jarvis" in soul_path.read_text()
     finally:
         del os.environ["EVERSTONE_DATA_DIR"]
 
