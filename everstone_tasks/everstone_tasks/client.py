@@ -28,7 +28,7 @@ class TasksClient:
             return self._calendar(list_name)
         except KeyError:
             return self._principal.make_calendar(
-                name=list_name, cal_id=list_name,
+                name=list_name, cal_id=uuid.uuid4().hex,
                 supported_calendar_component_set=["VTODO"])
 
     def add_task(self, summary, list_name, url: Optional[str] = None,
