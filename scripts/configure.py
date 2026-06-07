@@ -181,6 +181,13 @@ Everything below is fact about your environment — not stylistic guidance
     es tasks lists                                           # all lists + counts
     es tasks done <uid>
 - Run `es tasks --help` for the full surface.
+- **Reminders ("remind me to ...") are due-dated TODOs, NEVER crons.** Add a task
+  with a due date + reminder so it lands on the user's list AND their app notifies
+  them — e.g.
+    es tasks add "Follow up with Nooch" --due 2026-06-12 --remind 2026-06-12T09:00
+  Do NOT use the cronjob tool for a user reminder: cron only schedules actions the
+  AGENT performs, and leaves nothing on the user's task list. "remind me to X" is
+  always a due-dated `es tasks` TODO.
 - Tasks can deeplink to notes using the obsidian:// URL above.
 
 ### Who is who
