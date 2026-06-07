@@ -175,10 +175,11 @@ Everything below is fact about your environment — not stylistic guidance
   the terminal/shell tool. There is no MCP for tasks — the CLI is the
   whole interface.
 - Examples:
-    es tasks add "Buy milk" --list inbox
-    es tasks add "Review Q4 plan" --list inbox --note "Projects/Q4.md"
-    es tasks list --list inbox
-    es tasks done <uid> --list inbox
+    es tasks add "Buy milk" --list TODO
+    es tasks add "Review Q4 plan" --note "Projects/Q4.md"   # defaults to TODO
+    es tasks list                                            # open items in TODO
+    es tasks lists                                           # all lists + counts
+    es tasks done <uid>
 - Run `es tasks --help` for the full surface.
 - Tasks can deeplink to notes using the obsidian:// URL above.
 
