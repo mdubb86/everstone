@@ -16,23 +16,16 @@ if ! hermes profile list 2>/dev/null | grep -qE "(^|\s)everstone(\s|$)"; then
 fi
 hermes profile use everstone
 
-# Seed the model ONCE on first profile creation; the operator owns it thereafter
-# (change it any time with `esadmin model` or model.default in the Hermes config).
-if [ -n "${_created:-}" ]; then
-    hermes config set model "$HERMES_MODEL"
-    # Derive provider from the model's slash-prefix (e.g. "openai-codex/gpt-5-codex"
-    # → "openai-codex"). Hermes uses `provider` to pick credentials from auth.json;
-    # without it, the gateway falls through to "no inference provider configured".
-    case "$HERMES_MODEL" in
-        */*) hermes config set provider "${HERMES_MODEL%%/*}" ;;
-    esac
-fi
-
-# EverStone asserts the security floor (token + allowlist) every boot; preferences
-# (model, telegram policy, display, reasoning) are operator-owned in the Hermes config.
+# Structural constant: the agent runs tools in-container.
 hermes config set terminal.backend local
-hermes config set TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
-hermes config set TELEGRAM_ALLOWED_USERS "$TELEGRAM_ALLOWED_USERS"
+
+# Assert the two security-critical Telegram values from config.yaml, verifying
+# against drift (loud failure). config.yaml is authoritative; the LLM model +
+# provider auth are NOT managed here — set them once with `esadmin model`.
+if ! python3 /scripts/assert_telegram.py; then
+    echo "[setup_hermes] FATAL: Telegram security assertion failed (see above)." >&2
+    exit 1
+fi
 
 # Wire GitHub auth for git: if config.yaml supplied a token, set up the
 # `store` credential helper pointing at $HERMES_HOME/.git-credentials.
