@@ -159,7 +159,7 @@ Listening on port {PORT} for the callback...
             print(
                 f"\nPort {PORT} is already in use inside the container.\n"
                 "Either another auth flow is running, or override:\n"
-                "    EVERSTONE_GCAL_OAUTH_PORT=8082 everstone auth google",
+                "    EVERSTONE_GCAL_OAUTH_PORT=8082 esadmin auth google",
                 file=sys.stderr,
             )
             return 1

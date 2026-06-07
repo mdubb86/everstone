@@ -24,7 +24,7 @@ def load_credentials():
     if not path.is_file():
         raise FileNotFoundError(
             f"es: Google not authorized (no creds at {path}). "
-            f"Operator: run `everstone auth google`."
+            f"Operator: run `esadmin auth google`."
         )
     creds = Credentials.from_authorized_user_file(str(path), GOOGLE_SCOPES)
     if not creds.valid:

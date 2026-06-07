@@ -40,7 +40,7 @@ dev: build _check-config
 logs:
     docker logs -f {{DEV_NAME}}
 
-# Open a bash shell inside the dev container (everstone tab-completion works here).
+# Open a bash shell inside the dev container (esadmin tab-completion works here).
 shell:
     docker exec -it {{DEV_NAME}} bash
 
@@ -82,30 +82,34 @@ reset *FLAGS: down
     fi
     echo "Wiped. Next: 'just dev' to start fresh."
 
-# ── Operator surface — delegates to the in-container `everstone` CLI ──────
-# `just es --help` lists every subcommand. Everything below is just sugar
-# for `docker exec -it everstone everstone ...` — the in-container CLI is
-# the single source of truth.
-
-# Run any in-container `everstone` subcommand. e.g. `just es auth hermes`.
-# Adapt -it vs -i to whether stdin is a TTY: -t in a script (or piped)
-# breaks with "stdin is not a terminal"; interactive sessions still get
-# the full TTY they need for chat / OAuth paste flows.
+# ── Agent CLI passthrough — the in-container `es` agent tool-gateway ──────
+# `just es <args>` runs the AGENT's es CLI in the container (e.g. `es cal
+# agenda …`, `es tasks list`) — exactly what the assistant uses. JSON output.
 es +ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ -t 0 ] && [ -t 1 ]; then DT="-it"; else DT="-i"; fi
-    docker exec $DT {{DEV_NAME}} everstone {{ARGS}}
+    docker exec $DT {{DEV_NAME}} es {{ARGS}}
 
-# Frequent shortcuts (muscle memory). Same as `just es <verb>`.
+# ── Operator surface — the in-container `esadmin` CLI ─────────────────────
+# `just esadmin --help` lists every operator subcommand (auth, backup, status,
+# session, setup, calendar). -it vs -i adapts to a TTY so OAuth paste / chat
+# get a full TTY while scripts/pipes don't break.
+esadmin +ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -t 0 ] && [ -t 1 ]; then DT="-it"; else DT="-i"; fi
+    docker exec $DT {{DEV_NAME}} esadmin {{ARGS}}
+
+# Frequent operator shortcuts (muscle memory). Same as `just esadmin <verb>`.
 chat:
     #!/usr/bin/env bash
     if [ -t 0 ] && [ -t 1 ]; then DT="-it"; else DT="-i"; fi
-    docker exec $DT {{DEV_NAME}} everstone chat
+    docker exec $DT {{DEV_NAME}} esadmin chat
 hermes-auth:
     #!/usr/bin/env bash
     if [ -t 0 ] && [ -t 1 ]; then DT="-it"; else DT="-i"; fi
-    docker exec $DT {{DEV_NAME}} everstone auth hermes
+    docker exec $DT {{DEV_NAME}} esadmin auth hermes
 
 # ── Internal ──────────────────────────────────────────────────────────────
 

@@ -32,7 +32,7 @@ def _load_envdir(path: str = "/opt/config/hermes/envdir") -> None:
 _load_envdir()
 
 app = typer.Typer(
-    help="EverStone admin CLI. From the host: `docker exec [-it] everstone everstone <command>`.",
+    help="EverStone admin CLI. From the host: `just esadmin <command>` (or `docker exec [-it] everstone esadmin <command>`).",
     no_args_is_help=True,
     add_completion=True,
 )
