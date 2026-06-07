@@ -29,7 +29,7 @@ def _client() -> Tuple[TasksClient, str]:
 @app.command("list")
 @envelope
 def list_tasks(ctx: typer.Context,
-               list_name: str = typer.Option("inbox", "--list")):
+               list_name: str = typer.Option("TODO", "--list")):
     client, _ = _client()
     return client.list_tasks(list_name)
 
@@ -38,7 +38,7 @@ def list_tasks(ctx: typer.Context,
 @envelope
 def add_task(ctx: typer.Context,
             summary: str = typer.Argument(...),
-            list_name: str = typer.Option("inbox", "--list"),
+            list_name: str = typer.Option("TODO", "--list"),
             note: Optional[str] = typer.Option(None, "--note"),
             remind_at: Optional[str] = typer.Option(None, "--remind-at")):
     client, vault = _client()
@@ -52,7 +52,7 @@ def add_task(ctx: typer.Context,
 @envelope
 def done_task(ctx: typer.Context,
              uid: str = typer.Argument(...),
-             list_name: str = typer.Option("inbox", "--list")):
+             list_name: str = typer.Option("TODO", "--list")):
     client, _ = _client()
     client.complete_task(uid, list_name)
     return {"uid": uid, "status": "COMPLETED"}
@@ -62,7 +62,14 @@ def done_task(ctx: typer.Context,
 @envelope
 def delete_task(ctx: typer.Context,
                uid: str = typer.Argument(...),
-               list_name: str = typer.Option("inbox", "--list")):
+               list_name: str = typer.Option("TODO", "--list")):
     client, _ = _client()
     client.delete_task(uid, list_name)
     return {"uid": uid, "deleted": True}
+
+
+@app.command("lists")
+@envelope
+def lists(ctx: typer.Context):
+    client, _ = _client()
+    return client.list_collections()
