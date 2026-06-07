@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -66,3 +67,30 @@ def test_lists_verb_returns_collections(fake_client):
     body = json.loads(res.stdout)
     assert body["ok"] is True
     assert body["data"] == [{"name": "TODO", "open_count": 1, "total_count": 2}]
+
+
+def test_add_forwards_tag_due_remind(fake_client):
+    fake_client.add_task.return_value = "uid-x"
+    res = runner.invoke(main.app, [
+        "tasks", "add", "x",
+        "--tag", "a", "--tag", "b",
+        "--due", "2026-06-10T09:00",
+        "--remind", "2026-06-10T08:30",
+    ])
+    assert res.exit_code == 0
+    kwargs = fake_client.add_task.call_args.kwargs
+    assert kwargs["tags"] == ["a", "b"]
+    assert kwargs["due"] == datetime(2026, 6, 10, 9, 0)
+    assert kwargs["remind_at"] == datetime(2026, 6, 10, 8, 30)
+
+
+def test_edit_forwards_fields(fake_client):
+    res = runner.invoke(main.app, [
+        "tasks", "edit", "some-uid",
+        "--summary", "new",
+        "--due", "2026-06-11T09:00",
+    ])
+    assert res.exit_code == 0
+    kwargs = fake_client.edit_task.call_args.kwargs
+    assert kwargs["summary"] == "new"
+    assert kwargs["due"] == datetime(2026, 6, 11, 9, 0)

@@ -40,12 +40,38 @@ def add_task(ctx: typer.Context,
             summary: str = typer.Argument(...),
             list_name: str = typer.Option("TODO", "--list"),
             note: Optional[str] = typer.Option(None, "--note"),
-            remind_at: Optional[str] = typer.Option(None, "--remind-at")):
+            tag: list[str] = typer.Option(None, "--tag"),
+            due: Optional[str] = typer.Option(None, "--due"),
+            remind_at: Optional[str] = typer.Option(None, "--remind")):
     client, vault = _client()
     url = build_deeplink(vault, note) if note else None
-    remind = datetime.fromisoformat(remind_at) if remind_at else None
-    uid = client.add_task(summary, list_name, url=url, remind_at=remind)
+    uid = client.add_task(
+        summary, list_name, url=url,
+        remind_at=datetime.fromisoformat(remind_at) if remind_at else None,
+        due=datetime.fromisoformat(due) if due else None,
+        tags=list(tag) if tag else None,
+    )
     return {"uid": uid}
+
+
+@app.command("edit")
+@envelope
+def edit_task(ctx: typer.Context,
+             uid: str = typer.Argument(...),
+             list_name: str = typer.Option("TODO", "--list"),
+             summary: Optional[str] = typer.Option(None, "--summary"),
+             tag: list[str] = typer.Option(None, "--tag"),
+             due: Optional[str] = typer.Option(None, "--due"),
+             remind_at: Optional[str] = typer.Option(None, "--remind")):
+    client, _ = _client()
+    client.edit_task(
+        uid, list_name,
+        summary=summary,
+        due=datetime.fromisoformat(due) if due else None,
+        remind_at=datetime.fromisoformat(remind_at) if remind_at else None,
+        tags=list(tag) if tag else None,
+    )
+    return {"uid": uid, "edited": True}
 
 
 @app.command("done")
