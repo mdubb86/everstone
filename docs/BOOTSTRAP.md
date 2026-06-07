@@ -66,13 +66,10 @@ telegram:
   # BotFather → /newbot → token. Treat as a secret.
   bot_token: 1234567890:ABCdef...
 
-hermes:
-  # Any LiteLLM-style model spec. Examples:
-  #   openai/gpt-4o
-  #   anthropic/claude-3-5-sonnet-latest
-  #   ollama/qwen2.5
-  model: anthropic/claude-3-5-sonnet-latest
 ```
+
+> **Note:** The LLM model is NOT set in `config.yaml` — set it once after first
+> boot with `just model <provider/model>` (see step 4 below).
 
 Important defaults:
 
@@ -111,21 +108,22 @@ curl http://localhost/health   # → "OK"
 
 ## 4. First-run actions inside the container
 
-### Grant Hermes its model auth
+### Set the LLM model and run provider auth
 
-Hermes stores credentials under `/opt/data/hermes` so they survive container
-rebuilds. Run the auth flow once:
+Run this once after first boot. It sets the model **and** runs the provider's
+OAuth flow in one step:
 
 ```bash
-docker exec -it everstone sh -c 'export HERMES_HOME=/opt/data/hermes; hermes auth add codex-oauth'
+just model openai-codex/gpt-5.5
 ```
 
-Follow the OAuth URL it prints, paste the resulting token back at the prompt.
-For providers without OAuth (Anthropic, OpenAI direct, OpenRouter, etc.) use
-`hermes auth add api-key` and paste your API key.
+For codex, `esadmin model` prints an OAuth URL — open it in a browser and paste
+the redirect URL back at the prompt. For API-key providers (Anthropic, OpenAI
+direct, OpenRouter, etc.) the command will prompt you for the key instead.
 
-You can list configured auths with
-`docker exec everstone sh -c 'HERMES_HOME=/opt/data/hermes hermes auth list'`.
+This replaces the old `esadmin auth hermes` command. The model and provider are
+stored in the Hermes profile under `/opt/data/hermes` and survive container
+rebuilds.
 
 ### Sanity-check supervision
 

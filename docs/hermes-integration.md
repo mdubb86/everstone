@@ -4,13 +4,17 @@ EverStone runs the **Hermes** agent as its brain. This documents exactly what
 EverStone touches in the Hermes config and what is **yours** to manage — so you
 have full flexibility without EverStone clobbering your settings.
 
-The rule: **EverStone asserts the security floor + structural must-haves, seeds
-the model once, and leaves everything else to you.**
+The rule: **EverStone asserts the security floor + structural must-haves, and
+leaves everything else to you.**
 
 ## What EverStone asserts (every boot)
 
 These are security/structural and are re-applied on each container start (from
-`config.yaml`), so the bot can't be accidentally exposed or broken:
+`config.yaml`), so the bot can't be accidentally exposed or broken. The two
+Telegram values are enforced with **VERIFY + LOUD-FAIL on drift**: if the live
+Hermes profile differs from `config.yaml`, boot logs a clear error (via
+`scripts/assert_telegram.py`) — `config.yaml` is authoritative and divergence is
+never silently overwritten.
 
 | Setting | Where it's written | Source |
 |---|---|---|
@@ -21,16 +25,25 @@ These are security/structural and are re-applied on each container start (from
 > The allowlist is fail-closed: if it were empty, Hermes denies everyone. That's
 > why EverStone owns it — a misconfig would expose or brick the bot.
 
-## What EverStone seeds once (first profile creation only)
+## What you set once (one-time operator action, not seeded from config.yaml)
 
-| Setting | Source | After first boot |
-|---|---|---|
-| `model` / `provider` | `config.yaml: hermes.model` | **Yours.** Change anytime with `hermes -p everstone model` or `model.default` in the Hermes config — EverStone never re-asserts it. |
+The LLM model and provider are **not** in `config.yaml` and are **not** seeded
+by EverStone. You set them once with a single command that also runs provider
+auth:
+
+```bash
+just model openai-codex/gpt-5.5
+```
+
+This calls `esadmin model <value>`, which sets the model+provider in the Hermes
+profile **and** runs the provider's auth flow in one step. Run it after first
+boot and whenever you want to switch models. EverStone never re-asserts or
+overwrites it — it is yours from that point on.
 
 ## What you own (EverStone never touches)
 
 Everything else in your Hermes config — full flexibility:
-- `model.default` / `model.provider` (after the one-time seed)
+- `model.default` / `model.provider` (set once via `just model`, then yours)
 - `display.*` (verbosity, interim messages, tool progress)
 - `reasoning_effort`, `agent.max_turns`, `agent.tool_use_enforcement`
 - `curator.*`, `compression.*`
@@ -53,17 +66,20 @@ profile config directly. They survive reboots — EverStone won't overwrite them
 ## Where settings live (mental model)
 
 - **EverStone `config.yaml`** (`/opt/config.yaml`) = EverStone-specific:
-  `telegram.{bot_token, owner_user_id}`, `hermes.model` (seed), gcal creds,
-  caldav, obsidian, `public_url`. EverStone derives the Hermes security keys from
-  here.
+  `telegram.{bot_token, owner_user_id}`, gcal creds, caldav, obsidian,
+  `public_url`. **No `hermes.model`** — the LLM model is not stored here.
+  EverStone derives the Hermes security keys (the two Telegram values) from here
+  and asserts them on every boot.
 - **Hermes profile config** (`$HERMES_HOME/profiles/everstone/{config.yaml,.env}`)
-  = the live Hermes settings. EverStone writes only the asserted/seeded keys
-  above; the rest is yours.
+  = the live Hermes settings. EverStone writes only the asserted keys above; the
+  rest (including model+provider, set via `just model`) is yours.
 
 ## Common operator tasks
 
-- **Change the model:** `hermes -p everstone model` (or set `model.default` in the Hermes
-  config). EverStone won't revert it.
+- **Set or change the model:** `just model <provider/model>` (e.g.
+  `just model openai-codex/gpt-5.5`). This runs `esadmin model`, which sets
+  model+provider in the Hermes profile and re-runs provider auth. EverStone won't
+  revert it.
 - **Add another allowed Telegram user:** edit `telegram.owner_user_id`… (single
   owner today) — or for group access use the Telegram group allowlists. The DM
   allowlist EverStone asserts is the owner.

@@ -25,12 +25,14 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
 - `es cal` → **Google Calendar API directly** (`google-api-python-client`);
   gcalcli was dropped. `es tasks` → `everstone_tasks.TasksClient` (caldav), in-process.
 - Kept **separate from the operator admin CLI `esadmin`** (ops: `status`/`logs`/
-  `restart`/`backup`/`sync-state`; plus `auth`/`session`/`setup`/`calendars`/
-  `chat`; source `scripts/everstone_cli.py`). It's a deliberately **unified
-  operator surface** — it may include thin passthroughs to Hermes (`chat`,
-  `session`) so there's less to remember. Dev passthroughs: `just es <args>` runs
-  the **agent** `es`; `just esadmin <args>` runs the admin CLI. (The container
-  name and the Hermes profile are both still `everstone`.)
+  `restart`/`backup`/`sync-state`; plus `auth` (google only — `auth hermes` was
+  replaced by `model`)/`model`/`session`/`setup`/`calendars`/`chat`; source
+  `scripts/everstone_cli.py`). It's a deliberately **unified operator surface**
+  — it may include thin passthroughs to Hermes (`chat`, `session`) so there's
+  less to remember. Dev passthroughs: `just es <args>` runs the **agent** `es`;
+  `just esadmin <args>` runs the admin CLI; `just model <value>` runs
+  `esadmin model`. (The container name and the Hermes profile are both still
+  `everstone`.)
 
 ## Two integration surfaces — plugin (gate) vs CLI (worker)
 
@@ -59,18 +61,23 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
 ## Config & env model
 
 - EverStone's `config.yaml` (gitignored — secrets) is the source for
-  EverStone-specific settings. **EverStone touches the Hermes config minimally**
+  EverStone-specific settings. **No `hermes.model` in config.yaml** — the LLM
+  model is not stored there. **EverStone touches the Hermes config minimally**
   — full operator flexibility. The contract is documented in
   **`docs/hermes-integration.md`**:
   - **Asserts every boot (security/structural):** `TELEGRAM_BOT_TOKEN` (→ profile
-    `.env`, secret), `TELEGRAM_ALLOWED_USERS` (→ profile `config.yaml` top-level,
-    which Hermes bridges to the env var the gateway reads), `terminal.backend
-    local`. Via `setup_hermes`'s `hermes config set …` (Hermes routes
-    secrets→`.env`, non-secrets→`config.yaml`).
-  - **Seeds once (first profile creation):** `model`/`provider` from
-    `config.yaml: hermes.model`; operator owns it after (`esadmin model`).
+    `.env`, secret) and `TELEGRAM_ALLOWED_USERS` (→ profile `config.yaml`
+    top-level), plus `terminal.backend local`. The two Telegram values are
+    enforced with **VERIFY + LOUD-FAIL on drift** via `scripts/assert_telegram.py`
+    — `config.yaml` is authoritative; a divergent live value is a logged error,
+    not a silent overwrite. Via `setup_hermes`'s `hermes config set …` (Hermes
+    routes secrets→`.env`, non-secrets→`config.yaml`).
+  - **One-time operator action (not seeded from config.yaml):** `model`/`provider`
+    are set via `esadmin model <value>` (= `just model <value>`), which sets the
+    model in the Hermes profile AND runs the provider's auth flow in one step.
+    This replaced `esadmin auth hermes`. EverStone never re-asserts it.
   - **Never touches:** display, reasoning, curator, compression, auxiliary,
-    telegram policy, model-after-seed — all operator-owned.
+    telegram policy, model-after-set — all operator-owned.
 - **`es` tools read `config.yaml` directly.**
 - **GOTCHA (resolved):** the Telegram **allowlist** is read from the
   `TELEGRAM_ALLOWED_USERS` env var; the *correct* way to set it is the

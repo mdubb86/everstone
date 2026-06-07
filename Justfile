@@ -106,10 +106,11 @@ chat:
     #!/usr/bin/env bash
     if [ -t 0 ] && [ -t 1 ]; then DT="-it"; else DT="-i"; fi
     docker exec $DT {{DEV_NAME}} esadmin chat
-hermes-auth:
+# Set the LLM model + run its provider auth (one-time). e.g. `just model openai-codex/gpt-5.5`.
+model +ARGS:
     #!/usr/bin/env bash
     if [ -t 0 ] && [ -t 1 ]; then DT="-it"; else DT="-i"; fi
-    docker exec $DT {{DEV_NAME}} esadmin auth hermes
+    docker exec $DT {{DEV_NAME}} esadmin model {{ARGS}}
 
 # ── Internal ──────────────────────────────────────────────────────────────
 
