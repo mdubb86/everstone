@@ -25,7 +25,7 @@ These are security/structural and are re-applied on each container start (from
 
 | Setting | Source | After first boot |
 |---|---|---|
-| `model` / `provider` | `config.yaml: hermes.model` | **Yours.** Change anytime with `esadmin model` or `model.default` in the Hermes config — EverStone never re-asserts it. |
+| `model` / `provider` | `config.yaml: hermes.model` | **Yours.** Change anytime with `hermes -p everstone model` or `model.default` in the Hermes config — EverStone never re-asserts it. |
 
 ## What you own (EverStone never touches)
 
@@ -39,7 +39,7 @@ Everything else in your Hermes config — full flexibility:
   `group_trigger`, group allowlists (`platforms.telegram.extra.*` /
   `TELEGRAM_GROUP_ALLOWED_*`)
 
-Set these with `esadmin config set …`, `esadmin model`, or by editing the Hermes
+Set these with `hermes -p everstone config set …`, `hermes -p everstone model`, or by editing the Hermes
 profile config directly. They survive reboots — EverStone won't overwrite them.
 
 ## What EverStone provides as infrastructure (not Hermes config)
@@ -62,12 +62,15 @@ profile config directly. They survive reboots — EverStone won't overwrite them
 
 ## Common operator tasks
 
-- **Change the model:** `esadmin model` (or set `model.default` in the Hermes
+- **Change the model:** `hermes -p everstone model` (or set `model.default` in the Hermes
   config). EverStone won't revert it.
 - **Add another allowed Telegram user:** edit `telegram.owner_user_id`… (single
   owner today) — or for group access use the Telegram group allowlists. The DM
   allowlist EverStone asserts is the owner.
-- **Tune verbosity / reasoning / curator:** `esadmin config set <key> <value>`.
+- **Tune verbosity / reasoning / curator:** `hermes -p everstone config set <key> <value>`.
+
+> Run the `hermes -p everstone …` commands inside the container — `just shell`
+> then `hermes -p everstone …`, or `docker exec -it everstone hermes -p everstone …`.
 
 ## Note
 
