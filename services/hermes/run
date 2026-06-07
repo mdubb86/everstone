@@ -1,5 +1,5 @@
 #!/command/execlineb -P
 with-contenv
-export HERMES_TERMINAL_CWD /opt/data
+s6-envdir -fn /opt/config/hermes/envdir
 export HERMES_HOME /opt/data/hermes
 hermes -p everstone gateway run --no-supervise
