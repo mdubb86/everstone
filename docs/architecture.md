@@ -24,6 +24,14 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   with `--pretty` for humans.
 - `es cal` → **Google Calendar API directly** (`google-api-python-client`);
   gcalcli was dropped. `es tasks` → `everstone_tasks.TasksClient` (caldav), in-process.
+- **`es tasks` is a full CalDAV task model** — verbs `list`/`add`/`edit`/`done`/
+  `delete`/`lists`/`list-create`/`list-delete`/`clear`; flat lists, `CATEGORIES`
+  tags, `DUE`/`VALARM`, default list **`TODO`**. It is a **general mechanism** —
+  no list is special-cased in the CLI (spec D5); all task *policy* lives in three
+  skills: **`todos`** (the `TODO` catch-all; due/reminders/tags), **`shopping`**
+  (🛒-prefixed persistent store lists; clear-after-trip, never delete), and
+  **`checklists`** (ad-hoc lists; create→run-down→delete). See
+  `docs/superpowers/specs/2026-06-07-es-tasks-and-skills-design.md`.
 - Kept **separate from the operator admin CLI `esadmin`** (ops: `status`/`logs`/
   `restart`/`backup`/`sync-state`; plus `auth` (google only — `auth hermes` was
   replaced by `model`)/`model`/`session`/`setup`/`calendars`/`chat`; source
@@ -136,6 +144,13 @@ pin + timeouts. (Currently live-set in the profile config — see follow-ups.)
 
 ## Open follow-ups
 
+- **Profile-local skills aren't version-controlled.** The agent skills (`calendar`,
+  `todos`, `shopping`, `checklists`) live in the profile data dir
+  (`$DATA_DIR/hermes/profiles/everstone/skills/<name>/SKILL.md`) — gitignored,
+  persisted via the host mount, lost if the data dir is wiped. Shipping the core
+  skills via the repo (e.g. a `skills/` dir installed at boot) for reproducibility
+  is a future decision; for now they're operator content per the "persist via
+  mount" preference.
 - `--pretty` is root-only (`es --pretty cal …`); make it per-verb (agents trail it).
 - Bake the `auxiliary.vision` config into `setup_hermes` (currently only live-set
   in the data dir).
