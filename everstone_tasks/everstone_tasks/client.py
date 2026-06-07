@@ -83,6 +83,19 @@ class TasksClient:
         todo = self._find(uid, list_name)
         todo.delete()
 
+    def clear_list(self, list_name, completed_only: bool = True) -> int:
+        removed = 0
+        for todo in self._calendar(list_name).todos(include_completed=True):
+            status = str(todo.icalendar_component.get("status", "NEEDS-ACTION"))
+            if completed_only and status != "COMPLETED":
+                continue
+            todo.delete()
+            removed += 1
+        return removed
+
+    def delete_list(self, list_name) -> None:
+        self._calendar(list_name).delete()
+
     def list_collections(self):
         out = []
         for cal in self._principal.calendars():
