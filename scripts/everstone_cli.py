@@ -7,6 +7,7 @@ wraps these for dev convenience, but the in-container CLI is the source of
 truth for what an operator can do at runtime.
 """
 import os
+import subprocess
 from pathlib import Path
 
 import typer
@@ -51,17 +52,34 @@ def _exec(*args: str) -> None:
     os.execvp(args[0], list(args))
 
 
+def _provider_from_model(model: str) -> str:
+    """Derive the provider from a `provider/model` spec (e.g. openai-codex/gpt-5.5)."""
+    if "/" not in model:
+        typer.echo(f"Model must be `provider/model` (e.g. openai-codex/gpt-5.5), got '{model}'.", err=True)
+        raise SystemExit(1)
+    return model.split("/", 1)[0]
+
+
+# ─── model ─────────────────────────────────────────────────────────────────
+
+@app.command()
+def model(
+    value: str = typer.Argument(..., help="LLM as provider/model, e.g. openai-codex/gpt-5.5 or anthropic/claude-opus-4."),
+) -> None:
+    """Set the LLM model + run its provider auth (one-time setup for the brain)."""
+    provider = _provider_from_model(value)
+    # 1) Set model + provider in the Hermes profile config.
+    subprocess.run(["hermes", "-p", "everstone", "config", "set", "model", value], check=True)
+    subprocess.run(["hermes", "-p", "everstone", "config", "set", "provider", provider], check=True)
+    # 2) Run the provider's auth. openai-codex uses the OAuth manual-paste flow;
+    #    other providers fall through to Hermes' interactive `auth add`.
+    if provider == "openai-codex":
+        _exec("hermes", "-p", "everstone", "auth", "add", "openai-codex", "--type", "oauth", "--manual-paste")
+    else:
+        _exec("hermes", "-p", "everstone", "auth", "add", provider)
+
+
 # ─── auth ──────────────────────────────────────────────────────────────────
-
-@auth_app.command("hermes")
-def auth_hermes() -> None:
-    """OAuth into ChatGPT Codex. Authorize in your browser, paste the failed-redirect URL back."""
-    _exec(
-        "hermes", "-p", "everstone",
-        "auth", "add", "openai-codex",
-        "--type", "oauth", "--manual-paste",
-    )
-
 
 @auth_app.command("google")
 def auth_google() -> None:
