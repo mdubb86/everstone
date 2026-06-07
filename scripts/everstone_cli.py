@@ -8,29 +8,9 @@ truth for what an operator can do at runtime.
 """
 import os
 import subprocess
-from pathlib import Path
 
 import typer
 
-
-def _load_envdir(path: str = "/opt/config/hermes/envdir") -> None:
-    """Populate os.environ from s6's envdir (one file per var, raw value).
-
-    Same vars are exported by s6 service `run` scripts via s6-envdir but
-    ad-hoc `docker exec everstone everstone <cmd>` calls don't go through
-    s6. Read directly from the envdir form — its values are raw bytes
-    with no shell quoting, so JSON values (gcal calendar lists) round-trip
-    cleanly. setdefault → `docker exec -e NAME=v` overrides still win.
-    """
-    p = Path(path)
-    if not p.is_dir():
-        return
-    for entry in p.iterdir():
-        if entry.is_file():
-            os.environ.setdefault(entry.name, entry.read_text())
-
-
-_load_envdir()
 
 app = typer.Typer(
     help="EverStone admin CLI. From the host: `just esadmin <command>` (or `docker exec [-it] everstone esadmin <command>`).",
@@ -84,7 +64,9 @@ def model(
 @auth_app.command("google")
 def auth_google() -> None:
     """OAuth into Google (Calendar now; more surfaces later). Authorize in browser. One-time per Google account."""
-    if not os.environ.get("GCALCLI_CLIENT_ID") or not os.environ.get("GCALCLI_CLIENT_SECRET"):
+    from es.config import load_config
+    _gc = load_config().get("gcalcli") or {}
+    if not _gc.get("client_id") or not _gc.get("client_secret"):
         typer.echo(
             "Google is not configured.\n"
             "Set config.gcalcli.{client_id, client_secret} in config.yaml,\n"

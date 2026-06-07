@@ -22,6 +22,14 @@ from urllib.parse import parse_qs, urlparse
 from google_auth_oauthlib.flow import Flow
 
 
+def _gcal_config():
+    """Read gcal client creds + public_url from config.yaml (no envdir)."""
+    from es.config import load_config
+    cfg = load_config()
+    gc = cfg.get("gcalcli") or {}
+    return gc.get("client_id"), gc.get("client_secret"), (cfg.get("public_url") or "").rstrip("/")
+
+
 # Keep in sync with es/es/google_auth.py: GOOGLE_SCOPES / _DEFAULT_CREDS_PATH
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar"]
 CREDS_PATH = Path(os.environ.get("ES_GOOGLE_CREDS_PATH", "/opt/data/hermes/es/google-credentials.json"))
@@ -68,19 +76,17 @@ def _build_flow(client_id: str, client_secret: str, redirect_uri: str) -> Flow:
 
 
 def main() -> int:
-    client_id = os.environ.get("GCALCLI_CLIENT_ID")
-    client_secret = os.environ.get("GCALCLI_CLIENT_SECRET")
-    public_url = os.environ.get("EVERSTONE_PUBLIC_URL", "").rstrip("/")
+    client_id, client_secret, public_url = _gcal_config()
     if not client_id or not client_secret:
         print(
-            "GCALCLI_CLIENT_ID / GCALCLI_CLIENT_SECRET not set.\n"
+            "gcalcli.client_id / gcalcli.client_secret not set in config.yaml.\n"
             "Configure gcalcli in config.yaml and restart, then re-run.",
             file=sys.stderr,
         )
         return 1
     if not public_url:
         print(
-            "EVERSTONE_PUBLIC_URL not set — auth_gcal needs config.public_url\n"
+            "public_url not set in config.yaml — auth_gcal needs it\n"
             "so it can register a real HTTPS redirect_uri with Google.",
             file=sys.stderr,
         )
