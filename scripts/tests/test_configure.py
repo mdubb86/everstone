@@ -291,6 +291,13 @@ def test_generate_hermes_env_telegram_commands_translated(tmp_path):
     finally:
         del os.environ["EVERSTONE_CONFIG_DIR"]
 
+def test_telegram_commands_payload():
+    cfg = {"telegram": {"commands": [{"cmd": "ping", "desc": "check"}]}}
+    assert configure._telegram_commands(cfg) == [{"command": "ping", "description": "check"}]
+
+def test_telegram_commands_empty_default():
+    assert configure._telegram_commands({"telegram": {}}) == []
+
 def test_generate_hermes_soul_overwrites_each_time(tmp_path):
     os.environ["EVERSTONE_DATA_DIR"] = str(tmp_path)
     try:

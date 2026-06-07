@@ -12,6 +12,7 @@ import re
 import shlex
 import shutil
 import sys
+import urllib.request
 from pathlib import Path
 
 import yaml
@@ -350,6 +351,32 @@ def generate_livesync_bridge_config(config: dict) -> None:
     output_path.write_text(json.dumps(cfg, indent=2))
 
 
+def _telegram_commands(config: dict) -> list:
+    """Build the Bot API setMyCommands payload from config.telegram.commands."""
+    return [
+        {"command": c["cmd"], "description": c["desc"]}
+        for c in (config["telegram"].get("commands") or [])
+    ]
+
+
+def set_telegram_commands(config: dict) -> None:
+    """POST setMyCommands to the Telegram Bot API. Best-effort: a failure here
+    (network/token) logs a warning but does not abort boot. (Moved out of
+    setup_hermes as part of envdir retirement.)"""
+    token = config["telegram"]["bot_token"]
+    commands = _telegram_commands(config)
+    body = json.dumps({"commands": commands}).encode("utf-8")
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/setMyCommands",
+        data=body, headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        print(f"[configure] Telegram slash-commands set (count: {len(commands)}).")
+    except Exception as e:  # noqa: BLE001 — best-effort, never block boot
+        print(f"[configure] WARN: setMyCommands failed ({e}). Bot still functional.")
+
+
 def generate_hermes_env(config: dict) -> None:
     """Generate s6 envdir AND sourceable env file for hermes from config."""
     config_dir = _config_dir()
@@ -489,6 +516,9 @@ def main():
 
     print("[configure] Rendering AGENTS.md from platform + config.agent.instructions")
     generate_agents_md(config)
+
+    print("[configure] Registering Telegram slash-commands via Bot API")
+    set_telegram_commands(config)
 
     print("[configure] Configuration complete")
 
