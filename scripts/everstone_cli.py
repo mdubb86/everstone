@@ -46,9 +46,6 @@ app.add_typer(session_app, name="session")
 setup_app = typer.Typer(help="First-time setup helpers.", no_args_is_help=True)
 app.add_typer(setup_app, name="setup")
 
-calendar_app = typer.Typer(help="Google Calendar utilities (discovery, listing).", no_args_is_help=True)
-app.add_typer(calendar_app, name="calendar")
-
 
 def _exec(*args: str) -> None:
     os.execvp(args[0], list(args))
@@ -109,10 +106,10 @@ def session_show(
     _exec("hermes", "-p", "everstone", "sessions", "show", session_id)
 
 
-# ─── calendar ──────────────────────────────────────────────────────────────
+# ─── calendars ─────────────────────────────────────────────────────────────
 
-@calendar_app.command("list")
-def calendar_list() -> None:
+@app.command()
+def calendars() -> None:
     """List calendars the authed Google account can see — use this to discover IDs for config.yaml."""
     from es.google_auth import calendar_service
     svc = calendar_service()
@@ -147,6 +144,40 @@ def sync_state() -> None:
 def backup() -> None:
     """Snapshot /opt/data into /opt/data/backups/."""
     _exec("/scripts/backup")
+
+
+_LOG_DIR = "/opt/data/hermes/profiles/everstone/logs"
+_LONGRUNS = ("hermes", "caddy", "couchdb", "radicale", "livesync-bridge")
+
+
+@app.command()
+def logs(
+    name: str = typer.Argument("gateway", help="Hermes log to tail: gateway, agent, errors."),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Follow the log (tail -f)."),
+    lines: int = typer.Option(80, "--lines", "-n", help="Number of lines to show."),
+) -> None:
+    """Tail a Hermes log (gateway, agent, errors)."""
+    args = ["tail", f"-n{lines}"]
+    if follow:
+        args.append("-f")
+    args.append(f"{_LOG_DIR}/{name}.log")
+    _exec(*args)
+
+
+@app.command()
+def restart(
+    service: str = typer.Argument("hermes", help="s6 service to restart."),
+    hard: bool = typer.Option(
+        False, "--hard", "-k",
+        help="SIGKILL instead of graceful SIGTERM — for a wedged service.",
+    ),
+) -> None:
+    """Restart an s6 service (default: hermes). It comes back automatically (longrun)."""
+    if service not in _LONGRUNS:
+        typer.echo(f"Unknown service '{service}'. Choose from: {', '.join(_LONGRUNS)}.", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Restarting {service} (comes back automatically)…", err=True)
+    _exec("s6-svc", "-k" if hard else "-t", f"/run/service/{service}")
 
 
 if __name__ == "__main__":
