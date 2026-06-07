@@ -82,3 +82,17 @@ class TasksClient:
     def delete_task(self, uid, list_name):
         todo = self._find(uid, list_name)
         todo.delete()
+
+    def list_collections(self):
+        out = []
+        for cal in self._principal.calendars():
+            name = cal.get_display_name() if hasattr(cal, "get_display_name") else cal.name
+            name = name or cal.id
+            todos = cal.todos(include_completed=True)
+            total = len(todos)
+            open_ = sum(
+                1 for t in todos
+                if str(t.icalendar_component.get("status", "NEEDS-ACTION")) != "COMPLETED"
+            )
+            out.append({"name": name, "open_count": open_, "total_count": total})
+        return out
