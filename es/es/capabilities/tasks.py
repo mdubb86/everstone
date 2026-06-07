@@ -99,3 +99,29 @@ def delete_task(ctx: typer.Context,
 def lists(ctx: typer.Context):
     client, _ = _client()
     return client.list_collections()
+
+
+@app.command("list-create")
+@envelope
+def list_create(ctx: typer.Context, name: str = typer.Argument(...)):
+    client, _ = _client()
+    client.ensure_list(name)
+    return {"list": name, "created": True}
+
+
+@app.command("list-delete")
+@envelope
+def list_delete(ctx: typer.Context, name: str = typer.Argument(...)):
+    client, _ = _client()
+    client.delete_list(name)
+    return {"list": name, "deleted": True}
+
+
+@app.command("clear")
+@envelope
+def clear(ctx: typer.Context,
+          name: str = typer.Argument(...),
+          all_: bool = typer.Option(False, "--all")):
+    client, _ = _client()
+    removed = client.clear_list(name, completed_only=not all_)
+    return {"list": name, "removed": removed}

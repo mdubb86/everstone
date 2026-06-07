@@ -94,3 +94,29 @@ def test_edit_forwards_fields(fake_client):
     kwargs = fake_client.edit_task.call_args.kwargs
     assert kwargs["summary"] == "new"
     assert kwargs["due"] == datetime(2026, 6, 11, 9, 0)
+
+
+def test_list_create_calls_ensure_list(fake_client):
+    res = runner.invoke(main.app, ["tasks", "list-create", "Beach packing"])
+    assert res.exit_code == 0
+    fake_client.ensure_list.assert_called_once_with("Beach packing")
+    body = json.loads(res.stdout)
+    assert body["data"] == {"list": "Beach packing", "created": True}
+
+
+def test_list_delete_calls_delete_list(fake_client):
+    res = runner.invoke(main.app, ["tasks", "list-delete", "Beach packing"])
+    assert res.exit_code == 0
+    fake_client.delete_list.assert_called_once_with("Beach packing")
+
+
+def test_clear_defaults_completed_only(fake_client):
+    res = runner.invoke(main.app, ["tasks", "clear", "🛒 Costco"])
+    assert res.exit_code == 0
+    fake_client.clear_list.assert_called_once_with("🛒 Costco", completed_only=True)
+
+
+def test_clear_all_flag(fake_client):
+    res = runner.invoke(main.app, ["tasks", "clear", "🛒 Costco", "--all"])
+    assert res.exit_code == 0
+    fake_client.clear_list.assert_called_once_with("🛒 Costco", completed_only=False)
