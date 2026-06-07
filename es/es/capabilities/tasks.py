@@ -1,4 +1,4 @@
-"""es tasks — CalDAV tasks via the everstone_tasks TasksClient (in-process)."""
+"""es tasks — CalDAV tasks via the embedded TasksClient (in-process)."""
 from datetime import datetime
 from typing import Optional, Tuple
 
@@ -6,8 +6,8 @@ import typer
 
 from es import config
 from es.runner import envelope
-from everstone_tasks.client import TasksClient
-from everstone_tasks.deeplink import build_deeplink
+from es.tasks_client import TasksClient
+from es.deeplink import build_deeplink
 
 app = typer.Typer(no_args_is_help=True)
 

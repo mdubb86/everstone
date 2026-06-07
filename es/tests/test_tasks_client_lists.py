@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from everstone_tasks.client import TasksClient
+from es.tasks_client import TasksClient
 
 
 def test_list_collections_counts(radicale):

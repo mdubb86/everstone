@@ -1,5 +1,5 @@
 from unittest.mock import MagicMock
-from everstone_tasks.client import TasksClient
+from es.tasks_client import TasksClient
 
 
 def _client_with_todo(uid):

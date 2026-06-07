@@ -104,8 +104,6 @@ RUN pip install --break-system-packages \
         "python-telegram-bot>=21" \
         "typer>=0.12"
 
-COPY everstone_tasks /opt/everstone_tasks
-RUN pip install --break-system-packages /opt/everstone_tasks
 COPY es /opt/es
 RUN pip install --break-system-packages /opt/es
 COPY access_hook /opt/access_hook

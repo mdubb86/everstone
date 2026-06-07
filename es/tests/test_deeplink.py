@@ -1,4 +1,4 @@
-from everstone_tasks.deeplink import build_deeplink
+from es.deeplink import build_deeplink
 
 def test_simple():
     assert build_deeplink("everstone", "Inbox.md") == "obsidian://open?vault=everstone&file=Inbox.md"

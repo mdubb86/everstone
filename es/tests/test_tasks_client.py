@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime, timezone
-from everstone_tasks.client import TasksClient
+from es.tasks_client import TasksClient
 
 
 @pytest.fixture
