@@ -32,6 +32,8 @@ def test_idempotent_when_matching():
     h = FakeHermes(current={"TELEGRAM_BOT_TOKEN": "TKN", "TELEGRAM_ALLOWED_USERS": "111"})
     at.assert_telegram(token="TKN", allowed="111", hermes=h)
     # already correct -> no exception is the check
+    # enforcement-every-boot invariant: set() must still fire for both keys
+    assert h.sets == [("TELEGRAM_BOT_TOKEN", "TKN"), ("TELEGRAM_ALLOWED_USERS", "111")]
 
 
 def test_loud_fail_on_token_discrepancy():
@@ -46,3 +48,12 @@ def test_loud_fail_on_allowlist_discrepancy():
     with pytest.raises(at.TelegramDrift) as e:
         at.assert_telegram(token="TKN", allowed="111", hermes=h)
     assert "TELEGRAM_ALLOWED_USERS" in str(e.value)
+
+
+def test_loud_fail_lists_both_keys_when_both_drift():
+    h = FakeHermes(current={"TELEGRAM_BOT_TOKEN": "WRONG_TOKEN", "TELEGRAM_ALLOWED_USERS": "999"})
+    with pytest.raises(at.TelegramDrift) as e:
+        at.assert_telegram(token="TKN", allowed="111", hermes=h)
+    msg = str(e.value)
+    assert "TELEGRAM_BOT_TOKEN" in msg
+    assert "TELEGRAM_ALLOWED_USERS" in msg
