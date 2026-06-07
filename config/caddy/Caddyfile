@@ -13,6 +13,13 @@
 		}
 	}
 
+	# Bare /caldav (no trailing slash) -> redirect to /caldav/ so clients that omit
+	# the slash still reach Radicale. 308 preserves the request method (PROPFIND,
+	# REPORT, …); a 301/302 would downgrade it to GET and break CalDAV discovery.
+	handle /caldav {
+		redir /caldav/ 308
+	}
+
 	handle /caldav/* {
 		reverse_proxy localhost:5232 {
 			header_up X-Script-Name /caldav

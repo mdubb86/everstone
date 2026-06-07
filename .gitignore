@@ -20,6 +20,13 @@ dist/
 radfire_data/
 .everstone-data/
 
+# devm: CLI-owned render cache + persisted VM state (Claude config/creds, etc.)
+.devm/
+/devm.yaml
+
+# Build/export artifacts
+*.tar
+
 # User config (template lives in config.example.yaml)
 /config.yaml
 
