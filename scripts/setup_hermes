@@ -6,13 +6,11 @@ export HERMES_HOME=/opt/data/hermes
 # Ensure the `everstone` profile exists (created with --no-skills so the
 # image ships clean, no bundled skill set). Once per-install: idempotent.
 # All subsequent hermes commands here apply to this profile.
-_created=
 if ! hermes profile list 2>/dev/null | grep -qE "(^|\s)everstone(\s|$)"; then
     echo "[setup_hermes] creating 'everstone' Hermes profile (--no-skills, clean)"
     hermes profile create everstone --no-skills --no-alias \
         --description "EverStone instance — minimal, opt-in skills" \
         || echo "[setup_hermes] profile create failed (already existed in a race?)"
-    _created=1
 fi
 hermes profile use everstone
 
@@ -74,4 +72,4 @@ if [ -n "${EVERSTONE_SKILLS:-}" ]; then
     done
 fi
 
-echo "[setup_hermes] applied. Run 'just hermes-auth' once (see docs/BOOTSTRAP.md)."
+echo "[setup_hermes] applied. Run 'just model <provider/model>' once (see docs/BOOTSTRAP.md)."
