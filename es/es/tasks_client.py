@@ -49,7 +49,7 @@ class TasksClient:
             alarm.add("action", "DISPLAY"); alarm.add("description", summary)
             alarm.add("trigger", remind_at)
             todo.add_component(alarm)
-        ical = ICalendar(); ical.add("prodid", "-//everstone-tasks//EN"); ical.add("version", "2.0")
+        ical = ICalendar(); ical.add("prodid", "-//EverStone//es//EN"); ical.add("version", "2.0")
         ical.add_component(todo)
         cal.save_todo(ical=ical.to_ical().decode())
         return uid
