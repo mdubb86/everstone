@@ -343,7 +343,6 @@ def test_generate_hermes_env(tmp_path):
         assert (envdir / "EVERSTONE_CALDAV_PASSWORD").read_text() == "cp"
         assert (envdir / "EVERSTONE_VAULT_NAME").read_text() == "myvault"
         assert (envdir / "EVERSTONE_AGENT_NAME").read_text() == "Jarvis"
-        assert (envdir / "HERMES_MODEL").read_text() == "openai/gpt-5-codex"
         assert (envdir / "TELEGRAM_BOT_TOKEN").read_text() == "TKN"
         assert (envdir / "TELEGRAM_OWNER_USER_ID").read_text() == "111"
         assert (envdir / "TELEGRAM_ALLOWED_USERS").read_text() == "111"
@@ -351,6 +350,14 @@ def test_generate_hermes_env(tmp_path):
         # sourceable env file for setup_hermes
         env_file = (tmp_path / "hermes" / "env").read_text()
         assert "export TELEGRAM_ALLOWED_USERS=111" in env_file
-        assert "export HERMES_MODEL=openai/gpt-5-codex" in env_file
+    finally:
+        del os.environ["EVERSTONE_CONFIG_DIR"]
+
+def test_generate_hermes_env_no_longer_writes_model(tmp_path):
+    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
+    try:
+        configure.generate_hermes_env(SAMPLE)
+        envdir = tmp_path / "hermes" / "envdir"
+        assert not (envdir / "HERMES_MODEL").exists(), "HERMES_MODEL must no longer be rendered"
     finally:
         del os.environ["EVERSTONE_CONFIG_DIR"]

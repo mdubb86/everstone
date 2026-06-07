@@ -367,7 +367,6 @@ def generate_hermes_env(config: dict) -> None:
         "EVERSTONE_CALDAV_USER": config["caldav"]["user"],
         "EVERSTONE_CALDAV_PASSWORD": config["caldav"]["password"],
         "EVERSTONE_VAULT_NAME": config["obsidian"]["vault_name"],
-        "HERMES_MODEL": config["hermes"]["model"],
         "TELEGRAM_BOT_TOKEN": config["telegram"]["bot_token"],
         "TELEGRAM_ALLOWED_USERS": owner_id,
         # Hermes scans TERMINAL_CWD for AGENTS.md / .cursorrules / context
