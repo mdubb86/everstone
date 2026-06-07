@@ -24,10 +24,13 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   with `--pretty` for humans.
 - `es cal` → **Google Calendar API directly** (`google-api-python-client`);
   gcalcli was dropped. `es tasks` → `everstone_tasks.TasksClient` (caldav), in-process.
-- Kept **separate from the operator admin CLI `esadmin`** (`auth`/`backup`/
-  `setup`/`status`; source `scripts/everstone_cli.py`). Dev passthroughs:
-  `just es <args>` runs the **agent** `es`; `just esadmin <args>` runs the admin
-  CLI. (The container name and the Hermes profile are both still `everstone`.)
+- Kept **separate from the operator admin CLI `esadmin`** (ops: `status`/`logs`/
+  `restart`/`backup`/`sync-state`; plus `auth`/`session`/`setup`/`calendars`/
+  `chat`; source `scripts/everstone_cli.py`). It's a deliberately **unified
+  operator surface** — it may include thin passthroughs to Hermes (`chat`,
+  `session`) so there's less to remember. Dev passthroughs: `just es <args>` runs
+  the **agent** `es`; `just esadmin <args>` runs the admin CLI. (The container
+  name and the Hermes profile are both still `everstone`.)
 
 ## Two integration surfaces — plugin (gate) vs CLI (worker)
 

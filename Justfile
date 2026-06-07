@@ -92,9 +92,9 @@ es +ARGS:
     docker exec $DT {{DEV_NAME}} es {{ARGS}}
 
 # ── Operator surface — the in-container `esadmin` CLI ─────────────────────
-# `just esadmin --help` lists every operator subcommand (auth, backup, status,
-# session, setup, calendar). -it vs -i adapts to a TTY so OAuth paste / chat
-# get a full TTY while scripts/pipes don't break.
+# `just esadmin --help` lists every operator subcommand (status, logs, restart,
+# backup, sync-state, auth, session, setup, calendars, chat). -it vs -i adapts to
+# a TTY so OAuth paste / chat get a full TTY while scripts/pipes don't break.
 esadmin +ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
