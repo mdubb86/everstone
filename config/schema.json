@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["public_url", "name", "agent", "couchdb", "caldav", "livesync", "obsidian", "telegram", "hermes"],
+  "required": ["public_url", "name", "agent", "couchdb", "caldav", "livesync", "obsidian", "telegram"],
   "properties": {
     "public_url": {
       "type": "string",
@@ -81,13 +81,6 @@
             }
           }
         }
-      }
-    },
-    "hermes": {
-      "type": "object",
-      "required": ["model"],
-      "properties": {
-        "model": { "type": "string", "minLength": 1 }
       }
     },
     "github": {

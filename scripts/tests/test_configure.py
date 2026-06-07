@@ -12,7 +12,7 @@ SAMPLE = {
   "caldav": {"user":"cu","password":"cp"},
   "livesync": {"passphrase":"ph"},
   "obsidian": {"vault_name":"myvault"},
-  "telegram": {"owner_user_id":111,"bot_token":"TKN","commands":[]}, "hermes": {"model":"openai/gpt-5-codex"},
+  "telegram": {"owner_user_id":111,"bot_token":"TKN","commands":[]},
 }
 
 def test_deep_merge():
@@ -324,6 +324,13 @@ def test_generate_setup_livesync_script(tmp_path):
     finally:
         del os.environ["EVERSTONE_SETUP_LIVESYNC_PATH"]
         configure.DEFAULTS_CONFIG_DIR = saved_defaults
+
+
+def test_config_schema_has_no_hermes_section():
+    import json, pathlib
+    schema = json.loads((pathlib.Path(__file__).parents[2] / "config/schema.json").read_text())
+    assert "hermes" not in schema.get("properties", {}), "hermes.model must be removed from schema"
+    assert "hermes" not in schema.get("required", []), "hermes must be removed from required"
 
 
 def test_generate_hermes_env(tmp_path):

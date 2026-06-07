@@ -6,7 +6,6 @@ caldav: {user: everstone, password: null}
 livesync: {passphrase: null}
 obsidian: {vault_name: Everstone}
 telegram: {owner_user_id: null, bot_token: null, commands: []}
-hermes: {model: null}
 github: {token: null}
 gcalcli: null
 timezone: America/Chicago
