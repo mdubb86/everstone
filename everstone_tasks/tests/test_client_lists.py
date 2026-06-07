@@ -66,7 +66,12 @@ def test_edit_task_replaces_reminder(radicale):
     uid = c.add_task("ping", "TODO", remind_at=datetime(2026, 6, 11, 8, 0))
     c.edit_task(uid, "TODO", remind_at=datetime(2026, 6, 12, 8, 0))
     t = [x for x in c.list_tasks("TODO") if x["uid"] == uid][0]
-    assert t["has_alarm"] is True  # still exactly one alarm, replaced not duplicated
+    assert t["has_alarm"] is True  # alarm still present after edit
+    # Non-duplication: the raw iCalendar data must contain exactly one VALARM
+    raw = c._find(uid, "TODO").data
+    assert raw.count("BEGIN:VALARM") == 1, (
+        f"Expected exactly 1 VALARM after edit, got {raw.count('BEGIN:VALARM')}"
+    )
 
 
 def test_emoji_and_space_list_names_work(radicale):
