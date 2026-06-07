@@ -9,7 +9,6 @@ and generates all service config files.
 import json
 import os
 import re
-import shlex
 import shutil
 import sys
 import urllib.request
@@ -282,9 +281,8 @@ def generate_agents_md(config: dict) -> None:
     to AGENTS.md are lost on next container restart. To change the file,
     edit `agent.instructions` in config.yaml.
 
-    Hermes finds this file by scanning TERMINAL_CWD for AGENTS.md, so the
-    hermes envdir also exports HERMES_TERMINAL_CWD=/opt/data (handled in
-    generate_hermes_env).
+    Hermes finds this file by scanning TERMINAL_CWD for AGENTS.md; the
+    hermes run script exports HERMES_TERMINAL_CWD=/opt/data directly.
     """
     data_dir = _data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -377,62 +375,6 @@ def set_telegram_commands(config: dict) -> None:
         print(f"[configure] WARN: setMyCommands failed ({e}). Bot still functional.")
 
 
-def generate_hermes_env(config: dict) -> None:
-    """Generate s6 envdir AND sourceable env file for hermes from config."""
-    config_dir = _config_dir()
-    hermes_dir = config_dir / "hermes"
-    envdir = hermes_dir / "envdir"
-    envdir.mkdir(parents=True, exist_ok=True)
-
-    owner_id = str(config["telegram"]["owner_user_id"])
-    env_vars = {
-        # Operator's public HTTPS URL — needed by auth_gcal.py to set the
-        # OAuth redirect_uri to <public_url>/oauth/google/callback and by
-        # any other component that builds a public-facing URL.
-        "EVERSTONE_PUBLIC_URL": config["public_url"].rstrip("/"),
-        "EVERSTONE_CALDAV_URL": "http://localhost:5232",
-        "EVERSTONE_CALDAV_USER": config["caldav"]["user"],
-        "EVERSTONE_CALDAV_PASSWORD": config["caldav"]["password"],
-        "EVERSTONE_VAULT_NAME": config["obsidian"]["vault_name"],
-        "TELEGRAM_BOT_TOKEN": config["telegram"]["bot_token"],
-        "TELEGRAM_ALLOWED_USERS": owner_id,
-        # Hermes scans TERMINAL_CWD for AGENTS.md / .cursorrules / context
-        # files. /opt/data is where configure.py drops the generated
-        # AGENTS.md, so the agent picks it up automatically on startup.
-        "HERMES_TERMINAL_CWD": "/opt/data",
-        # Telegram setMyCommands payload. Default "[]" → no autocomplete
-        # clutter. setup_hermes posts this to the Bot API at startup.
-        "TELEGRAM_COMMANDS": json.dumps([
-            {"command": c["cmd"], "description": c["desc"]}
-            for c in (config["telegram"].get("commands") or [])
-        ]),
-        # Optional GitHub PAT — exposed only when set, so setup_hermes can
-        # branch on its presence to wire the git credential helper. Empty
-        # string means "not configured" (git stays unauth'd, falls back to
-        # public clones only).
-        "GH_TOKEN": (config.get("github") or {}).get("token") or "",
-        # Space-separated list of Hermes skill names to install at boot.
-        # Default empty = clean ship; setup_hermes loops and installs each.
-        "EVERSTONE_SKILLS": " ".join(
-            (config.get("agent") or {}).get("skills") or []
-        ),
-        # gcalcli wiring — empty strings = "not configured" so the
-        # everstone CLI / wrapper / setup_hermes can branch cleanly.
-        # gcalcli's --client-id / --client-secret flags want raw values
-        # (not a JSON file path), so we just pass the config.yaml values
-        # straight through. The gcal wrapper reads both and forwards.
-        "GCALCLI_CLIENT_ID": (config.get("gcalcli") or {}).get("client_id") or "",
-        "GCALCLI_CLIENT_SECRET": (config.get("gcalcli") or {}).get("client_secret") or "",
-    }
-    for name, value in env_vars.items():
-        (envdir / name).write_text(value)
-
-    env_file = hermes_dir / "env"
-    env_file.write_text(
-        "\n".join(f'export {k}={shlex.quote(v)}' for k, v in env_vars.items()) + "\n"
-    )
-
-
 def setup_data_directories() -> None:
     """Create data directories with correct permissions."""
     data_dir = _data_dir()
@@ -507,9 +449,6 @@ def main():
 
     print("[configure] Generating livesync-bridge config")
     generate_livesync_bridge_config(config)
-
-    print("[configure] Generating hermes envdir")
-    generate_hermes_env(config)
 
     print("[configure] Rendering Hermes SOUL.md from config.agent.soul")
     generate_hermes_soul(config)

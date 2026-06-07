@@ -110,113 +110,6 @@ def test_generate_agents_md_appends_instructions(tmp_path):
     finally:
         del os.environ["EVERSTONE_DATA_DIR"]
 
-def test_generate_hermes_env_sets_terminal_cwd(tmp_path):
-    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
-    try:
-        configure.generate_hermes_env(SAMPLE)
-        envdir = tmp_path / "hermes" / "envdir"
-        assert (envdir / "HERMES_TERMINAL_CWD").read_text() == "/opt/data"
-    finally:
-        del os.environ["EVERSTONE_CONFIG_DIR"]
-
-def test_generate_hermes_env_telegram_commands_default_empty(tmp_path):
-    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
-    try:
-        sample = {**SAMPLE, "telegram": {**SAMPLE["telegram"], "commands": []}}
-        configure.generate_hermes_env(sample)
-        envdir = tmp_path / "hermes" / "envdir"
-        assert (envdir / "TELEGRAM_COMMANDS").read_text() == "[]"
-    finally:
-        del os.environ["EVERSTONE_CONFIG_DIR"]
-
-def test_generate_hermes_env_skills_empty_by_default(tmp_path):
-    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
-    try:
-        configure.generate_hermes_env(SAMPLE)
-        envdir = tmp_path / "hermes" / "envdir"
-        # SAMPLE has skills: [] → empty string in envdir
-        assert (envdir / "EVERSTONE_SKILLS").read_text() == ""
-    finally:
-        del os.environ["EVERSTONE_CONFIG_DIR"]
-
-def test_generate_hermes_env_skills_space_separated(tmp_path):
-    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
-    try:
-        sample = {**SAMPLE, "agent": {**SAMPLE["agent"],
-            "skills": ["obsidian", "research", "daily-notes"]}}
-        configure.generate_hermes_env(sample)
-        body = (tmp_path / "hermes" / "envdir" / "EVERSTONE_SKILLS").read_text()
-        # Shell-iterable form: setup_hermes uses `for skill in $EVERSTONE_SKILLS`.
-        assert body == "obsidian research daily-notes"
-    finally:
-        del os.environ["EVERSTONE_CONFIG_DIR"]
-
-def test_generate_hermes_env_gh_token_unset(tmp_path):
-    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
-    try:
-        # No github section at all → empty token, never breaks the generator.
-        sample = {k: v for k, v in SAMPLE.items() if k != "github"}
-        configure.generate_hermes_env(sample)
-        envdir = tmp_path / "hermes" / "envdir"
-        assert (envdir / "GH_TOKEN").read_text() == ""
-    finally:
-        del os.environ["EVERSTONE_CONFIG_DIR"]
-
-def test_generate_hermes_env_gh_token_set(tmp_path):
-    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
-    try:
-        sample = {**SAMPLE, "github": {"token": "ghp_secret123"}}
-        configure.generate_hermes_env(sample)
-        envdir = tmp_path / "hermes" / "envdir"
-        assert (envdir / "GH_TOKEN").read_text() == "ghp_secret123"
-    finally:
-        del os.environ["EVERSTONE_CONFIG_DIR"]
-
-def test_generate_hermes_env_gcalcli_unset(tmp_path):
-    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
-    try:
-        # SAMPLE has no gcalcli → credentials empty, calendar lists
-        # serialize to empty JSON arrays (the gcal wrapper json.loads
-        # them; "[]" is the safe default).
-        configure.generate_hermes_env(SAMPLE)
-        envdir = tmp_path / "hermes" / "envdir"
-        assert (envdir / "GCALCLI_CLIENT_ID").read_text() == ""
-        assert (envdir / "GCALCLI_CLIENT_SECRET").read_text() == ""
-        assert (envdir / "EVERSTONE_GCAL_READ_ONLY").read_text() == "[]"
-        assert (envdir / "EVERSTONE_GCAL_READ_WRITE").read_text() == "[]"
-    finally:
-        del os.environ["EVERSTONE_CONFIG_DIR"]
-
-
-def test_generate_hermes_env_gcalcli_configured(tmp_path):
-    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
-    try:
-        sample = {**SAMPLE, "gcalcli": {
-            "client_id": "12345.apps.googleusercontent.com",
-            "client_secret": "GOCSPX-secret",
-            "calendars": {
-                "read_only": ["primary", "family@example.com"],
-                "read_write": ["personal@gmail.com", "work@example.com"],
-            },
-        }}
-        configure.generate_hermes_env(sample)
-        envdir = tmp_path / "hermes" / "envdir"
-        # Raw values written through — gcal wrapper passes them to gcalcli
-        # as --client-id / --client-secret flags.
-        assert (envdir / "GCALCLI_CLIENT_ID").read_text() == \
-            "12345.apps.googleusercontent.com"
-        assert (envdir / "GCALCLI_CLIENT_SECRET").read_text() == "GOCSPX-secret"
-        # JSON arrays — names can have spaces / apostrophes (real-world
-        # example: "Allison's Calendar"), so space-separation would break
-        # the wrapper's parsing. The gcal wrapper json.loads these.
-        assert json.loads((envdir / "EVERSTONE_GCAL_READ_ONLY").read_text()) == \
-            ["primary", "family@example.com"]
-        assert json.loads((envdir / "EVERSTONE_GCAL_READ_WRITE").read_text()) == \
-            ["personal@gmail.com", "work@example.com"]
-    finally:
-        del os.environ["EVERSTONE_CONFIG_DIR"]
-
-
 def test_generate_agents_md_calendar_section_absent_when_unconfigured(tmp_path):
     os.environ["EVERSTONE_DATA_DIR"] = str(tmp_path)
     try:
@@ -275,22 +168,6 @@ def test_generate_agents_md_calendar_section_renders_lists(tmp_path):
         del os.environ["EVERSTONE_DATA_DIR"]
 
 
-def test_generate_hermes_env_telegram_commands_translated(tmp_path):
-    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
-    try:
-        sample = {**SAMPLE, "telegram": {**SAMPLE["telegram"], "commands": [
-            {"cmd": "tasks", "desc": "Show open tasks"},
-            {"cmd": "today", "desc": "What's on for today"},
-        ]}}
-        configure.generate_hermes_env(sample)
-        body = (tmp_path / "hermes" / "envdir" / "TELEGRAM_COMMANDS").read_text()
-        # Our cmd/desc → Bot API command/description
-        assert '"command": "tasks"' in body
-        assert '"description": "Show open tasks"' in body
-        assert '"command": "today"' in body
-    finally:
-        del os.environ["EVERSTONE_CONFIG_DIR"]
-
 def test_telegram_commands_payload():
     cfg = {"telegram": {"commands": [{"cmd": "ping", "desc": "check"}]}}
     assert configure._telegram_commands(cfg) == [{"command": "ping", "description": "check"}]
@@ -340,31 +217,3 @@ def test_config_schema_has_no_hermes_section():
     assert "hermes" not in schema.get("required", []), "hermes must be removed from required"
 
 
-def test_generate_hermes_env(tmp_path):
-    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
-    try:
-        configure.generate_hermes_env(SAMPLE)
-        envdir = tmp_path / "hermes" / "envdir"
-        assert (envdir / "EVERSTONE_CALDAV_URL").read_text() == "http://localhost:5232"
-        assert (envdir / "EVERSTONE_CALDAV_USER").read_text() == "cu"
-        assert (envdir / "EVERSTONE_CALDAV_PASSWORD").read_text() == "cp"
-        assert (envdir / "EVERSTONE_VAULT_NAME").read_text() == "myvault"
-        assert (envdir / "EVERSTONE_AGENT_NAME").read_text() == "Jarvis"
-        assert (envdir / "TELEGRAM_BOT_TOKEN").read_text() == "TKN"
-        assert (envdir / "TELEGRAM_OWNER_USER_ID").read_text() == "111"
-        assert (envdir / "TELEGRAM_ALLOWED_USERS").read_text() == "111"
-        assert (envdir / "EVERSTONE_GROUP_BINARIES").read_text() == "everstone-tasks"
-        # sourceable env file for setup_hermes
-        env_file = (tmp_path / "hermes" / "env").read_text()
-        assert "export TELEGRAM_ALLOWED_USERS=111" in env_file
-    finally:
-        del os.environ["EVERSTONE_CONFIG_DIR"]
-
-def test_generate_hermes_env_no_longer_writes_model(tmp_path):
-    os.environ["EVERSTONE_CONFIG_DIR"] = str(tmp_path)
-    try:
-        configure.generate_hermes_env(SAMPLE)
-        envdir = tmp_path / "hermes" / "envdir"
-        assert not (envdir / "HERMES_MODEL").exists(), "HERMES_MODEL must no longer be rendered"
-    finally:
-        del os.environ["EVERSTONE_CONFIG_DIR"]
