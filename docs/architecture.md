@@ -24,9 +24,10 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   with `--pretty` for humans.
 - `es cal` → **Google Calendar API directly** (`google-api-python-client`);
   gcalcli was dropped. `es tasks` → `everstone_tasks.TasksClient` (caldav), in-process.
-- Kept **separate from the operator admin CLI `everstone`** (`auth`/`backup`/
-  `setup`/`status`). The `just es` recipe currently passes through to `everstone`
-  (admin) — see follow-ups.
+- Kept **separate from the operator admin CLI `esadmin`** (`auth`/`backup`/
+  `setup`/`status`; source `scripts/everstone_cli.py`). Dev passthroughs:
+  `just es <args>` runs the **agent** `es`; `just esadmin <args>` runs the admin
+  CLI. (The container name and the Hermes profile are both still `everstone`.)
 
 ## Two integration surfaces — plugin (gate) vs CLI (worker)
 
@@ -47,7 +48,7 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   `/opt/data/hermes/es/google-credentials.json`; scopes = **union of enabled
   Google capabilities** (today: Calendar). Adding a Google capability appends its
   scope → one re-consent.
-- The **OAuth flow is operator-run**: `everstone auth google` (Caddy-proxied
+- The **OAuth flow is operator-run**: `esadmin auth google` (Caddy-proxied
   callback, `scripts/auth_gcal.py`). `es` capabilities only *consume* the stored
   credential. `es` deps must include **`google-auth-oauthlib`** (the flow lib
   gcalcli used to provide).
@@ -112,22 +113,6 @@ pin + timeouts. (Currently live-set in the profile config — see follow-ups.)
 ## Open follow-ups
 
 - `--pretty` is root-only (`es --pretty cal …`); make it per-verb (agents trail it).
-- **Rename admin CLI `everstone` → `admin`, and make `just es` the agent CLI**
-  (DECIDED, not yet done — needs a `just dev` rebuild):
-  - `Dockerfile:139`: symlink `/scripts/everstone_cli.py` → `/usr/local/bin/admin`
-    (keep the source file name); install completion as `admin.sh` and update
-    `scripts/everstone_completion.sh` (`complete … everstone` → `admin`, the
-    `_everstone_completion`/`_EVERSTONE_COMPLETE` names).
-  - `scripts/everstone_cli.py:34`: update the Typer `help=` string
-    (`docker exec … everstone everstone <command>` → `… admin <command>`).
-  - `Justfile`: `just es <args>` → `docker exec … es <args>` (the **agent** CLI);
-    add `just admin <args>` → `… admin`; change `chat` → `admin chat` and
-    `hermes-auth` → `admin auth hermes`. (Muscle-memory change: `just es auth
-    google` / `just es chat` become `just admin …`.)
-  - Error hints: `es/es/google_auth.py` + `scripts/auth_gcal.py` — "everstone
-    auth google" → "admin auth google".
-  - **Do NOT change:** the container name, the Hermes profile name
-    (`hermes -p everstone`), or `config.yaml`.
 - Bake the `auxiliary.vision` config into `setup_hermes` (currently only live-set
   in the data dir).
 - Drop the conservatively-kept envdir vars (`EVERSTONE_CALDAV_*`, `VAULT_NAME`)
