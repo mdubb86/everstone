@@ -112,8 +112,22 @@ pin + timeouts. (Currently live-set in the profile config — see follow-ups.)
 ## Open follow-ups
 
 - `--pretty` is root-only (`es --pretty cal …`); make it per-verb (agents trail it).
-- Rename the operator `everstone` admin CLI; make `just es` transparent to the
-  agent `es`.
+- **Rename admin CLI `everstone` → `admin`, and make `just es` the agent CLI**
+  (DECIDED, not yet done — needs a `just dev` rebuild):
+  - `Dockerfile:139`: symlink `/scripts/everstone_cli.py` → `/usr/local/bin/admin`
+    (keep the source file name); install completion as `admin.sh` and update
+    `scripts/everstone_completion.sh` (`complete … everstone` → `admin`, the
+    `_everstone_completion`/`_EVERSTONE_COMPLETE` names).
+  - `scripts/everstone_cli.py:34`: update the Typer `help=` string
+    (`docker exec … everstone everstone <command>` → `… admin <command>`).
+  - `Justfile`: `just es <args>` → `docker exec … es <args>` (the **agent** CLI);
+    add `just admin <args>` → `… admin`; change `chat` → `admin chat` and
+    `hermes-auth` → `admin auth hermes`. (Muscle-memory change: `just es auth
+    google` / `just es chat` become `just admin …`.)
+  - Error hints: `es/es/google_auth.py` + `scripts/auth_gcal.py` — "everstone
+    auth google" → "admin auth google".
+  - **Do NOT change:** the container name, the Hermes profile name
+    (`hermes -p everstone`), or `config.yaml`.
 - Bake the `auxiliary.vision` config into `setup_hermes` (currently only live-set
   in the data dir).
 - Drop the conservatively-kept envdir vars (`EVERSTONE_CALDAV_*`, `VAULT_NAME`)
