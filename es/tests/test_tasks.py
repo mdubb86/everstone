@@ -120,3 +120,46 @@ def test_clear_all_flag(fake_client):
     res = runner.invoke(main.app, ["tasks", "clear", "🛒 Costco", "--all"])
     assert res.exit_code == 0
     fake_client.clear_list.assert_called_once_with("🛒 Costco", completed_only=False)
+
+
+def test_list_open_by_default(fake_client):
+    fake_client.list_tasks.return_value = [
+        {"uid": "u1", "summary": "open item", "status": "NEEDS-ACTION", "tags": []},
+        {"uid": "u2", "summary": "done item", "status": "COMPLETED", "tags": []},
+    ]
+    res = runner.invoke(main.app, ["tasks", "list", "--list", "TODO"])
+    assert res.exit_code == 0
+    body = json.loads(res.stdout)
+    assert body["ok"] is True
+    uids = [t["uid"] for t in body["data"]]
+    assert uids == ["u1"]
+    assert "u2" not in uids
+
+
+def test_list_all_includes_completed(fake_client):
+    fake_client.list_tasks.return_value = [
+        {"uid": "u1", "summary": "open item", "status": "NEEDS-ACTION", "tags": []},
+        {"uid": "u2", "summary": "done item", "status": "COMPLETED", "tags": []},
+    ]
+    res = runner.invoke(main.app, ["tasks", "list", "--list", "TODO", "--all"])
+    assert res.exit_code == 0
+    body = json.loads(res.stdout)
+    uids = [t["uid"] for t in body["data"]]
+    assert "u1" in uids
+    assert "u2" in uids
+
+
+def test_list_tag_filters(fake_client):
+    fake_client.list_tasks.return_value = [
+        {"uid": "u1", "summary": "errand open", "status": "NEEDS-ACTION", "tags": ["errand"]},
+        {"uid": "u2", "summary": "work open", "status": "NEEDS-ACTION", "tags": ["work"]},
+        {"uid": "u3", "summary": "errand done", "status": "COMPLETED", "tags": ["errand"]},
+    ]
+    res = runner.invoke(main.app, ["tasks", "list", "--tag", "errand"])
+    assert res.exit_code == 0
+    body = json.loads(res.stdout)
+    uids = [t["uid"] for t in body["data"]]
+    # open-default: u1 (errand, open) only; u2 (wrong tag), u3 (errand, COMPLETED) excluded
+    assert uids == ["u1"]
+    assert "u2" not in uids
+    assert "u3" not in uids

@@ -29,9 +29,16 @@ def _client() -> Tuple[TasksClient, str]:
 @app.command("list")
 @envelope
 def list_tasks(ctx: typer.Context,
-               list_name: str = typer.Option("TODO", "--list")):
+               list_name: str = typer.Option("TODO", "--list"),
+               tag: Optional[str] = typer.Option(None, "--tag"),
+               all_: bool = typer.Option(False, "--all")):
     client, _ = _client()
-    return client.list_tasks(list_name)
+    items = client.list_tasks(list_name)
+    if not all_:
+        items = [t for t in items if str(t.get("status", "")) != "COMPLETED"]
+    if tag:
+        items = [t for t in items if tag in (t.get("tags") or [])]
+    return items
 
 
 @app.command("add")
