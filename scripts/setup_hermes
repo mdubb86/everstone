@@ -10,28 +10,32 @@ if ! hermes profile list 2>/dev/null | grep -qE "(^|\s)everstone(\s|$)"; then
     hermes profile create everstone --no-skills --no-alias \
         --description "EverStone instance — minimal, opt-in skills" \
         || echo "[setup_hermes] profile create failed (already existed in a race?)"
-    # Seed once, at creation (operator owns these after). `hermes config set`
-    # stores scalars, not lists/maps, so we write the profile YAML directly:
-    #  - curated toolset ALLOWLIST (opt-in: only these — no cronjob/todo/browser
-    #    /etc. that compete with `es`).
-    #  - the Telegram home channel = the owner's DM, so cron / cross-platform
-    #    messages have a destination and Hermes doesn't nag /sethome each session.
+    # Seed once, at creation (operator owns these after). Two different stores,
+    # because Hermes reads them from two different places:
+    #  - curated toolset ALLOWLIST → profile config.yaml (opt-in: only these — no
+    #    cronjob/todo/browser/etc. that compete with `es`). `hermes config set`
+    #    stores scalars not lists, so write the YAML directly.
+    #  - Telegram home channel = owner's DM → profile .env as TELEGRAM_HOME_CHANNEL
+    #    (the env var Hermes actually checks — same key /sethome persists), so
+    #    cron/cross-platform delivery has a target and Hermes doesn't nag /sethome.
     python3 - <<'PY'
-import os, yaml
-p = "/opt/data/hermes/profiles/everstone/config.yaml"
-d = (yaml.safe_load(open(p)) if os.path.exists(p) else {}) or {}
+import yaml, pathlib
+prof = pathlib.Path("/opt/data/hermes/profiles/everstone")
+cfg = prof / "config.yaml"
+d = (yaml.safe_load(cfg.read_text()) if cfg.exists() else {}) or {}
 d.setdefault("platform_toolsets", {})["telegram"] = [
     "terminal", "skills", "vision", "clarify", "web", "file", "memory",
 ]
+cfg.write_text(yaml.safe_dump(d, sort_keys=False))
 owner = str(((yaml.safe_load(open("/opt/config.yaml")) or {}).get("telegram") or {})
             .get("owner_user_id", "")).strip()
 if owner:
-    d.setdefault("platforms", {}).setdefault("telegram", {})["home_channel"] = {
-        "platform": "telegram", "chat_id": owner, "name": "Home",
-    }
-with open(p, "w") as f:
-    yaml.safe_dump(d, f, sort_keys=False)
-print("[setup_hermes] seeded toolset allowlist + home channel (telegram)")
+    env = prof / ".env"
+    lines = [l for l in (env.read_text().splitlines() if env.exists() else [])
+             if not l.startswith("TELEGRAM_HOME_CHANNEL=")]
+    lines.append(f"TELEGRAM_HOME_CHANNEL={owner}")
+    env.write_text("\n".join(lines) + "\n")
+print("[setup_hermes] seeded toolset allowlist (config) + home channel (.env)")
 PY
 fi
 hermes profile use everstone
