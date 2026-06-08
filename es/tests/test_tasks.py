@@ -6,6 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from es import main
+from es.tasks_client import ParentNotFound, HasSubtasks
 
 runner = CliRunner()
 
@@ -50,7 +51,7 @@ def test_done_reports_completed(fake_client):
 def test_delete_reports_deleted(fake_client):
     res = runner.invoke(main.app, ["tasks", "delete", "u1"])
     assert json.loads(res.stdout)["data"] == {"uid": "u1", "deleted": True}
-    fake_client.delete_task.assert_called_once_with("u1", "TODO")
+    fake_client.delete_task.assert_called_once_with("u1", "TODO", force=False)
 
 
 def test_add_defaults_to_TODO(fake_client):
@@ -163,3 +164,56 @@ def test_list_tag_filters(fake_client):
     assert uids == ["u1"]
     assert "u2" not in uids
     assert "u3" not in uids
+
+
+def test_add_forwards_parent(fake_client):
+    fake_client.add_task.return_value = "child-uid"
+    res = runner.invoke(main.app, ["tasks", "add", "Book hotel", "--parent", "p1"])
+    assert res.exit_code == 0
+    assert fake_client.add_task.call_args.kwargs["parent_uid"] == "p1"
+
+
+def test_add_parent_not_found_envelope(fake_client):
+    fake_client.add_task.side_effect = ParentNotFound("parent task not found: p9")
+    res = runner.invoke(main.app, ["tasks", "add", "x", "--parent", "p9"])
+    body = json.loads(res.stdout)
+    assert body["ok"] is False
+    assert body["error"]["code"] == "parent_not_found"
+
+
+def test_edit_forwards_parent(fake_client):
+    res = runner.invoke(main.app, ["tasks", "edit", "u1", "--parent", "p2"])
+    assert res.exit_code == 0
+    assert fake_client.edit_task.call_args.kwargs["parent_uid"] == "p2"
+
+
+def test_edit_detach_parent(fake_client):
+    res = runner.invoke(main.app, ["tasks", "edit", "u1", "--parent", ""])
+    assert res.exit_code == 0
+    assert fake_client.edit_task.call_args.kwargs["parent_uid"] == ""
+
+
+def test_list_passes_through_parent(fake_client):
+    fake_client.list_tasks.return_value = [
+        {"uid": "p", "summary": "Parent", "status": "NEEDS-ACTION", "tags": [], "parent": None},
+        {"uid": "c", "summary": "Child", "status": "NEEDS-ACTION", "tags": [], "parent": "p"},
+    ]
+    res = runner.invoke(main.app, ["tasks", "list", "--list", "TODO", "--all"])
+    body = json.loads(res.stdout)
+    parents = {t["uid"]: t["parent"] for t in body["data"]}
+    assert parents == {"p": None, "c": "p"}
+
+
+def test_delete_force_forwarded(fake_client):
+    res = runner.invoke(main.app, ["tasks", "delete", "u1", "--force"])
+    assert res.exit_code == 0
+    assert fake_client.delete_task.call_args.kwargs["force"] is True
+
+
+def test_delete_has_subtasks_envelope(fake_client):
+    fake_client.delete_task.side_effect = HasSubtasks("Task has 2 subtask(s); pass --force to delete it and them")
+    res = runner.invoke(main.app, ["tasks", "delete", "u1"])
+    body = json.loads(res.stdout)
+    assert body["ok"] is False
+    assert body["error"]["code"] == "has_subtasks"
+    assert "2 subtask" in body["error"]["message"]

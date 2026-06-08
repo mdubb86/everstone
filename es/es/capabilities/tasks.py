@@ -49,7 +49,8 @@ def add_task(ctx: typer.Context,
             note: Optional[str] = typer.Option(None, "--note"),
             tag: list[str] = typer.Option(None, "--tag"),
             due: Optional[str] = typer.Option(None, "--due"),
-            remind_at: Optional[str] = typer.Option(None, "--remind")):
+            remind_at: Optional[str] = typer.Option(None, "--remind"),
+            parent: Optional[str] = typer.Option(None, "--parent")):
     client, vault = _client()
     url = build_deeplink(vault, note) if note else None
     uid = client.add_task(
@@ -57,6 +58,7 @@ def add_task(ctx: typer.Context,
         remind_at=datetime.fromisoformat(remind_at) if remind_at else None,
         due=datetime.fromisoformat(due) if due else None,
         tags=list(tag) if tag else None,
+        parent_uid=parent,
     )
     return {"uid": uid}
 
@@ -69,7 +71,8 @@ def edit_task(ctx: typer.Context,
              summary: Optional[str] = typer.Option(None, "--summary"),
              tag: list[str] = typer.Option(None, "--tag"),
              due: Optional[str] = typer.Option(None, "--due"),
-             remind_at: Optional[str] = typer.Option(None, "--remind")):
+             remind_at: Optional[str] = typer.Option(None, "--remind"),
+             parent: Optional[str] = typer.Option(None, "--parent")):
     client, _ = _client()
     client.edit_task(
         uid, list_name,
@@ -77,6 +80,7 @@ def edit_task(ctx: typer.Context,
         due=datetime.fromisoformat(due) if due else None,
         remind_at=datetime.fromisoformat(remind_at) if remind_at else None,
         tags=list(tag) if tag else None,
+        parent_uid=parent,
     )
     return {"uid": uid, "edited": True}
 
@@ -95,9 +99,10 @@ def done_task(ctx: typer.Context,
 @envelope
 def delete_task(ctx: typer.Context,
                uid: str = typer.Argument(...),
-               list_name: str = typer.Option("TODO", "--list")):
+               list_name: str = typer.Option("TODO", "--list"),
+               force: bool = typer.Option(False, "--force")):
     client, _ = _client()
-    client.delete_task(uid, list_name)
+    client.delete_task(uid, list_name, force=force)
     return {"uid": uid, "deleted": True}
 
 
