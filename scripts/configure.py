@@ -177,6 +177,7 @@ Everything below is fact about your environment — not stylistic guidance
 - Examples:
     es tasks add "Buy milk" --list TODO
     es tasks add "Review Q4 plan" --note "Projects/Q4.md"   # defaults to TODO
+    es tasks add "Book hotel" --parent <uid>                # subtask of <uid> (only when asked)
     es tasks list                                            # open items in TODO
     es tasks lists                                           # all lists + counts
     es tasks done <uid>
