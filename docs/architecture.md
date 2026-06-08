@@ -25,8 +25,11 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
 - `es cal` → **Google Calendar API directly** (`google-api-python-client`);
   gcalcli was dropped. `es tasks` → `everstone_tasks.TasksClient` (caldav), in-process.
 - **`es tasks` is a full CalDAV task model** — verbs `list`/`add`/`edit`/`done`/
-  `delete`/`lists`/`list-create`/`list-delete`/`clear`; flat lists, `CATEGORIES`
-  tags, `DUE`/`VALARM`, default list **`TODO`**. It is a **general mechanism** —
+  `delete`/`lists`/`list-create`/`list-delete`/`clear`; flat lists with optional
+  **one-level subtasks** (`RELATED-TO;RELTYPE=PARENT`: `add --parent` files a child
+  in the parent's list, `edit --parent` re-parents/moves or detaches, `delete`
+  refuses a parent with children unless `--force` cascades; completion is
+  independent), `CATEGORIES` tags, `DUE`/`VALARM`, default list **`TODO`**. It is a **general mechanism** —
   no list is special-cased in the CLI (spec D5); all task *policy* lives in three
   skills: **`todos`** (the `TODO` catch-all; due/reminders/tags), **`shopping`**
   (🛒-prefixed persistent store lists; clear-after-trip, never delete), and
@@ -141,6 +144,8 @@ pin + timeouts. (Currently live-set in the profile config — see follow-ups.)
 - `docs/superpowers/specs/2026-06-06-es-tool-gateway-cli-design.md` — `es` design.
 - `docs/superpowers/plans/2026-06-06-es-core-and-tasks.md`,
   `…-es-cal-and-google-auth.md`, `…-es-cutover.md` — the TDD implementation plans.
+- `docs/superpowers/specs/2026-06-08-es-subtasks-design.md` +
+  `…/plans/2026-06-08-es-subtasks.md` — one-level subtasks (`RELATED-TO`).
 
 ## Open follow-ups
 
