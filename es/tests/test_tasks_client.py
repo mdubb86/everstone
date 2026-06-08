@@ -69,3 +69,27 @@ def test_add_with_parent_sets_related_to_in_parent_list(client):
 def test_add_with_unknown_parent_raises(client):
     with pytest.raises(ParentNotFound):
         client.add_task("Orphan", list_name="inbox", parent_uid="does-not-exist")
+
+
+def test_edit_set_parent(client):
+    parent = client.add_task("Parent", list_name="inbox")
+    child = client.add_task("Child", list_name="inbox")
+    client.edit_task(child, "inbox", parent_uid=parent)
+    item = next(t for t in client.list_tasks("inbox") if t["uid"] == child)
+    assert item["parent"] == parent
+
+
+def test_edit_detach_parent(client):
+    parent = client.add_task("Parent", list_name="inbox")
+    child = client.add_task("Child", list_name="inbox", parent_uid=parent)
+    client.edit_task(child, "inbox", parent_uid="")  # "" detaches
+    item = next(t for t in client.list_tasks("inbox") if t["uid"] == child)
+    assert item["parent"] is None
+
+
+def test_edit_parent_none_leaves_link_untouched(client):
+    parent = client.add_task("Parent", list_name="inbox")
+    child = client.add_task("Child", list_name="inbox", parent_uid=parent)
+    client.edit_task(child, "inbox", summary="renamed")  # parent_uid defaults None
+    item = next(t for t in client.list_tasks("inbox") if t["uid"] == child)
+    assert item["parent"] == parent and item["summary"] == "renamed"

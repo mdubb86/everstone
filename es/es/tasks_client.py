@@ -140,7 +140,8 @@ class TasksClient:
     def edit_task(self, uid, list_name, summary: Optional[str] = None,
                   due: Optional[datetime] = None,
                   remind_at: Optional[datetime] = None,
-                  tags: Optional[list] = None) -> None:
+                  tags: Optional[list] = None,
+                  parent_uid: Optional[str] = None) -> None:
         todo = self._find(uid, list_name); c = todo.icalendar_component
         if summary is not None:
             c["summary"] = summary
@@ -159,6 +160,11 @@ class TasksClient:
             alarm.add("action", "DISPLAY"); alarm.add("description", c.get("summary", ""))
             alarm.add("trigger", remind_at)
             c.add_component(alarm)
+        if parent_uid is not None:  # None = leave untouched; "" = detach; uid = set
+            if "related-to" in c:
+                del c["related-to"]
+            if parent_uid != "":
+                c.add("related-to", parent_uid, parameters={"RELTYPE": "PARENT"})
         todo.save()
 
     def set_note_link(self, uid, list_name, url):
