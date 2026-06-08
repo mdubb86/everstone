@@ -93,3 +93,41 @@ def test_edit_parent_none_leaves_link_untouched(client):
     client.edit_task(child, "inbox", summary="renamed")  # parent_uid defaults None
     item = next(t for t in client.list_tasks("inbox") if t["uid"] == child)
     assert item["parent"] == parent and item["summary"] == "renamed"
+
+
+def test_children_of_lists_subtasks(client):
+    parent = client.add_task("Parent", list_name="inbox")
+    c1 = client.add_task("c1", list_name="inbox", parent_uid=parent)
+    client.add_task("c2", list_name="inbox", parent_uid=parent)
+    client.add_task("unrelated", list_name="inbox")
+    kids = client.children_of(parent, "inbox")
+    assert len(kids) == 2
+
+
+def test_delete_parent_without_force_raises(client):
+    parent = client.add_task("Parent", list_name="inbox")
+    client.add_task("kid", list_name="inbox", parent_uid=parent)
+    with pytest.raises(HasSubtasks):
+        client.delete_task(parent, "inbox")
+
+
+def test_delete_parent_force_removes_children(client):
+    parent = client.add_task("Parent", list_name="inbox")
+    client.add_task("kid", list_name="inbox", parent_uid=parent)
+    client.delete_task(parent, "inbox", force=True)
+    assert client.list_tasks("inbox") == []
+
+
+def test_delete_leaf_needs_no_force(client):
+    uid = client.add_task("Leaf", list_name="inbox")
+    client.delete_task(uid, "inbox")
+    assert client.list_tasks("inbox") == []
+
+
+def test_done_parent_leaves_children_open(client):
+    parent = client.add_task("Parent", list_name="inbox")
+    child = client.add_task("kid", list_name="inbox", parent_uid=parent)
+    client.complete_task(parent, "inbox")
+    items = {t["uid"]: t["status"] for t in client.list_tasks("inbox")}
+    assert items[parent] == "COMPLETED"
+    assert items[child] == "NEEDS-ACTION"  # independent completion

@@ -173,8 +173,21 @@ class TasksClient:
             del c["url"]
         c.add("url", url); todo.save()
 
-    def delete_task(self, uid, list_name):
+    def children_of(self, uid, list_name):
+        out = []
+        for todo in self._calendar(list_name).todos(include_completed=True):
+            if self._read_parent(todo.icalendar_component) == uid:
+                out.append(todo)
+        return out
+
+    def delete_task(self, uid, list_name, force: bool = False):
         todo = self._find(uid, list_name)
+        children = self.children_of(uid, list_name)
+        if children and not force:
+            raise HasSubtasks(
+                f"Task has {len(children)} subtask(s); pass --force to delete it and them")
+        for child in children:
+            child.delete()
         todo.delete()
 
     def clear_list(self, list_name, completed_only: bool = True) -> int:
