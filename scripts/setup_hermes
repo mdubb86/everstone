@@ -10,6 +10,20 @@ if ! hermes profile list 2>/dev/null | grep -qE "(^|\s)everstone(\s|$)"; then
     hermes profile create everstone --no-skills --no-alias \
         --description "EverStone instance — minimal, opt-in skills" \
         || echo "[setup_hermes] profile create failed (already existed in a race?)"
+    # Seed the curated toolset ALLOWLIST once, at creation (operator owns it after).
+    # Opt-in: the agent gets ONLY these toolsets — no cronjob/todo/browser/etc. that
+    # compete with `es`. `hermes config set` stores scalars (not lists), so write YAML.
+    python3 - <<'PY'
+import os, yaml
+p = "/opt/data/hermes/profiles/everstone/config.yaml"
+d = (yaml.safe_load(open(p)) if os.path.exists(p) else {}) or {}
+d.setdefault("platform_toolsets", {})["telegram"] = [
+    "terminal", "skills", "vision", "clarify", "web", "file", "memory",
+]
+with open(p, "w") as f:
+    yaml.safe_dump(d, f, sort_keys=False)
+print("[setup_hermes] seeded curated toolset allowlist (telegram)")
+PY
 fi
 hermes profile use everstone
 
