@@ -5,6 +5,16 @@ import caldav
 from icalendar import Todo, Alarm, Calendar as ICalendar
 
 
+class ParentNotFound(Exception):
+    """Raised when a --parent uid is not found in any list."""
+    es_code = "parent_not_found"
+
+
+class HasSubtasks(Exception):
+    """Raised when deleting a task with subtasks without force."""
+    es_code = "has_subtasks"
+
+
 class TasksClient:
     def __init__(self, url, username="", password=""):
         # caldav requires non-None username to send Basic auth headers;
@@ -72,6 +82,28 @@ class TasksClient:
         dt = c["due"].dt
         return dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
 
+    @staticmethod
+    def _read_parent(c):
+        if "related-to" not in c:
+            return None
+        rel = c.get("related-to")
+        items = rel if isinstance(rel, list) else [rel]
+        for entry in items:
+            params = getattr(entry, "params", {}) or {}
+            reltype = str(params.get("RELTYPE", "PARENT")).upper()
+            if reltype == "PARENT":
+                return str(entry)
+        return None
+
+    def _find_in_any_list(self, uid):
+        for cal in self._principal.calendars():
+            name = cal.get_display_name() if hasattr(cal, "get_display_name") else cal.name
+            name = name or cal.id
+            for todo in cal.todos(include_completed=True):
+                if str(todo.icalendar_component.get("uid", "")) == uid:
+                    return todo, name
+        raise ParentNotFound(f"parent task not found: {uid}")
+
     def list_tasks(self, list_name):
         out = []
         for todo in self._calendar(list_name).todos(include_completed=True):
@@ -83,6 +115,7 @@ class TasksClient:
                 "has_alarm": b"BEGIN:VALARM" in todo.data.encode() if hasattr(todo, 'data') else any(sc.name == "VALARM" for sc in todo.icalendar_instance.walk()),
                 "tags": self._read_tags(c),
                 "due": self._read_due(c),
+                "parent": self._read_parent(c),
             })
         return out
 

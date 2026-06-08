@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime, timezone
-from es.tasks_client import TasksClient
+from es.tasks_client import TasksClient, ParentNotFound, HasSubtasks
 
 
 @pytest.fixture
@@ -34,3 +34,21 @@ def test_alarm_persisted(client):
     uid = client.add_task("Ring", list_name="inbox",
                           remind_at=datetime(2030, 1, 1, 9, 0, tzinfo=timezone.utc))
     assert client.list_tasks("inbox")[0]["has_alarm"] is True
+
+
+def test_list_tasks_parent_none_by_default(client):
+    client.add_task("Standalone", list_name="inbox")
+    assert client.list_tasks("inbox")[0]["parent"] is None
+
+
+def test_find_in_any_list_locates_uid(client):
+    client.ensure_list("other")
+    uid = client.add_task("Findme", list_name="other")
+    todo, found_list = client._find_in_any_list(uid)
+    assert found_list == "other"
+    assert str(todo.icalendar_component.get("uid")) == uid
+
+
+def test_find_in_any_list_raises_when_missing(client):
+    with pytest.raises(ParentNotFound):
+        client._find_in_any_list("nope-not-here")
