@@ -52,3 +52,20 @@ def test_find_in_any_list_locates_uid(client):
 def test_find_in_any_list_raises_when_missing(client):
     with pytest.raises(ParentNotFound):
         client._find_in_any_list("nope-not-here")
+
+
+def test_add_with_parent_sets_related_to_in_parent_list(client):
+    client.ensure_list("proj")
+    parent = client.add_task("Beach trip", list_name="proj")
+    # --list is ignored when parent is given: child lands in the parent's list
+    child = client.add_task("Book hotel", list_name="inbox", parent_uid=parent)
+    items = client.list_tasks("proj")
+    child_item = next(t for t in items if t["uid"] == child)
+    assert child_item["parent"] == parent
+    # nothing leaked into the passed (ignored) list
+    assert all(t["uid"] != child for t in client.list_tasks("inbox"))
+
+
+def test_add_with_unknown_parent_raises(client):
+    with pytest.raises(ParentNotFound):
+        client.add_task("Orphan", list_name="inbox", parent_uid="does-not-exist")

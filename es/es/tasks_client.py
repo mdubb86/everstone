@@ -44,10 +44,15 @@ class TasksClient:
     def add_task(self, summary, list_name, url: Optional[str] = None,
                  remind_at: Optional[datetime] = None,
                  due: Optional[datetime] = None,
-                 tags: Optional[list] = None) -> str:
+                 tags: Optional[list] = None,
+                 parent_uid: Optional[str] = None) -> str:
+        if parent_uid:
+            _, list_name = self._find_in_any_list(parent_uid)  # child shares parent's list
         cal = self.ensure_list(list_name); uid = uuid.uuid4().hex
         todo = Todo()
         todo.add("uid", uid); todo.add("summary", summary); todo.add("status", "NEEDS-ACTION")
+        if parent_uid:
+            todo.add("related-to", parent_uid, parameters={"RELTYPE": "PARENT"})
         if url:
             todo.add("url", url)
         if due:
