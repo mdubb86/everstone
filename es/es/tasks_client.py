@@ -160,12 +160,29 @@ class TasksClient:
             alarm.add("action", "DISPLAY"); alarm.add("description", c.get("summary", ""))
             alarm.add("trigger", remind_at)
             c.add_component(alarm)
-        if parent_uid is not None:  # None = leave untouched; "" = detach; uid = set
-            if "related-to" in c:
-                del c["related-to"]
-            if parent_uid != "":
-                c.add("related-to", parent_uid, parameters={"RELTYPE": "PARENT"})
-        todo.save()
+        if parent_uid is None:
+            todo.save()  # no parent change
+            return
+        # parent_uid given: "" detaches in place; a real uid (re)links and moves
+        # the child into the parent's list if it lives elsewhere.
+        if "related-to" in c:
+            del c["related-to"]
+        if parent_uid == "":
+            todo.save()
+            return
+        _, parent_list = self._find_in_any_list(parent_uid)  # raises ParentNotFound
+        c.add("related-to", parent_uid, parameters={"RELTYPE": "PARENT"})
+        if parent_list == list_name:
+            todo.save()
+        else:
+            # Serialize via a freshly built VCALENDAR so all in-memory edits
+            # (summary, RELATED-TO, etc.) are captured in the saved iCalendar data.
+            ical = ICalendar()
+            ical.add("prodid", "-//EverStone//es//EN")
+            ical.add("version", "2.0")
+            ical.add_component(c)
+            self.ensure_list(parent_list).save_todo(ical=ical.to_ical().decode())
+            todo.delete()
 
     def set_note_link(self, uid, list_name, url):
         todo = self._find(uid, list_name); c = todo.icalendar_component

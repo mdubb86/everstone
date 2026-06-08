@@ -131,3 +131,29 @@ def test_done_parent_leaves_children_open(client):
     items = {t["uid"]: t["status"] for t in client.list_tasks("inbox")}
     assert items[parent] == "COMPLETED"
     assert items[child] == "NEEDS-ACTION"  # independent completion
+
+
+def test_edit_reparent_moves_child_into_parents_list(client):
+    client.ensure_list("proj")
+    parent = client.add_task("Beach trip", list_name="proj")
+    child = client.add_task("Book hotel", list_name="inbox")  # starts in inbox
+    client.edit_task(child, "inbox", parent_uid=parent)       # parent is in proj
+    # child must move to the parent's list and keep its link
+    proj_items = {t["uid"]: t for t in client.list_tasks("proj")}
+    assert child in proj_items and proj_items[child]["parent"] == parent
+    assert all(t["uid"] != child for t in client.list_tasks("inbox"))
+
+
+def test_edit_reparent_preserves_other_edits_on_move(client):
+    client.ensure_list("proj")
+    parent = client.add_task("P", list_name="proj")
+    child = client.add_task("Old", list_name="inbox")
+    client.edit_task(child, "inbox", summary="New title", parent_uid=parent)
+    item = next(t for t in client.list_tasks("proj") if t["uid"] == child)
+    assert item["summary"] == "New title"  # edits survive the move
+
+
+def test_edit_unknown_parent_raises(client):
+    child = client.add_task("Child", list_name="inbox")
+    with pytest.raises(ParentNotFound):
+        client.edit_task(child, "inbox", parent_uid="no-such-parent")
