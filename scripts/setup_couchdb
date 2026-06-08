@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+
+echo "[setup_couchdb] Skipping CouchDB setup - single_node=true in local.ini automatically creates system databases"
+
+# Commented out - not needed when single_node=true is set
+# echo "[setup_couchdb] Available databases before setup:"
+# curl -s -u "${COUCHDB_USER}:${COUCHDB_PASSWORD}" "http://127.0.0.1:5984/_all_dbs"
+# echo ""
+#
+# # Check cluster setup state
+# STATE=$(curl -s -u "${COUCHDB_USER}:${COUCHDB_PASSWORD}" "http://127.0.0.1:5984/_cluster_setup" | grep -o '"state":"[^"]*"' | cut -d'"' -f4)
+#
+# if [ "$STATE" = "single_node_enabled" ]; then
+#   echo "[setup_couchdb] Cluster already configured (state: single_node_enabled)"
+#   exit 0
+# fi
+#
+# echo "[setup_couchdb] Running cluster setup to create system databases (current state: ${STATE:-unconfigured})"
+#
+# curl -X POST "http://127.0.0.1:5984/_cluster_setup" \
+#   -u "${COUCHDB_USER}:${COUCHDB_PASSWORD}" \
+#   -H "Content-Type: application/json" \
+#   -d '{"action":"enable_single_node"}'
+#
+# echo "[setup_couchdb] Cluster setup complete"
+#
+# echo "[setup_couchdb] Available databases after setup:"
+# curl -s -u "${COUCHDB_USER}:${COUCHDB_PASSWORD}" "http://127.0.0.1:5984/_all_dbs"
+# echo ""

@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Print a dotted key from config.yaml, for shell consumers (setup_hermes).
+
+Usage: config-get telegram.bot_token   -> prints the value
+Lists print space-joined. Missing / null -> empty string + exit 0.
+Reads /opt/config.yaml (override with ES_CONFIG_PATH)."""
+import os
+import sys
+
+import yaml
+
+
+def _get(cfg, dotted):
+    cur = cfg
+    for part in dotted.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print("usage: config-get <dotted.key>", file=sys.stderr)
+        return 2
+    path = os.environ.get("ES_CONFIG_PATH", "/opt/config.yaml")
+    with open(path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    val = _get(cfg, sys.argv[1])
+    if val is None:
+        print("")
+    elif isinstance(val, list):
+        print(" ".join(str(v) for v in val))
+    else:
+        print(val)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

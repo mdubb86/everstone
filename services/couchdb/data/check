@@ -1,0 +1,11 @@
+#!/bin/sh
+curl -s -u "${COUCHDB_USER}:${COUCHDB_PASSWORD}" "http://127.0.0.1:5984/_up" > /dev/null 2>&1
+RESULT=$?
+
+if [ $RESULT -eq 0 ]; then
+  echo '[couchdb] Health check passed'
+else
+  echo '[couchdb] Waiting for CouchDB to be ready'
+fi
+
+exit $RESULT

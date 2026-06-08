@@ -1,0 +1,6 @@
+#!/command/execlineb -P
+s6-notifyoncheck -n 0
+with-contenv
+export HOME /home/couchdb
+s6-setuidgid couchdb
+/opt/bin/couchdb/bin/couchdb -couch_ini /opt/bin/couchdb/etc/default.ini /opt/config/couchdb/local.ini

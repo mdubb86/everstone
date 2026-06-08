@@ -1,0 +1,83 @@
+#!/bin/sh
+# One-screen LiveSync diagnostic. Run inside the container:
+#
+#   docker exec everstone sync-state          # any operator (Unraid, etc.)
+#   just sync-state                           # maintainer convenience wrapper
+#
+# Shows current STATE only — for log history use `docker logs everstone | tail`.
+# The script intentionally does no `docker exec` so it works inside the
+# container regardless of how it was invoked.
+
+set -u
+
+bar() { printf -- '─── %s %s\n' "$1" "$(printf -- '─%.0s' $(seq 1 $((70 - ${#1}))))"; }
+
+# --- couchdb -----------------------------------------------------------
+bar "couchdb /everstone"
+
+CONFIG=/opt/config/livesync-bridge/config.json
+if [ ! -f "$CONFIG" ]; then
+    echo "  bridge config missing (configure.py hasn't run yet?)"
+else
+    user=$(grep -m1 '"username"' "$CONFIG" | cut -d'"' -f4)
+    pass=$(grep -m1 '"password"' "$CONFIG" | cut -d'"' -f4)
+    db=$(grep   -m1 '"database"' "$CONFIG" | cut -d'"' -f4)
+    if ! info=$(curl -fsS -u "$user:$pass" "http://localhost:5984/$db" 2>&1); then
+        echo "  $db: NOT REACHABLE — $info"
+    else
+        docs=$(echo "$info" | grep -o '"doc_count":[0-9]*' | head -1 | cut -d: -f2)
+        seq=$(echo  "$info" | grep -o '"update_seq":"[^"]*"' | head -1 | cut -d'"' -f4)
+        echo "  doc_count: $docs"
+        echo "  update_seq prefix: $(echo "$seq" | cut -c1-12)..."
+        if all=$(curl -fsS -u "$user:$pass" "http://localhost:5984/$db/_all_docs" 2>/dev/null); then
+            f=$(echo "$all" | grep -o '"id":"f:[^"]*"' | wc -l)
+            h=$(echo "$all" | grep -o '"id":"h:[^"]*"' | wc -l)
+            m=$(echo "$all" | grep -o '"id":"[^fh:]' | wc -l)
+            echo "  breakdown: $f file docs, $h chunk docs, $m metadata"
+        fi
+    fi
+fi
+echo ""
+
+# --- vault folder ------------------------------------------------------
+bar "vault /opt/data/vault"
+if [ ! -d /opt/data/vault ]; then
+    echo "  (vault dir missing)"
+else
+    cd /opt/data/vault
+    n=0
+    for f in *; do
+        [ -e "$f" ] || continue
+        [ -f "$f" ] || continue
+        size=$(wc -c < "$f")
+        mtime=$(date -r "$f" "+%Y-%m-%d %H:%M" 2>/dev/null)
+        printf "  %6d bytes  %s  %s\n" "$size" "$mtime" "$f"
+        n=$((n+1))
+    done
+    [ "$n" -eq 0 ] && echo "  (empty)"
+fi
+echo ""
+
+# --- bridge process tree -----------------------------------------------
+bar "bridge"
+if [ -d /run/s6-rc/servicedirs/livesync-bridge ]; then
+    echo "  s6:     $(s6-svstat /run/s6-rc/servicedirs/livesync-bridge 2>&1)"
+fi
+runner_pid=$(pgrep -f "livesync-bridge-run" | head -1)
+if [ -n "${runner_pid:-}" ]; then
+    echo "  runner: pid $runner_pid (Python watchdog)"
+else
+    echo "  runner: NOT RUNNING (watchdog absent)"
+fi
+deno_pid=$(pgrep -f "deno run.*main\.ts" | head -1)
+if [ -n "${deno_pid:-}" ]; then
+    echo "  deno:   pid $deno_pid (bridge alive)"
+else
+    echo "  deno:   NOT RUNNING"
+fi
+echo ""
+
+# --- pointer to log history -------------------------------------------
+bar "log history"
+echo "  Run from your host:    docker logs everstone | tail -n 200"
+echo "  Filter to bridge:      docker logs everstone 2>&1 | grep -E 'bridge|WATCH|FATAL'"

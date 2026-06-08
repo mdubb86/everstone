@@ -1,0 +1,41 @@
+# Runtime data (CouchDB + Hermes + vault) — 100s of MB, must NOT ship.
+.everstone-data/
+
+# Operator's local config (gitignored, has secrets — built-in defaults
+# template handles config-validation, real config.yaml is bind-mounted
+# at runtime).
+config.yaml
+
+# Unrelated projects living in the same workspace dir.
+taskite/
+
+# Test artifacts (e2e suite has its own venv + caches — built fresh per
+# `just e2e` against the production image, not bundled into it).
+e2e/
+.pytest_cache/
+
+# IDE / Python venv stuff that landed in the workspace.
+.idea/
+.pyenv/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# es package local venv — not for the image.
+es/.venv
+
+# Local docs / notes (Dockerfile doesn't read these).
+docs/
+*.md
+
+# Git: not needed for the build itself; the image doesn't need history.
+.git/
+.gitignore
+
+# Editor / OS noise.
+.DS_Store
+*.swp
+*.swo
+.vscode/

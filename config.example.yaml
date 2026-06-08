@@ -1,0 +1,155 @@
+# EverStone configuration. Copy to config.yaml (gitignored) and fill in.
+
+# Public HTTPS URL that clients (Obsidian, Tasks.org, your phone) use to reach
+# this server. Must be https — Obsidian rejects http.
+public_url: https://everstone.example.com
+
+# Owner's name (used in agent.soul as <name>).
+name: Your Name
+
+# The agent. `soul` is the agent's persona — written to /opt/data/hermes/SOUL.md
+# on every container start, OVERWRITING any prior version. To customize the
+# persona, edit agent.soul here, not SOUL.md directly. Substitution tokens
+# like <agent.name> and <name> are filled in from this config.
+agent:
+  name: Everstone
+  soul: |
+    # Identity
+
+    You are <agent.name>, an AI assistant in <name>'s self-hosted EverStone hub.
+    Reached over Telegram. In <name>'s private DM you have full tools — shell,
+    file access, semantic search of their notes, and task management. In any
+    group chat you are restricted to task operations only — that's enforced at
+    the tool layer, not your choice, so don't apologize for it.
+
+    # Style
+
+    - Be direct. Match the user's vocabulary and density.
+    - Default to concise; expand only when complexity earns it.
+    - Push back clearly when an idea is weak or wrong; don't soften past clarity.
+    - Admit uncertainty plainly. Don't hedge to seem balanced.
+
+    # Avoid
+
+    - Sycophancy and "great question" / "happy to help" filler.
+    - Hype language and unearned enthusiasm.
+    - Overexplaining things <name> clearly already knows.
+    - Listing your tools or capabilities unsolicited.
+
+    # Defaults
+
+    - When asked who you are: <agent.name>.
+    - When greeted ("hi", "/start", etc.), reply briefly (e.g. "Hey <name>,
+      what's up?") and wait for the actual request. Don't dump capabilities.
+    - When ambiguity matters, ask. When it doesn't, pick the most useful read and proceed.
+
+  # Optional: extra context appended to AGENTS.md beneath the auto-generated
+  # platform section (vault path, MCP tools, etc.). Use this for personal
+  # workflow rules — "tasks tagged 'family' go to the Family list", etc.
+  # <a.b> tokens supported. Stays in your local config.yaml — never check in.
+  #
+  # instructions: |
+  #   When I mention "the family group", that's the Telegram group with
+  #   my spouse. Add tasks from there to the "Family" list, not Inbox.
+
+  # Optional: Hermes skills to install at boot. Default [] = clean ship,
+  # no bundled skills. To install registry skills (from skills.sh / GitHub),
+  # list their names here. Custom skills you write yourself can also be
+  # dropped directly into <data-dir>/hermes/skills/<your-name>/SKILL.md
+  # without going through this list.
+  skills: []
+  # skills:
+  #   - obsidian
+  #   - research
+
+# CouchDB credentials (used by Obsidian LiveSync at /db).
+couchdb:
+  user: everstone
+  password: CHANGE_ME              # any strong password
+  database: everstone
+
+# CalDAV credentials (used by Tasks.org / macOS Reminders at /caldav/<user>/).
+caldav:
+  user: everstone
+  password: CHANGE_ME
+
+# LiveSync E2E encryption passphrase. Must match Obsidian LiveSync plugin.
+# (Path obfuscation reuses the same passphrase by design — see livesync docs.)
+livesync:
+  passphrase: CHANGE_ME
+
+# Obsidian vault name (informational; used in deeplinks).
+obsidian:
+  vault_name: Everstone
+
+# Telegram bot. Get bot_token from @BotFather; owner_user_id from @userinfobot.
+#
+# `commands` registers slash-command autocomplete (via setMyCommands). Default
+# is [] — no autocomplete clutter, you just chat with the agent. Add entries
+# only if you specifically want them in the slash menu.
+telegram:
+  owner_user_id: 123456789         # integer, your Telegram user id
+  bot_token: 1234567890:CHANGE_ME  # from BotFather
+  commands: []
+  # commands:
+  #   - {cmd: tasks, desc: "Show open tasks"}
+  #   - {cmd: today, desc: "What's on for today"}
+
+# LLM model the agent uses. Format: <provider>/<model-name>.
+#
+# For OpenAI Codex via ChatGPT Plus OAuth (provider "openai-codex"), the
+# accessible model list is CURATED — gpt-5-codex specifically is NOT
+# accessible (it requires the standalone Codex paid product). Pick from:
+#   gpt-5.5            ← most capable, recommended
+#   gpt-5.4
+#   gpt-5.4-mini       ← faster / cheaper
+#   gpt-5.3-codex
+#   gpt-5.3-codex-spark
+#
+# Other provider examples:
+#   anthropic/claude-sonnet-4-6   (Anthropic API key auth)
+#   openrouter/openai/gpt-5       (OpenRouter — one key, many models)
+hermes:
+  model: openai-codex/gpt-5.5
+
+# Optional: GitHub auth so private repo clones work — e.g. for installing
+# your own private skills repo via `hermes skills tap` + `git clone`. Create
+# a token at https://github.com/settings/tokens with 'repo' scope, paste it
+# here. Skip if you don't need private GitHub access.
+#
+# github:
+#   token: ghp_xxxxxxxxxxxxxxxxxxxx
+
+# Optional: Google Calendar access via gcalcli. Omit entirely (or leave
+# null) to disable — the agent gets no calendar tools and AGENTS.md
+# doesn't mention them. When set, the agent can read calendars in
+# `read_only` and modify those in `read_write` (anything else is
+# off-limits per AGENTS.md — soft enforcement).
+#
+# Setup (one-time, ~10 min):
+#   1. Google Cloud Console (console.cloud.google.com):
+#      - Create a project, enable the "Google Calendar API"
+#      - OAuth consent screen: User type "External", publishing status
+#        "In production" (skip verification — refresh tokens will be
+#        long-lived; you'll see an "Unverified app" warning once during
+#        initial OAuth, click Advanced → Continue)
+#      - Credentials → Create Credentials → OAuth Client ID
+#        Application type: "Desktop app"
+#      - Copy the client_id and client_secret values shown in the modal
+#        (or open the credential later — they're shown on the detail
+#        page). You do NOT need the downloaded JSON file.
+#   2. Paste them below + fill in calendars.
+#   3. Run: just hermes-auth or `docker exec -it everstone everstone auth gcal`
+#      - It'll print a Google URL → authorize in your Mac browser
+#      - Paste the code back to the terminal
+#
+# gcalcli:
+#   client_id: 12345-xxxxxxxxx.apps.googleusercontent.com
+#   client_secret: GOCSPX-xxxxxxxxxxxxxxxxxxxx
+#   calendars:
+#     read_only:
+#       - primary
+#       - family@example.com
+#     read_write:
+#       - personal@example.com
+#       - work@example.com

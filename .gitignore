@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / SvelteKit
+node_modules/
+.svelte-kit/
+build/
+dist/
+
+# Editors
+.idea/
+*.iml
+
+# Local runtimes / data
+.pyenv/
+radfire_data/
+.everstone-data/
+
+# devm: CLI-owned render cache + persisted VM state (Claude config/creds, etc.)
+.devm/
+/devm.yaml
+
+# Build/export artifacts
+*.tar
+
+# Internal planning artifacts (superpowers specs/plans) — kept local, not public
+docs/superpowers/
+
+# User config (template lives in config.example.yaml)
+/config.yaml
+
+# OS
+.DS_Store

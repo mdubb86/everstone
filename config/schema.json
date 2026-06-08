@@ -1,0 +1,134 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["public_url", "name", "agent", "couchdb", "caldav", "livesync", "obsidian", "telegram"],
+  "properties": {
+    "public_url": {
+      "type": "string",
+      "pattern": "^https://[^/]+/?$",
+      "description": "Public HTTPS URL clients reach the server at. No path, no port unless non-standard."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Owner's name. Substituted as <name> in agent.soul."
+    },
+    "agent": {
+      "type": "object",
+      "required": ["name", "soul"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "description": "Agent's name. Substituted as <agent.name> in agent.soul." },
+        "soul": { "type": "string", "minLength": 1, "description": "SOUL.md template. <a.b> tokens are substituted from the config tree." },
+        "instructions": {
+          "type": ["string", "null"],
+          "description": "Optional operator-authored section appended to AGENTS.md beneath the auto-generated platform section. <a.b> tokens supported. Stays on the operator's local config.yaml — never check in."
+        },
+        "skills": {
+          "type": "array",
+          "default": [],
+          "description": "Names of Hermes skills to install at boot via `hermes skills install <name>`. Default [] = clean ship (no bundled skills). Add names to opt in; remove from list does NOT uninstall — call `hermes skills uninstall` for that. Custom skills can also be dropped directly into $HERMES_HOME/skills/<name>/ without going through this list.",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "couchdb": {
+      "type": "object",
+      "required": ["user", "password", "database"],
+      "properties": {
+        "user": { "type": "string", "minLength": 1 },
+        "password": { "type": "string", "minLength": 1 },
+        "database": { "type": "string", "minLength": 1 }
+      }
+    },
+    "caldav": {
+      "type": "object",
+      "required": ["user", "password"],
+      "properties": {
+        "user": { "type": "string", "minLength": 1 },
+        "password": { "type": "string", "minLength": 1 }
+      }
+    },
+    "livesync": {
+      "type": "object",
+      "required": ["passphrase"],
+      "properties": {
+        "passphrase": { "type": "string", "minLength": 1 }
+      }
+    },
+    "obsidian": {
+      "type": "object",
+      "required": ["vault_name"],
+      "properties": {
+        "vault_name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "telegram": {
+      "type": "object",
+      "required": ["owner_user_id", "bot_token"],
+      "properties": {
+        "owner_user_id": { "type": "integer" },
+        "bot_token": { "type": "string", "minLength": 1 },
+        "commands": {
+          "type": "array",
+          "default": [],
+          "description": "Slash-command autocomplete shown to users in Telegram. Default [] = no autocomplete clutter. Operator opts in.",
+          "items": {
+            "type": "object",
+            "required": ["cmd", "desc"],
+            "properties": {
+              "cmd":  { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$" },
+              "desc": { "type": "string", "minLength": 1, "maxLength": 256 }
+            }
+          }
+        }
+      }
+    },
+    "github": {
+      "type": "object",
+      "description": "Optional GitHub auth so private repo clones work — e.g. operator's personal skills repo. If token is set, git is configured to use it as a credential helper.",
+      "properties": {
+        "token": {
+          "type": ["string", "null"],
+          "description": "Personal access token (https://github.com/settings/tokens). Needs 'repo' scope for private repo access. Stays in your local config.yaml — never check in."
+        }
+      }
+    },
+    "gcalcli": {
+      "type": ["object", "null"],
+      "description": "Optional Google Calendar access via the `gcalcli` CLI. Omit / null to disable (agent gets no calendar access). When set, the agent can read + write calendars listed in `calendars`. Auth is one-time interactive: `everstone auth gcal`.",
+      "required": ["client_id", "client_secret"],
+      "properties": {
+        "client_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OAuth Client ID from Google Cloud Console → Credentials → OAuth Client ID (Desktop app). Looks like '12345-xxxx.apps.googleusercontent.com'. Not secret on its own but combined with client_secret it authenticates the app to Google."
+        },
+        "client_secret": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OAuth Client secret from the same Credentials → OAuth Client ID page. Looks like 'GOCSPX-xxxxxxxxxx'. Stays in your local config.yaml — never check in."
+        },
+        "calendars": {
+          "type": "object",
+          "description": "Scope-limiting policy: the agent self-respects these lists via AGENTS.md. Any calendar not in either list is off-limits. Use `primary` for the account's primary calendar; otherwise the calendar's email address. If omitted or both lists empty, the agent gets no Calendar section in AGENTS.md (auth works, but the agent doesn't know any calendars exist). Use `everstone calendar list` after auth to discover IDs to put here.",
+          "properties": {
+            "read_only": {
+              "type": "array",
+              "description": "Calendars the agent can read but never modify (look at, suggest from, but no add/edit/delete).",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "read_write": {
+              "type": "array",
+              "description": "Calendars the agent can freely add to, edit, and delete events from.",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "timezone": {
+      "type": "string",
+      "description": "Operator home IANA timezone for es cal (e.g. America/Chicago). Per-call --tz overrides."
+    }
+  }
+}

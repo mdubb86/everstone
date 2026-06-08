@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+
+SERVICES_DIR=/etc/s6-overlay/s6-rc.d
+BUNDLE_DIR=$SERVICES_DIR/user/contents.d
+
+echo "[startup] Starting container"
+
+# Generate configs from user config.yaml
+python3 /scripts/configure.py
+
+# Symlink livesync-bridge config
+mkdir -p /opt/livesync-bridge/dat
+ln -sf /opt/config/livesync-bridge/config.json /opt/livesync-bridge/dat/config.json
+
+# Copy services to s6-rc.d and register them
+for svc_dir in /services/*/; do
+  [ -d "$svc_dir" ] || continue
+  svc=$(basename "$svc_dir")
+  cp -r "$svc_dir" "$SERVICES_DIR/"
+  touch "$BUNDLE_DIR/$svc"
+done
+
+exec /init

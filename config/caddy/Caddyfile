@@ -1,0 +1,45 @@
+:80 {
+	handle_path /health {
+		respond "OK" 200
+	}
+
+	handle_path /db/* {
+		reverse_proxy localhost:5984 {
+			flush_interval -1
+			header_up Host {upstream_hostport}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Bare /caldav (no trailing slash) -> redirect to /caldav/ so clients that omit
+	# the slash still reach Radicale. 308 preserves the request method (PROPFIND,
+	# REPORT, …); a 301/302 would downgrade it to GET and break CalDAV discovery.
+	handle /caldav {
+		redir /caldav/ 308
+	}
+
+	handle /caldav/* {
+		reverse_proxy localhost:5232 {
+			header_up X-Script-Name /caldav
+			header_up Host {upstream_hostport}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Google OAuth callback for `everstone auth gcal`. Forwarded to the
+	# one-shot HTTP server /scripts/auth_gcal.py spins up on port 8081
+	# while the auth flow is running. Outside the auth window, this
+	# proxies to nothing and 502s — fine, no legitimate traffic ever
+	# hits this path except Google's redirect after consent.
+	handle /oauth/google/callback {
+		reverse_proxy localhost:8081
+	}
+
+	handle /* {
+		respond "EverStone Server" 200
+	}
+}

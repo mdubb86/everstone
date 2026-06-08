@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""livesync-bridge runner. Invoked by services/livesync-bridge/run via s6.
+
+The bridge has two failure modes where the process stays alive but stops
+syncing — s6-supervise can't detect them without help:
+
+  1. Bridge boots against an empty/missing CouchDB database (fresh container,
+     Obsidian hasn't completed onboarding yet).
+  2. Mid-run, LiveSync DROPS the database (Rebuild Remote, certain Doctor
+     flows, the wizard's "Restart and Initialise Server" step).
+
+In both cases the bridge logs `ChangeManager Error watching changes` then
+the not_found JSON. The process keeps running but never syncs again.
+
+This wrapper runs the bridge as a subprocess, watches its stdout for those
+fatal patterns, and on match terminates the process and exits non-zero so
+s6 restarts the whole thing.
+
+Why Python instead of `deno | awk`: deno's V8 runtime ignores SIGPIPE,
+so when awk dies the deno child keeps running and the shell wrapper hangs
+waiting for it. Python can call .terminate() explicitly.
+"""
+
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import sys
+import time
+
+FATAL_PATTERNS = (
+    "ChangeManager Error watching changes",
+    '"reason": "Database does not exist"',
+)
+
+# Brief backoff so tight restart loops (bridge fails immediately on boot
+# because DB doesn't exist yet) don't peg the CPU.
+time.sleep(2)
+
+proc = subprocess.Popen(
+    ["deno", "run", "-A", "--node-modules-dir=auto", "main.ts"],
+    cwd="/opt/livesync-bridge",
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    text=True,
+    bufsize=1,
+)
+
+
+def kill_bridge() -> None:
+    proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=2)
+
+
+def _on_signal(signum, _frame):
+    kill_bridge()
+    sys.exit(128 + signum)
+
+
+for sig in (signal.SIGTERM, signal.SIGINT):
+    signal.signal(sig, _on_signal)
+
+assert proc.stdout is not None
+try:
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        if any(p in line for p in FATAL_PATTERNS):
+            print(
+                "[bridge-runner] FATAL: bridge lost the changes feed — "
+                "killing deno, exiting for s6 restart",
+                flush=True,
+            )
+            kill_bridge()
+            sys.exit(1)
+finally:
+    if proc.poll() is None:
+        kill_bridge()
+
+sys.exit(proc.returncode or 0)

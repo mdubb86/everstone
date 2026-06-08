@@ -1,0 +1,11 @@
+public_url: null
+name: null
+agent: {name: null, soul: null, instructions: null, skills: []}
+couchdb: {user: everstone, password: null, database: everstone}
+caldav: {user: everstone, password: null}
+livesync: {passphrase: null}
+obsidian: {vault_name: Everstone}
+telegram: {owner_user_id: null, bot_token: null, commands: []}
+github: {token: null}
+gcalcli: null
+timezone: America/Chicago
