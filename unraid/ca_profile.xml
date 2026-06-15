@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Maintainer>
+  <Profile>EverStone — a self-hosted, Telegram-native personal-assistant hub (Hermes agent + the `es` CLI), with CalDAV tasks, Obsidian sync, and an optional web UI.</Profile>
+  <WebPage>https://github.com/mdubb86/everstone</WebPage>
+</Maintainer>

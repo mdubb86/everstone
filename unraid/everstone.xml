@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>EverStone</Name>
+  <Repository>ghcr.io/mdubb86/everstone:latest</Repository>
+  <Registry>https://github.com/mdubb86/everstone/pkgs/container/everstone</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/mdubb86/everstone/issues</Support>
+  <Project>https://github.com/mdubb86/everstone</Project>
+  <ReadMe>https://github.com/mdubb86/everstone/blob/main/README.md</ReadMe>
+  <Overview>EverStone is a self-hosted, Telegram-native personal-assistant hub: the Hermes agent (Nous Research) as a Telegram gateway, plus CalDAV tasks (Radicale), Obsidian notes (CouchDB / LiveSync), and an optional browser web UI — fronted by Caddy.&#xD;
+&#xD;
+This is NOT one-click. Before the first start you MUST create config.yaml in this app's appdata folder: copy config.example.yaml from the repo, fill in your Telegram bot token + owner id + passwords, and save it at the "config.yaml" host path below. (If that file does not exist, Docker creates a directory there and the container fails to start.)&#xD;
+&#xD;
+After it boots, finish the one-time setup: set the model with `esadmin model &lt;provider/model&gt;`, and — if you use Google Calendar — run the OAuth flow. The optional web UI turns on only when you set webui.password in config.yaml.&#xD;
+&#xD;
+Do NOT expose this to the internet — front it with your own HTTPS reverse proxy or Tailscale. Full deployment guide: https://github.com/mdubb86/everstone/blob/main/docs/BOOTSTRAP.md</Overview>
+  <Category>Productivity: Network:Other</Category>
+  <WebUI>http://[IP]:[PORT:80]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/mdubb86/everstone/main/unraid/everstone.xml</TemplateURL>
+  <Icon></Icon>
+  <Date>2026-06-15</Date>
+  <Config Name="Web / CalDAV / Sync port" Target="80" Default="8580" Mode="tcp" Description="Host port mapped to the container's Caddy (:80) — serves the web UI (if enabled) at /, CalDAV at /caldav, CouchDB/LiveSync at /db, and the Google OAuth callback. Point your reverse proxy / Tailscale at this port. Unraid's own UI uses 80/443, so pick a high port (e.g. 8580)." Type="Port" Display="always" Required="true" Mask="false">8580</Config>
+  <Config Name="config.yaml (CREATE THIS FILE FIRST)" Target="/opt/config.yaml" Default="/mnt/user/appdata/everstone/config.yaml" Mode="ro" Description="Your EverStone configuration and secrets. Create this file BEFORE starting: copy config.example.yaml from the repo, fill it in, and save it at this exact host path. If it does not exist, Docker will create a directory here and the container will fail. Mounted read-only." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/everstone/config.yaml</Config>
+  <Config Name="Data" Target="/opt/data" Default="/mnt/user/appdata/everstone/data" Mode="rw" Description="Persistent state: CouchDB, the Obsidian vault, Radicale tasks, the Hermes profile + sessions, web-UI state, and backups. Preserve this across upgrades." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/everstone/data</Config>
+</Container>
