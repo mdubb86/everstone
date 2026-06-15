@@ -11,6 +11,17 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
 - **Dev:** an ephemeral SBX VM; persistent state on a host mount
   (`.devm/.everstone` ↔ container `/opt/data`). Built/run via the `Justfile`.
 - **Prod:** plain `docker run` on Unraid with bind mounts.
+- **Hermes install = canonical checkout+venv** (NOT `pip install hermes-agent`,
+  which is off Nous's documented path and breaks ecosystem tooling like
+  hermes-webui that expects `run_agent.py` + a `venv/bin/python`). A multi-stage
+  build clones `NousResearch/hermes-agent` (latest `main`) to
+  `/usr/local/lib/hermes-agent`, builds a `uv venv` + `uv pip install -e '.[all]'`,
+  and installs **`es` + the `access_hook` plugin + `python-telegram-bot` into that
+  venv** (one interpreter). `hermes`/`es` symlink to `.venv/bin`; `esadmin` runs
+  via the venv python; `radicale` stays a decoupled system install.
+  `install.sh` is *not* used — it downloads `uv` from `astral.sh` (firewall-blocked
+  in dev) and assumes `apt`/glibc; we replicate its steps with `uv` from PyPI on
+  Alpine/musl. `HERMES_HOME=/opt/data/hermes` (the mounted state) is unchanged.
 
 ## Agent tool surface — the `es` CLI
 
