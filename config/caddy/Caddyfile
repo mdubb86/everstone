@@ -39,7 +39,18 @@
 		reverse_proxy localhost:8081
 	}
 
+	# Everything not matched above → the hermes-webui (served at root). When the
+	# web UI is disabled (no webui.password) or still starting, the proxy 502s;
+	# handle_errors turns that into a friendly page instead of a raw gateway error.
 	handle /* {
-		respond "EverStone Server" 200
+		reverse_proxy localhost:8787
+	}
+
+	handle_errors {
+		@webui_down expression {err.status_code} == 502 || {err.status_code} == 503
+		handle @webui_down {
+			respond "EverStone — web UI not enabled (set webui.password in config.yaml)" 200
+		}
+		respond "EverStone error {err.status_code}" {err.status_code}
 	}
 }
