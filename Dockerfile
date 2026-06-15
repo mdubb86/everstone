@@ -115,25 +115,19 @@ COPY --from=caddy /out/caddy /opt/bin/caddy
 COPY --from=couchdb /out /opt/bin/couchdb
 COPY --from=engraph /usr/local/bin/engraph /usr/local/bin/engraph
 
-# Python services. --break-system-packages is the recommended pattern for
-# containers (pip's own docs say so); the container IS the isolation, no
-# venv needed. python-telegram-bot is required for hermes's Telegram
-# adapter — without it the gateway logs "No adapter available for telegram"
-# at boot and the bot never connects.
-#
-# Hermes's own non-pip deps (Node, ffmpeg, ripgrep) are satisfied by the
-# apk packages above — Hermes detects them via shutil.which on PATH and
-# skips its bundled installer. No `hermes postinstall` needed.
-RUN pip install --break-system-packages \
-        "radicale>=3.2" \
-        "hermes-agent" \
-        "python-telegram-bot>=21" \
-        "typer>=0.12"
+# Hermes agent: canonical checkout+venv from the hermes-build stage. The final
+# image carries NO compilers — only the runtime shared libs the musl wheels link
+# against. The venv holds Hermes + es + access_hook + the telegram adapter (one
+# interpreter). Hermes's own non-pip deps (Node, ffmpeg, ripgrep) are satisfied
+# by the apk packages above — detected via shutil.which on PATH.
+RUN apk add --no-cache libstdc++ libffi openssl
+COPY --from=hermes-build /usr/local/lib/hermes-agent /usr/local/lib/hermes-agent
+RUN ln -sf /usr/local/lib/hermes-agent/.venv/bin/hermes /usr/local/bin/hermes && \
+    ln -sf /usr/local/lib/hermes-agent/.venv/bin/es /usr/local/bin/es
 
-COPY es /opt/es
-RUN pip install --break-system-packages /opt/es
-COPY access_hook /opt/access_hook
-RUN pip install --break-system-packages /opt/access_hook
+# radicale is EverStone's CalDAV server (run by s6, not imported by Hermes) —
+# keep it decoupled in system python (pure-python, no build deps).
+RUN pip install --break-system-packages "radicale>=3.2"
 
 # livesync-bridge (requires github.com access at build time)
 # --recurse-submodules: bridge embeds `lib/` as a submodule (main.ts imports from it)
@@ -160,7 +154,9 @@ COPY config /opt/defaults/config
 # the parent shell during a BuildKit build (parent is /bin/sh, not bash)
 # and fails with "Shell None is not supported." The static completion
 # script is identical to what Typer would emit.
-RUN ln -sf /scripts/everstone_cli.py /usr/local/bin/esadmin && \
+RUN printf '#!/bin/sh\nexec /usr/local/lib/hermes-agent/.venv/bin/python /scripts/everstone_cli.py "$@"\n' \
+        > /usr/local/bin/esadmin && \
+    chmod +x /usr/local/bin/esadmin && \
     chmod +x /scripts/everstone_cli.py && \
     mkdir -p /root/.bash_completions && \
     cp /scripts/everstone_completion.sh /root/.bash_completions/esadmin.sh && \
