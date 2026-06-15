@@ -2,6 +2,11 @@ import json
 import subprocess
 
 
+# Hermes, the access-hook plugin, and es live in the agent venv (canonical
+# checkout+venv layout) — NOT system python. Check the hook through the venv.
+_VENV_PY = "/usr/local/lib/hermes-agent/.venv/bin/python"
+
+
 _PY_SNIPPET = (
     "import json, os, everstone_access_hook as h, sys;"
     "tool = os.environ['E2E_TOOL'];"
@@ -19,7 +24,7 @@ def _policy(container, tool_name, session_key=None, command=None):
     if command is not None:
         env += ["-e", f"E2E_COMMAND={command}"]
     env += ["-e", f"E2E_TOOL={tool_name}"]
-    cmd = ["docker", "exec", *env, container, "python3", "-c", _PY_SNIPPET]
+    cmd = ["docker", "exec", *env, container, _VENV_PY, "-c", _PY_SNIPPET]
     r = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return json.loads(r.stdout.strip())
 
@@ -100,7 +105,7 @@ def test_lockdown_config_in_image(everstone):
             "docker",
             "exec",
             everstone["container_name"],
-            "python3",
+            _VENV_PY,
             "-c",
             "from importlib.metadata import entry_points; "
             "eps = entry_points(group='hermes_plugins'); "
