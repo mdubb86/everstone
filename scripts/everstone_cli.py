@@ -8,6 +8,7 @@ truth for what an operator can do at runtime.
 """
 import os
 import subprocess
+import sys
 
 import typer
 
@@ -79,7 +80,7 @@ def auth_google() -> None:
     # the browser can reach the container directly, which doesn't fit
     # docker-in-VM setups). Result is written as JSON to the es shared
     # credential store at /opt/data/hermes/es/google-credentials.json.
-    _exec("python3", "-u", "/scripts/auth_gcal.py")
+    _exec(sys.executable, "-u", "/scripts/auth_gcal.py")
 
 
 # ─── chat ──────────────────────────────────────────────────────────────────
