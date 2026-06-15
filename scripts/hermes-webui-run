@@ -24,4 +24,8 @@ export HERMES_WEBUI_PORT=8787
 export HERMES_WEBUI_HOST=127.0.0.1
 cd /opt/hermes-webui
 echo "[hermes-webui] starting on 127.0.0.1:8787 (agent dir: $HERMES_WEBUI_AGENT_DIR)"
-exec /usr/local/lib/hermes-agent/.venv/bin/python /opt/hermes-webui/bootstrap.py
+# --foreground: bootstrap execs server.py in THIS process (os.execv) instead of
+# double-forking a detached child + exiting. Required under s6 — otherwise the
+# run process exits 0, s6 restart-loops it, and the orphaned server triggers
+# "FATAL: Another server already responding on 8787".
+exec /usr/local/lib/hermes-agent/.venv/bin/python /opt/hermes-webui/bootstrap.py --foreground
