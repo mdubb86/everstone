@@ -144,6 +144,12 @@ RUN echo "deno-precache v2" && \
           echo "[livesync-bridge] deno dep pre-cache failed — will retry at runtime" ); \
     fi
 
+# hermes-webui: browser UI for the agent (Python stdlib, no build step). Runs
+# under the agent venv python so it imports Hermes in-process. Tracks master.
+RUN git clone --depth 1 --branch master \
+        https://github.com/nesquena/hermes-webui /opt/hermes-webui || \
+    echo "[hermes-webui] clone failed — /opt/hermes-webui absent; web UI unavailable"
+
 COPY scripts /scripts
 COPY services /services
 COPY config /opt/defaults/config
