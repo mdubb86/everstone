@@ -22,6 +22,15 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   `install.sh` is *not* used — it downloads `uv` from `astral.sh` (firewall-blocked
   in dev) and assumes `apt`/glibc; we replicate its steps with `uv` from PyPI on
   Alpine/musl. `HERMES_HOME=/opt/data/hermes` (the mounted state) is unchanged.
+- **Web UI = hermes-webui** (`nesquena/hermes-webui`), an **opt-in** s6 service: a
+  browser UI that runs the agent **in-process** under the agent venv. It is served
+  by Caddy at the `:80` root (binds `127.0.0.1:8787`), and **bypasses the Telegram
+  allowlist + access_hook** (full agent tools), so it runs **only if `webui.password`
+  is set** in `config.yaml` — unset → the service stays idle (no restart-loop) and
+  Caddy's root returns a "web UI not enabled" page. Reach it over Tailscale only.
+  Launched with `bootstrap.py --foreground` so s6 supervises `server.py` directly
+  (without it, bootstrap double-forks and s6 restart-loops). `HERMES_WEBUI_AGENT_DIR=`
+  the canonical checkout makes discovery work.
 
 ## Agent tool surface — the `es` CLI
 
