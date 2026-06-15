@@ -51,6 +51,32 @@ RUN mkdir -p /usr/local/bin && \
 RUN cargo install --git https://github.com/devwhodevs/engraph --root /usr/local 2>&1 | tail -5 || \
     echo "[engraph] build failed — stub binary retained; index on first run"
 
+# ── Hermes agent: canonical checkout + venv (replicates install.sh on Alpine) ──
+# install.sh itself is unusable here (it downloads uv from astral.sh, which our
+# build network blocks, and assumes apt/glibc). We reproduce its canonical layout
+# explicitly: a git checkout + a uv venv with `.[all]`, plus our es CLI, the
+# access_hook plugin, and the telegram adapter installed INTO that venv.
+FROM alpine:3.22 AS hermes-build
+RUN apk add --no-cache \
+        python3 py3-pip git \
+        gcc g++ musl-dev python3-dev libffi-dev openssl-dev rust cargo make
+RUN pip install --break-system-packages uv
+# Canonical layout at a FIXED path — the final stage COPYs to the identical path
+# so the venv's absolute paths + the editable install resolve.
+RUN git clone --depth 1 --branch main \
+        https://github.com/NousResearch/hermes-agent /usr/local/lib/hermes-agent
+WORKDIR /usr/local/lib/hermes-agent
+RUN uv venv && uv pip install -e '.[all]'
+# Telegram adapter (NOT in .[all]) + es CLI + access_hook plugin go into the venv
+# so Hermes runs one interpreter that can load the plugin (hermes_plugins entry
+# point) and resolve `es`.
+RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python "python-telegram-bot>=21"
+COPY es /opt/es
+RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python /opt/es
+COPY access_hook /opt/access_hook
+RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python /opt/access_hook
+RUN rm -rf /usr/local/lib/hermes-agent/.git
+
 FROM alpine:3.22
 
 ARG TARGETARCH
