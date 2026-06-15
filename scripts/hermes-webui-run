@@ -1,0 +1,27 @@
+#!/bin/sh
+# hermes-webui runner — invoked by services/hermes-webui/run via s6.
+#
+# Opt-in + fail-safe: the web UI talks to the agent IN-PROCESS, so it has full
+# agent tools (owner-DM-equivalent) and bypasses the Telegram allowlist +
+# access_hook. An unauthenticated web UI is never acceptable — so it runs ONLY
+# if webui.password is set. No password => stay up but idle (so s6 doesn't
+# restart-loop a "disabled" longrun).
+set -u
+PW="$(config-get webui.password)"
+if [ -z "$PW" ]; then
+    echo "[hermes-webui] disabled — set webui.password in config.yaml to enable"
+    exec tail -f /dev/null
+fi
+if [ ! -f /opt/hermes-webui/bootstrap.py ]; then
+    echo "[hermes-webui] /opt/hermes-webui not present (clone failed at build) — idle"
+    exec tail -f /dev/null
+fi
+export HERMES_WEBUI_PASSWORD="$PW"
+export HERMES_HOME=/opt/data/hermes
+export HERMES_WEBUI_AGENT_DIR=/usr/local/lib/hermes-agent
+export HERMES_WEBUI_STATE_DIR=/opt/data/hermes/webui
+export HERMES_WEBUI_PORT=8787
+export HERMES_WEBUI_HOST=127.0.0.1
+cd /opt/hermes-webui
+echo "[hermes-webui] starting on 127.0.0.1:8787 (agent dir: $HERMES_WEBUI_AGENT_DIR)"
+exec /usr/local/lib/hermes-agent/.venv/bin/python /opt/hermes-webui/bootstrap.py
