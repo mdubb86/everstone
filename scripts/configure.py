@@ -413,30 +413,30 @@ def setup_data_directories() -> None:
     radicale_collections_dir = data_dir / "radicale" / "collections"
     radicale_collections_dir.mkdir(parents=True, exist_ok=True)
 
-def main():
+def load_config() -> dict:
+    """Load defaults + user config.yaml, deep-merge, and validate against schema.
+
+    Shared by main() and scripts/render_soul.py so the soul render reads exactly
+    the same merged + validated config the rest of configure.py does.
+    """
     user_config_path = Path("/opt/config.yaml")
-
-    # Load defaults
     defaults = load_yaml(DEFAULTS_PATH)
-
-    # Load user config
     if not user_config_path.exists():
         print(f"Error: User config not found at {user_config_path}", file=sys.stderr)
         sys.exit(1)
-
     user_config = load_yaml(user_config_path)
-
-    # Merge configs
     config = deep_merge(defaults, user_config)
-
-    # Validate against schema
     schema = load_json(SCHEMA_PATH)
     try:
         validate(instance=config, schema=schema)
     except ValidationError as e:
         print(f"Config validation error: {e.message}", file=sys.stderr)
         sys.exit(1)
+    return config
 
+
+def main():
+    config = load_config()
     print("[configure] Config validated successfully")
 
     # Setup data directories
@@ -459,8 +459,11 @@ def main():
     print("[configure] Generating livesync-bridge config")
     generate_livesync_bridge_config(config)
 
-    print("[configure] Rendering Hermes SOUL.md from config.agent.soul")
-    generate_hermes_soul(config)
+    # NOTE: SOUL.md is rendered by setup_hermes (via render_soul.py) AFTER its
+    # canonical `hermes profile create --no-skills`. configure.py must NOT touch
+    # profiles/<name>/ here — a pre-emptive mkdir would win the race against that
+    # create and leave the profile without the bundled-skill opt-out marker, so
+    # the gateway would seed the full stock bundle.
 
     print("[configure] Rendering AGENTS.md from platform + config.agent.instructions")
     generate_agents_md(config)

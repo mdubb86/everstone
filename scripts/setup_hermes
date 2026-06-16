@@ -40,6 +40,14 @@ PY
 fi
 hermes profile use everstone
 
+# Render SOUL.md from config.agent.soul into the profile. Done HERE — after the
+# canonical `--no-skills` create above — so the profile already has its
+# bundled-skill opt-out marker before anything writes into profiles/everstone/.
+# configure.py deliberately no longer renders this (its earlier mkdir won the race
+# against the create and left the profile bundled). Idempotent: always overwrites
+# from config.yaml, the source of truth for the persona.
+python3 /scripts/render_soul.py
+
 # Structural constant: the agent runs tools in-container.
 hermes config set terminal.backend local
 
@@ -65,9 +73,9 @@ if [ -n "$GH_TOKEN" ]; then
     echo "[setup_hermes] git configured to use GH_TOKEN for github.com clones"
 fi
 
-# Note: SOUL.md is rendered + overwritten by configure.py on every container
-# start from config.yaml's `agent.soul`. To customize, edit that field, not
-# /opt/data/hermes/SOUL.md directly.
+# Note: SOUL.md is rendered + overwritten above (via render_soul.py) on every
+# container start from config.yaml's `agent.soul`. To customize, edit that field,
+# not the profile's SOUL.md directly.
 
 python3 /scripts/merge_hermes_mcp.py
 
