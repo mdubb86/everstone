@@ -261,3 +261,18 @@ def test_es_cal_edit_refused_readonly(fake_svc, monkeypatch):
     out = mcp_server.es_cal_edit("e1", "Holidays", summary="x")
     assert out["error"]["code"] == "read_only_calendar"
     fake_svc.events.return_value.patch.assert_not_called()
+
+
+def test_es_cal_delete_ok(fake_svc):
+    fake_svc.events.return_value.delete.return_value.execute.return_value = {}
+    out = mcp_server.es_cal_delete("e1", "Work")
+    assert out == {"ok": True, "data": {"id": "e1", "deleted": True}}
+    _, kwargs = fake_svc.events.return_value.delete.call_args
+    assert kwargs == {"calendarId": "calid", "eventId": "e1"}
+
+
+def test_es_cal_delete_refused_readonly(fake_svc, monkeypatch):
+    monkeypatch.setattr("es.capabilities.cal_support.calendar_policy", lambda: ({"Holidays"}, []))
+    out = mcp_server.es_cal_delete("e1", "Holidays")
+    assert out["error"]["code"] == "read_only_calendar"
+    fake_svc.events.return_value.delete.assert_not_called()

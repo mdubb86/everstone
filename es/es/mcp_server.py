@@ -253,5 +253,16 @@ def es_cal_edit(event_id: str, calendar: str, summary: Optional[str] = None,
     return cal_cap._event_view(updated, tzname)
 
 
+@mcp.tool()
+@mcp_envelope
+def es_cal_delete(event_id: str, calendar: str) -> dict:
+    """Delete an event. Refused on read-only calendars."""
+    cal_cap._require_writable(calendar)
+    svc = calendar_service()
+    cal_id = cal_support.resolve_calendar_id(svc, calendar)
+    svc.events().delete(calendarId=cal_id, eventId=event_id).execute()
+    return {"id": event_id, "deleted": True}
+
+
 def main() -> None:
     mcp.run()
