@@ -23,8 +23,15 @@ import yaml, pathlib
 prof = pathlib.Path("/opt/data/hermes/profiles/everstone")
 cfg = prof / "config.yaml"
 d = (yaml.safe_load(cfg.read_text()) if cfg.exists() else {}) or {}
+# Locked tool surface: NO terminal/file. The agent reaches es (tasks +
+# calendar) only through the everstone-es MCP server, which Hermes includes
+# on every platform by default (MCP servers are not gated by this list
+# unless it explicitly names them), so no MCP entry is needed here. This is
+# the security boundary — Rocky can't run raw shell or clobber the vault.
+# NOTE: this seed only writes on first profile-create; EXISTING profiles must
+# have their platform_toolsets.telegram updated by hand (drop terminal/file).
 d.setdefault("platform_toolsets", {})["telegram"] = [
-    "terminal", "skills", "vision", "clarify", "web", "file", "memory",
+    "skills", "vision", "clarify", "web", "memory",
 ]
 cfg.write_text(yaml.safe_dump(d, sort_keys=False))
 owner = str(((yaml.safe_load(open("/opt/config.yaml")) or {}).get("telegram") or {})
