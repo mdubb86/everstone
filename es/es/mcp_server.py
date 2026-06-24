@@ -124,5 +124,14 @@ def es_tasks_list_create(name: str) -> dict:
     return {"list": name, "created": True}
 
 
+@mcp.tool()
+@mcp_envelope
+def es_tasks_list_delete(name: str) -> dict:
+    """Delete a task list."""
+    client, _ = _client()
+    client.delete_list(name)
+    return {"list": name, "deleted": True}
+
+
 def main() -> None:
     mcp.run()
