@@ -84,11 +84,15 @@ def test_generate_agents_md_platform_only(tmp_path):
         assert "<name>" not in body and "<obsidian.vault_name>" not in body
         # Concrete platform facts present.
         assert "Michael's self-hosted personal hub" in body
-        assert "/opt/data/vault/" in body
-        assert "obsidian://open?vault=myvault" in body
-        assert "es tasks" in body
-        # No more MCP reference — CLI is the whole interface for tasks.
+        assert "myvault" in body                       # vault name substituted
+        # MCP-tool reality: the agent acts through es_* tools, not a shell/CLI.
+        assert "es_tasks_" in body
+        assert "es_notes_" in body
+        assert "es tasks" not in body                  # no CLI invocation
+        assert "there is no MCP" not in body           # stale claim gone
+        assert "read_file" not in body                 # no file-tool guidance
         assert "everstone_tasks" not in body
+        # No operator section if instructions is null.
         # No operator section if instructions is null.
         assert "## Custom instructions" not in body
     finally:
@@ -115,7 +119,10 @@ def test_generate_agents_md_calendar_section_absent_when_unconfigured(tmp_path):
     try:
         configure.generate_agents_md(SAMPLE)
         body = (tmp_path / "AGENTS.md").read_text()
-        assert "Calendar" not in body
+        # The es_cal_* tools are always registered, so the tool overview may
+        # mention calendar; what must be absent is the detailed policy SECTION.
+        assert "### Calendar" not in body
+        assert "READ-ONLY" not in body and "READ-WRITE" not in body
         assert "gcal" not in body
     finally:
         del os.environ["EVERSTONE_DATA_DIR"]
@@ -138,7 +145,9 @@ def test_generate_agents_md_calendar_section_absent_when_lists_empty(tmp_path):
         }}
         configure.generate_agents_md(sample)
         body = (tmp_path / "AGENTS.md").read_text()
-        assert "Calendar" not in body
+        # No detailed Calendar policy section until a list is filled in.
+        assert "### Calendar" not in body
+        assert "READ-ONLY" not in body and "READ-WRITE" not in body
     finally:
         del os.environ["EVERSTONE_DATA_DIR"]
 
@@ -156,7 +165,7 @@ def test_generate_agents_md_calendar_section_renders_lists(tmp_path):
         }}
         configure.generate_agents_md(sample)
         body = (tmp_path / "AGENTS.md").read_text()
-        assert "### Calendar — Google Calendar via `es cal`" in body
+        assert "### Calendar — Google Calendar via the `es_cal_*` tools" in body
         # Calendars must appear in correct section, with the exact name the
         # operator typed (no munging, so primary / email-form both work).
         ro_idx = body.index("READ-ONLY")
