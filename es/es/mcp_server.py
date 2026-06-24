@@ -12,7 +12,10 @@ from mcp.server.fastmcp import FastMCP
 
 from es import config
 from es.deeplink import build_deeplink
+from es.google_auth import calendar_service
 from es.tasks_client import TasksClient
+from es.capabilities import cal as cal_cap
+from es.capabilities import cal_support
 
 mcp = FastMCP("everstone-es")
 
@@ -140,6 +143,21 @@ def es_tasks_clear(list: str, all: bool = False) -> dict:
     client, _ = _client()
     removed = client.clear_list(list, completed_only=not all)
     return {"list": list, "removed": removed}
+
+
+@mcp.tool()
+@mcp_envelope
+def es_cal_agenda(start: str, end: str, calendar: str, tz: Optional[str] = None) -> list:
+    """List events on a calendar between start and end (YYYY-MM-DD or full ISO)."""
+    tzname = tz or cal_support.home_tz()
+    svc = calendar_service()
+    cal_id = cal_support.resolve_calendar_id(svc, calendar)
+    tmin, tmax = cal_cap._day_bounds(start, end, tzname)
+    items = svc.events().list(
+        calendarId=cal_id, timeMin=tmin, timeMax=tmax,
+        singleEvents=True, orderBy="startTime",
+    ).execute().get("items", [])
+    return [cal_cap._event_view(e, tzname) for e in items]
 
 
 def main() -> None:

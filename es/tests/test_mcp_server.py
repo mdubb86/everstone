@@ -149,3 +149,32 @@ def test_es_tasks_clear_all(fake_client):
     out = mcp_server.es_tasks_clear(list="inbox", all=True)
     assert out == {"ok": True, "data": {"list": "inbox", "removed": 5}}
     fake_client.clear_list.assert_called_once_with("inbox", completed_only=False)
+
+
+@pytest.fixture
+def fake_svc(monkeypatch):
+    svc = MagicMock()
+    monkeypatch.setattr("es.mcp_server.calendar_service", lambda: svc)
+    monkeypatch.setattr("es.capabilities.cal_support.resolve_calendar_id", lambda s, c: "calid")
+    monkeypatch.setattr("es.capabilities.cal_support.home_tz", lambda: "America/New_York")
+    monkeypatch.setattr("es.capabilities.cal_support.calendar_policy", lambda: (set(), ["Work"]))
+    return svc
+
+
+def _events(items):
+    """Wire fake_svc.events().list().execute() to return items."""
+    return {"items": items}
+
+
+def test_es_cal_agenda_ok(fake_svc):
+    ev = {"id": "e1", "summary": "Standup",
+          "start": {"dateTime": "2026-06-10T09:00:00-04:00"},
+          "end": {"dateTime": "2026-06-10T09:30:00-04:00"}}
+    fake_svc.events.return_value.list.return_value.execute.return_value = _events([ev])
+    out = mcp_server.es_cal_agenda("2026-06-10", "2026-06-11", "Work")
+    assert out["ok"] is True
+    assert out["data"][0]["id"] == "e1"
+    assert out["data"][0]["summary"] == "Standup"
+    _, kwargs = fake_svc.events.return_value.list.call_args
+    assert kwargs["calendarId"] == "calid"
+    assert kwargs["singleEvents"] is True
