@@ -67,3 +67,29 @@ def test_es_tasks_add_parent_not_found(fake_client):
     fake_client.add_task.side_effect = ParentNotFound("no such parent")
     out = mcp_server.es_tasks_add("x", parent="bad")
     assert out == {"ok": False, "error": {"code": "parent_not_found", "message": "no such parent"}}
+
+
+def test_es_tasks_edit_ok(fake_client):
+    out = mcp_server.es_tasks_edit(
+        "u1", list="inbox", summary="new", tag="t",
+        due="2026-06-10T09:00:00", remind="2026-06-09T18:00:00", parent="p1")
+    assert out == {"ok": True, "data": {"uid": "u1", "edited": True}}
+    args, kwargs = fake_client.edit_task.call_args
+    assert args == ("u1", "inbox")
+    assert kwargs["summary"] == "new"
+    assert kwargs["due"] == datetime.fromisoformat("2026-06-10T09:00:00")
+    assert kwargs["remind_at"] == datetime.fromisoformat("2026-06-09T18:00:00")
+    assert kwargs["tags"] == ["t"]
+    assert kwargs["parent_uid"] == "p1"
+
+
+def test_es_tasks_edit_minimal(fake_client):
+    out = mcp_server.es_tasks_edit("u1")
+    assert out == {"ok": True, "data": {"uid": "u1", "edited": True}}
+    args, kwargs = fake_client.edit_task.call_args
+    assert args == ("u1", "TODO")
+    assert kwargs["summary"] is None
+    assert kwargs["due"] is None
+    assert kwargs["remind_at"] is None
+    assert kwargs["tags"] is None
+    assert kwargs["parent_uid"] is None

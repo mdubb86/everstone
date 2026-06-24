@@ -70,5 +70,24 @@ def es_tasks_add(summary: str, list: str = "TODO", note: Optional[str] = None,
     return {"uid": uid}
 
 
+@mcp.tool()
+@mcp_envelope
+def es_tasks_edit(uid: str, list: str = "TODO", summary: Optional[str] = None,
+                  tag: Optional[str] = None, due: Optional[str] = None,
+                  remind: Optional[str] = None, parent: Optional[str] = None) -> dict:
+    """Edit a task. Only provided fields change; due/remind are ISO datetimes;
+    tag sets a single tag; parent re-nests the task."""
+    client, _ = _client()
+    client.edit_task(
+        uid, list,
+        summary=summary,
+        due=datetime.fromisoformat(due) if due else None,
+        remind_at=datetime.fromisoformat(remind) if remind else None,
+        tags=[tag] if tag else None,
+        parent_uid=parent,
+    )
+    return {"uid": uid, "edited": True}
+
+
 def main() -> None:
     mcp.run()
