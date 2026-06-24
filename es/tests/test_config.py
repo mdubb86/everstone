@@ -2,6 +2,16 @@ import pytest
 from es import config
 
 
+def test_vault_root_default(monkeypatch):
+    monkeypatch.delenv("ES_VAULT_PATH", raising=False)
+    assert str(config.vault_root()) == "/opt/data/vault"
+
+
+def test_vault_root_env_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("ES_VAULT_PATH", str(tmp_path))
+    assert config.vault_root() == tmp_path
+
+
 def test_load_reads_yaml(tmp_path, monkeypatch):
     cfg = tmp_path / "config.yaml"
     cfg.write_text("caldav:\n  user: alice\n  password: secret\nobsidian:\n  vault_name: Vault\n")

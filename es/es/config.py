@@ -21,3 +21,9 @@ def load_config() -> dict:
     if not isinstance(data, dict):
         raise ValueError(f"es: config at {path} is not a mapping")
     return data
+
+
+def vault_root() -> Path:
+    """Obsidian vault root. Defaults to the in-container /opt/data/vault;
+    override with ES_VAULT_PATH (tests point this at a tmp dir)."""
+    return Path(os.environ.get("ES_VAULT_PATH", "/opt/data/vault"))
