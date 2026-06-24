@@ -5,7 +5,7 @@ Wraps the same in-process clients the CLI uses; returns the same
 AGENT only ever sees these tools.
 """
 import functools
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -196,6 +196,32 @@ def es_cal_conflicts(start: str, end: str, calendar: str, tz: Optional[str] = No
             out.append({"a": cal_cap._event_view(a, tzname), "b": cal_cap._event_view(e, tzname)})
         active.append(e)
     return out
+
+
+@mcp.tool()
+@mcp_envelope
+def es_cal_add(summary: str, calendar: str, when: str, duration: int = 60,
+               where: Optional[str] = None, description: Optional[str] = None,
+               tz: Optional[str] = None) -> dict:
+    """Create an event. when is 'YYYY-MM-DD HH:MM' (local); duration in minutes.
+    Refused on read-only calendars."""
+    cal_cap._require_writable(calendar)
+    tzname = tz or cal_support.home_tz()
+    svc = calendar_service()
+    cal_id = cal_support.resolve_calendar_id(svc, calendar)
+    start = datetime.fromisoformat(when.replace(" ", "T"))
+    end = start + timedelta(minutes=duration)
+    body = {
+        "summary": summary,
+        "start": {"dateTime": start.isoformat(), "timeZone": tzname},
+        "end": {"dateTime": end.isoformat(), "timeZone": tzname},
+    }
+    if where:
+        body["location"] = where
+    if description:
+        body["description"] = description
+    created = svc.events().insert(calendarId=cal_id, body=body).execute()
+    return {"id": created.get("id"), "summary": summary}
 
 
 def main() -> None:

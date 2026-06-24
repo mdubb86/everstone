@@ -210,3 +210,26 @@ def test_es_cal_conflicts_ok(fake_svc):
     pair = out["data"][0]
     assert pair["a"]["id"] == "a"
     assert pair["b"]["id"] == "b"
+
+
+def test_es_cal_add_ok(fake_svc):
+    fake_svc.events.return_value.insert.return_value.execute.return_value = {"id": "new1"}
+    out = mcp_server.es_cal_add("Coffee", "Work", when="2026-06-10 09:00",
+                                duration=30, where="Cafe", description="chat",
+                                tz="America/New_York")
+    assert out == {"ok": True, "data": {"id": "new1", "summary": "Coffee"}}
+    _, kwargs = fake_svc.events.return_value.insert.call_args
+    body = kwargs["body"]
+    assert body["summary"] == "Coffee"
+    assert body["location"] == "Cafe"
+    assert body["description"] == "chat"
+    assert body["start"] == {"dateTime": "2026-06-10T09:00:00", "timeZone": "America/New_York"}
+    assert body["end"] == {"dateTime": "2026-06-10T09:30:00", "timeZone": "America/New_York"}
+
+
+def test_es_cal_add_refused_readonly(fake_svc, monkeypatch):
+    monkeypatch.setattr("es.capabilities.cal_support.calendar_policy", lambda: ({"Holidays"}, []))
+    out = mcp_server.es_cal_add("X", "Holidays", when="2026-06-10 09:00")
+    assert out["ok"] is False
+    assert out["error"]["code"] == "read_only_calendar"
+    fake_svc.events.return_value.insert.assert_not_called()
