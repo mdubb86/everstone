@@ -133,5 +133,14 @@ def es_tasks_list_delete(name: str) -> dict:
     return {"list": name, "deleted": True}
 
 
+@mcp.tool()
+@mcp_envelope
+def es_tasks_clear(list: str, all: bool = False) -> dict:
+    """Remove completed tasks from a list. all=true removes every task."""
+    client, _ = _client()
+    removed = client.clear_list(list, completed_only=not all)
+    return {"list": list, "removed": removed}
+
+
 def main() -> None:
     mcp.run()

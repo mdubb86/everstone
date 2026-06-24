@@ -135,3 +135,17 @@ def test_es_tasks_list_delete_ok(fake_client):
     out = mcp_server.es_tasks_list_delete("groceries")
     assert out == {"ok": True, "data": {"list": "groceries", "deleted": True}}
     fake_client.delete_list.assert_called_once_with("groceries")
+
+
+def test_es_tasks_clear_default(fake_client):
+    fake_client.clear_list.return_value = 3
+    out = mcp_server.es_tasks_clear(list="inbox")
+    assert out == {"ok": True, "data": {"list": "inbox", "removed": 3}}
+    fake_client.clear_list.assert_called_once_with("inbox", completed_only=True)
+
+
+def test_es_tasks_clear_all(fake_client):
+    fake_client.clear_list.return_value = 5
+    out = mcp_server.es_tasks_clear(list="inbox", all=True)
+    assert out == {"ok": True, "data": {"list": "inbox", "removed": 5}}
+    fake_client.clear_list.assert_called_once_with("inbox", completed_only=False)
