@@ -173,5 +173,30 @@ def es_cal_search(query: str, calendar: str, tz: Optional[str] = None) -> list:
     return [cal_cap._event_view(e, tzname) for e in items]
 
 
+@mcp.tool()
+@mcp_envelope
+def es_cal_conflicts(start: str, end: str, calendar: str, tz: Optional[str] = None) -> list:
+    """Find overlapping event pairs on a calendar in the given window."""
+    tzname = tz or cal_support.home_tz()
+    svc = calendar_service()
+    cal_id = cal_support.resolve_calendar_id(svc, calendar)
+    tmin, tmax = cal_cap._day_bounds(start, end, tzname)
+    items = svc.events().list(
+        calendarId=cal_id, timeMin=tmin, timeMax=tmax,
+        singleEvents=True, orderBy="startTime",
+    ).execute().get("items", [])
+    # chronological sweep (ref: gcalcli/conflicts.py): a pair conflicts when the
+    # later event starts before the earlier one ends.
+    out: list = []
+    active: list = []
+    for e in items:
+        s = cal_cap._instant(e, "start")
+        active = [a for a in active if cal_cap._instant(a, "end") > s]
+        for a in active:
+            out.append({"a": cal_cap._event_view(a, tzname), "b": cal_cap._event_view(e, tzname)})
+        active.append(e)
+    return out
+
+
 def main() -> None:
     mcp.run()

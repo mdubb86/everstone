@@ -191,3 +191,22 @@ def test_es_cal_search_ok(fake_svc):
     _, kwargs = fake_svc.events.return_value.list.call_args
     assert kwargs["q"] == "dentist"
     assert kwargs["calendarId"] == "calid"
+
+
+def test_es_cal_conflicts_ok(fake_svc):
+    a = {"id": "a", "summary": "A",
+         "start": {"dateTime": "2026-06-10T09:00:00-04:00"},
+         "end": {"dateTime": "2026-06-10T10:00:00-04:00"}}
+    b = {"id": "b", "summary": "B",
+         "start": {"dateTime": "2026-06-10T09:30:00-04:00"},
+         "end": {"dateTime": "2026-06-10T10:30:00-04:00"}}
+    c = {"id": "c", "summary": "C",
+         "start": {"dateTime": "2026-06-10T11:00:00-04:00"},
+         "end": {"dateTime": "2026-06-10T12:00:00-04:00"}}
+    fake_svc.events.return_value.list.return_value.execute.return_value = _events([a, b, c])
+    out = mcp_server.es_cal_conflicts("2026-06-10", "2026-06-11", "Work")
+    assert out["ok"] is True
+    assert len(out["data"]) == 1
+    pair = out["data"][0]
+    assert pair["a"]["id"] == "a"
+    assert pair["b"]["id"] == "b"
