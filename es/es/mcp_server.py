@@ -115,5 +115,14 @@ def es_tasks_lists() -> list:
     return client.list_collections()
 
 
+@mcp.tool()
+@mcp_envelope
+def es_tasks_list_create(name: str) -> dict:
+    """Create a task list (no-op if it already exists)."""
+    client, _ = _client()
+    client.ensure_list(name)
+    return {"list": name, "created": True}
+
+
 def main() -> None:
     mcp.run()

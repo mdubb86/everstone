@@ -123,3 +123,9 @@ def test_es_tasks_lists_ok(fake_client):
     out = mcp_server.es_tasks_lists()
     assert out == {"ok": True, "data": ["TODO", "inbox"]}
     fake_client.list_collections.assert_called_once_with()
+
+
+def test_es_tasks_list_create_ok(fake_client):
+    out = mcp_server.es_tasks_list_create("groceries")
+    assert out == {"ok": True, "data": {"list": "groceries", "created": True}}
+    fake_client.ensure_list.assert_called_once_with("groceries")
