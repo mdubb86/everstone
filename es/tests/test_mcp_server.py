@@ -178,3 +178,16 @@ def test_es_cal_agenda_ok(fake_svc):
     _, kwargs = fake_svc.events.return_value.list.call_args
     assert kwargs["calendarId"] == "calid"
     assert kwargs["singleEvents"] is True
+
+
+def test_es_cal_search_ok(fake_svc):
+    ev = {"id": "e2", "summary": "Dentist",
+          "start": {"dateTime": "2026-06-12T10:00:00-04:00"},
+          "end": {"dateTime": "2026-06-12T11:00:00-04:00"}}
+    fake_svc.events.return_value.list.return_value.execute.return_value = _events([ev])
+    out = mcp_server.es_cal_search("dentist", "Work")
+    assert out["ok"] is True
+    assert out["data"][0]["id"] == "e2"
+    _, kwargs = fake_svc.events.return_value.list.call_args
+    assert kwargs["q"] == "dentist"
+    assert kwargs["calendarId"] == "calid"

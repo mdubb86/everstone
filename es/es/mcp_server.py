@@ -160,5 +160,18 @@ def es_cal_agenda(start: str, end: str, calendar: str, tz: Optional[str] = None)
     return [cal_cap._event_view(e, tzname) for e in items]
 
 
+@mcp.tool()
+@mcp_envelope
+def es_cal_search(query: str, calendar: str, tz: Optional[str] = None) -> list:
+    """Full-text search events on a calendar."""
+    tzname = tz or cal_support.home_tz()
+    svc = calendar_service()
+    cal_id = cal_support.resolve_calendar_id(svc, calendar)
+    items = svc.events().list(
+        calendarId=cal_id, q=query, singleEvents=True, orderBy="startTime",
+    ).execute().get("items", [])
+    return [cal_cap._event_view(e, tzname) for e in items]
+
+
 def main() -> None:
     mcp.run()
