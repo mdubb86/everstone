@@ -98,5 +98,14 @@ def es_tasks_done(uid: str, list: str = "TODO") -> dict:
     return {"uid": uid, "status": "COMPLETED"}
 
 
+@mcp.tool()
+@mcp_envelope
+def es_tasks_delete(uid: str, list: str = "TODO", force: bool = False) -> dict:
+    """Delete a task. force=true deletes even when it has subtasks."""
+    client, _ = _client()
+    client.delete_task(uid, list, force=force)
+    return {"uid": uid, "deleted": True}
+
+
 def main() -> None:
     mcp.run()

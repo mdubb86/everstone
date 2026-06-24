@@ -99,3 +99,20 @@ def test_es_tasks_done_ok(fake_client):
     out = mcp_server.es_tasks_done("u1", list="inbox")
     assert out == {"ok": True, "data": {"uid": "u1", "status": "COMPLETED"}}
     fake_client.complete_task.assert_called_once_with("u1", "inbox")
+
+
+def test_es_tasks_delete_ok(fake_client):
+    out = mcp_server.es_tasks_delete("u1", list="inbox", force=True)
+    assert out == {"ok": True, "data": {"uid": "u1", "deleted": True}}
+    fake_client.delete_task.assert_called_once_with("u1", "inbox", force=True)
+
+
+def test_es_tasks_delete_default(fake_client):
+    mcp_server.es_tasks_delete("u1")
+    fake_client.delete_task.assert_called_once_with("u1", "TODO", force=False)
+
+
+def test_es_tasks_delete_has_subtasks(fake_client):
+    fake_client.delete_task.side_effect = HasSubtasks("has kids")
+    out = mcp_server.es_tasks_delete("u1")
+    assert out == {"ok": False, "error": {"code": "has_subtasks", "message": "has kids"}}
