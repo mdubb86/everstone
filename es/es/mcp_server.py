@@ -89,5 +89,14 @@ def es_tasks_edit(uid: str, list: str = "TODO", summary: Optional[str] = None,
     return {"uid": uid, "edited": True}
 
 
+@mcp.tool()
+@mcp_envelope
+def es_tasks_done(uid: str, list: str = "TODO") -> dict:
+    """Mark a task complete."""
+    client, _ = _client()
+    client.complete_task(uid, list)
+    return {"uid": uid, "status": "COMPLETED"}
+
+
 def main() -> None:
     mcp.run()

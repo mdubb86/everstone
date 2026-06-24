@@ -93,3 +93,9 @@ def test_es_tasks_edit_minimal(fake_client):
     assert kwargs["remind_at"] is None
     assert kwargs["tags"] is None
     assert kwargs["parent_uid"] is None
+
+
+def test_es_tasks_done_ok(fake_client):
+    out = mcp_server.es_tasks_done("u1", list="inbox")
+    assert out == {"ok": True, "data": {"uid": "u1", "status": "COMPLETED"}}
+    fake_client.complete_task.assert_called_once_with("u1", "inbox")
