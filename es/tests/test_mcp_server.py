@@ -276,3 +276,56 @@ def test_es_cal_delete_refused_readonly(fake_svc, monkeypatch):
     out = mcp_server.es_cal_delete("e1", "Holidays")
     assert out["error"]["code"] == "read_only_calendar"
     fake_svc.events.return_value.delete.assert_not_called()
+
+
+# ── es_notes_* tools ────────────────────────────────────────────────────────
+
+@pytest.fixture
+def fake_vault(monkeypatch):
+    v = MagicMock()
+    monkeypatch.setattr("es.mcp_server._notes_client", lambda: v)
+    return v
+
+
+def test_es_notes_journal_ok(fake_vault):
+    fake_vault.write_journal.return_value = {"path": "journal/2026-06-24/Note.md",
+                                             "obsidian_deeplink": "obsidian://x"}
+    out = mcp_server.es_notes_journal("Note", "body", tags=["t"], topics=["EverStone"], meta=None)
+    assert out == {"ok": True, "data": {"path": "journal/2026-06-24/Note.md",
+                                        "obsidian_deeplink": "obsidian://x"}}
+    fake_vault.write_journal.assert_called_once_with(
+        "Note", "body", tags=["t"], topics=["EverStone"], meta=None)
+
+
+def test_es_notes_topic_ok(fake_vault):
+    fake_vault.write_topic.return_value = {"path": "topics/EverStone.md", "created": True}
+    out = mcp_server.es_notes_topic("EverStone", body="state")
+    assert out["ok"] is True and out["data"]["created"] is True
+    fake_vault.write_topic.assert_called_once_with("EverStone", body="state", update=None)
+
+
+def test_es_notes_topics_ok(fake_vault):
+    fake_vault.list_topics.return_value = ["EverStone", "Home network"]
+    out = mcp_server.es_notes_topics(like="home")
+    assert out == {"ok": True, "data": ["EverStone", "Home network"]}
+    fake_vault.list_topics.assert_called_once_with(like="home")
+
+
+def test_es_notes_read_ok(fake_vault):
+    fake_vault.read_note.return_value = {"path": "topics/X.md", "frontmatter": {}, "body": "b"}
+    out = mcp_server.es_notes_read("X")
+    assert out["ok"] is True and out["data"]["body"] == "b"
+
+
+def test_es_notes_read_missing_is_error_envelope(fake_vault):
+    from es.vault_client import NoteNotFound
+    fake_vault.read_note.side_effect = NoteNotFound("nope")
+    out = mcp_server.es_notes_read("nope")
+    assert out == {"ok": False, "error": {"code": "note_not_found", "message": "nope"}}
+
+
+def test_es_notes_list_ok(fake_vault):
+    fake_vault.list_journal.return_value = [{"title": "T", "path": "journal/d/T.md"}]
+    out = mcp_server.es_notes_list(topic="EverStone", since="2026-06-01", day=None)
+    assert out == {"ok": True, "data": [{"title": "T", "path": "journal/d/T.md"}]}
+    fake_vault.list_journal.assert_called_once_with(topic="EverStone", since="2026-06-01", day=None)

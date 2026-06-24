@@ -14,6 +14,7 @@ from es import config
 from es.deeplink import build_deeplink
 from es.google_auth import calendar_service
 from es.tasks_client import TasksClient
+from es.vault_client import VaultClient
 from es.capabilities import cal as cal_cap
 from es.capabilities import cal_support
 
@@ -39,6 +40,12 @@ def _client():
     caldav = cfg.get("caldav") or {}
     vault = (cfg.get("obsidian") or {}).get("vault_name", "")
     return TasksClient(config.CALDAV_URL, caldav.get("user", ""), caldav.get("password", "")), vault
+
+
+def _notes_client():
+    cfg = config.load_config()
+    vault = (cfg.get("obsidian") or {}).get("vault_name", "")
+    return VaultClient(config.vault_root(), vault)
 
 
 @mcp.tool()
@@ -262,6 +269,49 @@ def es_cal_delete(event_id: str, calendar: str) -> dict:
     cal_id = cal_support.resolve_calendar_id(svc, calendar)
     svc.events().delete(calendarId=cal_id, eventId=event_id).execute()
     return {"id": event_id, "deleted": True}
+
+
+@mcp.tool()
+@mcp_envelope
+def es_notes_journal(title: str, body: str, tags: Optional[list] = None,
+                     topics: Optional[list] = None, meta: Optional[dict] = None) -> dict:
+    """Create one atomic journal entry (auto created/author); topics link topic docs
+    via quoted wikilinks. Returns {path, obsidian_deeplink}."""
+    return _notes_client().write_journal(title, body, tags=tags, topics=topics, meta=meta)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_notes_topic(name: str, body: Optional[str] = None,
+                   update: Optional[str] = None) -> dict:
+    """Create/edit a topic doc. body overwrites the curated state; update appends a
+    dated line under ## Updates; neither just ensures the topic exists."""
+    return _notes_client().write_topic(name, body=body, update=update)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_notes_topics(like: Optional[str] = None) -> list:
+    """List canonical topic names (the registry); like fuzzy-matches. Use before
+    creating a topic to resolve/dedup an existing one."""
+    return _notes_client().list_topics(like=like)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_notes_read(target: str) -> dict:
+    """Read a note's frontmatter + body. target is a vault-relative path or a topic
+    name. Returns {path, frontmatter, body}."""
+    return _notes_client().read_note(target)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_notes_list(topic: Optional[str] = None, since: Optional[str] = None,
+                  day: Optional[str] = None) -> list:
+    """List journal entries (frontmatter summaries), filtered by topic link, since a
+    date (YYYY-MM-DD), or a specific day."""
+    return _notes_client().list_journal(topic=topic, since=since, day=day)
 
 
 def main() -> None:
