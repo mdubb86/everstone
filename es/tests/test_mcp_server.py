@@ -1,7 +1,8 @@
+from datetime import datetime
 from unittest.mock import MagicMock
 import pytest
 from es import mcp_server
-from es.tasks_client import ParentNotFound
+from es.tasks_client import ParentNotFound, HasSubtasks
 
 
 @pytest.fixture
@@ -32,3 +33,37 @@ def test_mcp_envelope_catches_es_code():
     def boom():
         raise ParentNotFound("nope")
     assert boom() == {"ok": False, "error": {"code": "parent_not_found", "message": "nope"}}
+
+
+def test_es_tasks_add_ok(fake_client):
+    fake_client.add_task.return_value = "newuid"
+    out = mcp_server.es_tasks_add(
+        "buy milk", list="inbox", note="MyNote", tag="shopping",
+        due="2026-06-10T09:00:00", remind="2026-06-09T18:00:00", parent="p1")
+    assert out == {"ok": True, "data": {"uid": "newuid"}}
+    args, kwargs = fake_client.add_task.call_args
+    assert args == ("buy milk", "inbox")
+    assert kwargs["url"] == mcp_server.build_deeplink("VaultName", "MyNote")
+    assert kwargs["due"] == datetime.fromisoformat("2026-06-10T09:00:00")
+    assert kwargs["remind_at"] == datetime.fromisoformat("2026-06-09T18:00:00")
+    assert kwargs["tags"] == ["shopping"]
+    assert kwargs["parent_uid"] == "p1"
+
+
+def test_es_tasks_add_minimal(fake_client):
+    fake_client.add_task.return_value = "u"
+    out = mcp_server.es_tasks_add("plain")
+    assert out == {"ok": True, "data": {"uid": "u"}}
+    args, kwargs = fake_client.add_task.call_args
+    assert args == ("plain", "TODO")
+    assert kwargs["url"] is None
+    assert kwargs["due"] is None
+    assert kwargs["remind_at"] is None
+    assert kwargs["tags"] is None
+    assert kwargs["parent_uid"] is None
+
+
+def test_es_tasks_add_parent_not_found(fake_client):
+    fake_client.add_task.side_effect = ParentNotFound("no such parent")
+    out = mcp_server.es_tasks_add("x", parent="bad")
+    assert out == {"ok": False, "error": {"code": "parent_not_found", "message": "no such parent"}}

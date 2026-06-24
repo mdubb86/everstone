@@ -5,11 +5,13 @@ Wraps the same in-process clients the CLI uses; returns the same
 AGENT only ever sees these tools.
 """
 import functools
+from datetime import datetime
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
 from es import config
+from es.deeplink import build_deeplink
 from es.tasks_client import TasksClient
 
 mcp = FastMCP("everstone-es")
@@ -47,6 +49,25 @@ def es_tasks_list(list: str = "TODO", tag: Optional[str] = None, all: bool = Fal
     if tag:
         items = [t for t in items if tag in (t.get("tags") or [])]
     return items
+
+
+@mcp.tool()
+@mcp_envelope
+def es_tasks_add(summary: str, list: str = "TODO", note: Optional[str] = None,
+                 tag: Optional[str] = None, due: Optional[str] = None,
+                 remind: Optional[str] = None, parent: Optional[str] = None) -> dict:
+    """Add a task to a list (default TODO). note attaches an Obsidian deeplink;
+    due/remind are ISO datetimes; tag adds a single tag; parent nests as a subtask."""
+    client, vault = _client()
+    url = build_deeplink(vault, note) if note else None
+    uid = client.add_task(
+        summary, list, url=url,
+        remind_at=datetime.fromisoformat(remind) if remind else None,
+        due=datetime.fromisoformat(due) if due else None,
+        tags=[tag] if tag else None,
+        parent_uid=parent,
+    )
+    return {"uid": uid}
 
 
 def main() -> None:
