@@ -224,5 +224,34 @@ def es_cal_add(summary: str, calendar: str, when: str, duration: int = 60,
     return {"id": created.get("id"), "summary": summary}
 
 
+@mcp.tool()
+@mcp_envelope
+def es_cal_edit(event_id: str, calendar: str, summary: Optional[str] = None,
+                when: Optional[str] = None, duration: Optional[int] = None,
+                where: Optional[str] = None, description: Optional[str] = None,
+                tz: Optional[str] = None) -> dict:
+    """Edit an event; only provided fields change. when is 'YYYY-MM-DD HH:MM'
+    (local); duration in minutes. Refused on read-only calendars."""
+    cal_cap._require_writable(calendar)
+    tzname = tz or cal_support.home_tz()
+    svc = calendar_service()
+    cal_id = cal_support.resolve_calendar_id(svc, calendar)
+    patch: dict = {}
+    if summary is not None:
+        patch["summary"] = summary
+    if where is not None:
+        patch["location"] = where
+    if description is not None:
+        patch["description"] = description
+    if when is not None:
+        start = datetime.fromisoformat(when.replace(" ", "T"))
+        patch["start"] = {"dateTime": start.isoformat(), "timeZone": tzname}
+        if duration is not None:
+            end = start + timedelta(minutes=duration)
+            patch["end"] = {"dateTime": end.isoformat(), "timeZone": tzname}
+    updated = svc.events().patch(calendarId=cal_id, eventId=event_id, body=patch).execute()
+    return cal_cap._event_view(updated, tzname)
+
+
 def main() -> None:
     mcp.run()

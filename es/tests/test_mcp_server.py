@@ -233,3 +233,31 @@ def test_es_cal_add_refused_readonly(fake_svc, monkeypatch):
     assert out["ok"] is False
     assert out["error"]["code"] == "read_only_calendar"
     fake_svc.events.return_value.insert.assert_not_called()
+
+
+def test_es_cal_edit_ok(fake_svc):
+    updated = {"id": "e1", "summary": "Updated",
+               "start": {"dateTime": "2026-06-10T10:00:00-04:00"},
+               "end": {"dateTime": "2026-06-10T11:00:00-04:00"}}
+    fake_svc.events.return_value.patch.return_value.execute.return_value = updated
+    out = mcp_server.es_cal_edit("e1", "Work", summary="Updated",
+                                 when="2026-06-10 10:00", duration=60,
+                                 where="Room", description="d", tz="America/New_York")
+    assert out["ok"] is True
+    assert out["data"]["id"] == "e1"
+    assert out["data"]["summary"] == "Updated"
+    _, kwargs = fake_svc.events.return_value.patch.call_args
+    patch = kwargs["body"]
+    assert patch["summary"] == "Updated"
+    assert patch["location"] == "Room"
+    assert patch["description"] == "d"
+    assert patch["start"] == {"dateTime": "2026-06-10T10:00:00", "timeZone": "America/New_York"}
+    assert patch["end"] == {"dateTime": "2026-06-10T11:00:00", "timeZone": "America/New_York"}
+    assert kwargs["eventId"] == "e1"
+
+
+def test_es_cal_edit_refused_readonly(fake_svc, monkeypatch):
+    monkeypatch.setattr("es.capabilities.cal_support.calendar_policy", lambda: ({"Holidays"}, []))
+    out = mcp_server.es_cal_edit("e1", "Holidays", summary="x")
+    assert out["error"]["code"] == "read_only_calendar"
+    fake_svc.events.return_value.patch.assert_not_called()
