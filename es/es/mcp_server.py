@@ -107,5 +107,13 @@ def es_tasks_delete(uid: str, list: str = "TODO", force: bool = False) -> dict:
     return {"uid": uid, "deleted": True}
 
 
+@mcp.tool()
+@mcp_envelope
+def es_tasks_lists() -> list:
+    """List all task lists (collections)."""
+    client, _ = _client()
+    return client.list_collections()
+
+
 def main() -> None:
     mcp.run()

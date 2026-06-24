@@ -116,3 +116,10 @@ def test_es_tasks_delete_has_subtasks(fake_client):
     fake_client.delete_task.side_effect = HasSubtasks("has kids")
     out = mcp_server.es_tasks_delete("u1")
     assert out == {"ok": False, "error": {"code": "has_subtasks", "message": "has kids"}}
+
+
+def test_es_tasks_lists_ok(fake_client):
+    fake_client.list_collections.return_value = ["TODO", "inbox"]
+    out = mcp_server.es_tasks_lists()
+    assert out == {"ok": True, "data": ["TODO", "inbox"]}
+    fake_client.list_collections.assert_called_once_with()
