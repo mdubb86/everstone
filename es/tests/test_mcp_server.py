@@ -329,3 +329,23 @@ def test_es_notes_list_ok(fake_vault):
     out = mcp_server.es_notes_list(topic="EverStone", since="2026-06-01", day=None)
     assert out == {"ok": True, "data": [{"title": "T", "path": "journal/d/T.md"}]}
     fake_vault.list_journal.assert_called_once_with(topic="EverStone", since="2026-06-01", day=None)
+
+
+def test_es_cal_agenda_localizes_times(fake_svc):
+    ev = {"id": "e1", "summary": "Coffee",
+          "start": {"dateTime": "2026-06-08T14:00:00Z"},
+          "end": {"dateTime": "2026-06-08T15:00:00Z"}}
+    fake_svc.events.return_value.list.return_value.execute.return_value = _events([ev])
+    out = mcp_server.es_cal_agenda("2026-06-08", "2026-06-09", "Family")
+    # 14:00Z == 10:00 America/New_York (EDT)
+    assert out["data"][0]["start"].startswith("2026-06-08T10:00:00")
+
+
+def test_es_cal_conflicts_empty_when_disjoint(fake_svc):
+    a = {"id": "a", "summary": "A", "start": {"dateTime": "2026-06-08T14:00:00Z"},
+         "end": {"dateTime": "2026-06-08T15:00:00Z"}}
+    b = {"id": "b", "summary": "B", "start": {"dateTime": "2026-06-08T16:00:00Z"},
+         "end": {"dateTime": "2026-06-08T17:00:00Z"}}
+    fake_svc.events.return_value.list.return_value.execute.return_value = _events([a, b])
+    out = mcp_server.es_cal_conflicts("2026-06-08", "2026-06-09", "Family")
+    assert out["data"] == []
