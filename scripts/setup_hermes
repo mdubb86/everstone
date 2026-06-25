@@ -31,8 +31,13 @@ d = (yaml.safe_load(cfg.read_text()) if cfg.exists() else {}) or {}
 # NOTE: this seed only writes on first profile-create; EXISTING profiles must
 # have their platform_toolsets.telegram updated by hand (drop terminal/file).
 d.setdefault("platform_toolsets", {})["telegram"] = [
-    "skills", "vision", "clarify", "web", "memory",
+    "skills", "vision", "clarify", "web", "memory", "browser",
 ]
+# Browser = the camofox-browser (Camoufox) stealth browser, reached via the
+# CAMOFOX_URL env (set at the container level). DM-only: the access_hook blocks
+# browser_* in group chats. managed_persistence sends a stable per-profile
+# userId so cookies/logins persist under CAMOFOX_PROFILE_DIR on /opt/data.
+d.setdefault("browser", {}).setdefault("camofox", {})["managed_persistence"] = True
 cfg.write_text(yaml.safe_dump(d, sort_keys=False))
 owner = str(((yaml.safe_load(open("/opt/config.yaml")) or {}).get("telegram") or {})
             .get("owner_user_id", "")).strip()

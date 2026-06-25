@@ -167,6 +167,19 @@ RUN git clone --depth 1 --branch master \
         https://github.com/nesquena/hermes-webui /opt/hermes-webui || \
     echo "[hermes-webui] clone failed — /opt/hermes-webui absent; web UI unavailable"
 
+# camofox-browser: Camoufox (stealth Firefox) wrapped in a Node REST server.
+# Hermes's browser_* tools are an HTTP client to it (CAMOFOX_URL=localhost:9377).
+# `npm install` runs its postinstall (scripts/postinstall.js) which fetches the
+# Camoufox binary (~300MB) from GitHub releases → baked in for offline-tolerant
+# starts. Node + the Firefox system libs are present from the Debian base.
+RUN git clone --depth 1 \
+        https://github.com/jo-inc/camofox-browser /opt/camofox-browser || \
+    echo "[camofox-browser] clone failed — browser unavailable"
+RUN if [ -f /opt/camofox-browser/package.json ]; then \
+        cd /opt/camofox-browser && npm install 2>&1 | tail -5 || \
+        echo "[camofox-browser] npm install failed — browser unavailable at runtime"; \
+    fi
+
 COPY scripts /scripts
 COPY services /services
 COPY config /opt/defaults/config
@@ -192,6 +205,10 @@ ENV PATH="${PATH}:/command:/scripts:/opt/bin:/usr/local/bin"
 # run files for clarity but the container-level ENV is what makes ad-hoc
 # operator commands work without -e flags.
 ENV HERMES_HOME=/opt/data/hermes
+# Point Hermes's browser_* tools at the in-container camofox-browser server
+# (localhost:9377). Setting CAMOFOX_URL is what makes Hermes's is_camofox_mode()
+# active, so the browser toolset drives Camoufox instead of a Chromium engine.
+ENV CAMOFOX_URL=http://localhost:9377
 ENTRYPOINT ["/scripts/entrypoint"]
 EXPOSE 80
 VOLUME ["/opt/config.yaml", "/opt/data"]

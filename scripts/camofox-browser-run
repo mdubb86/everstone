@@ -1,0 +1,18 @@
+#!/bin/sh
+# camofox-browser runner — the Camoufox (stealth Firefox) REST server that
+# Hermes's browser_* tools call via CAMOFOX_URL. Localhost-only; NEVER exposed
+# via Caddy. Per-userId profiles (cookies/localStorage) persist under /opt/data
+# so logins survive restarts. If the clone/install failed at build, stay up but
+# idle so s6 doesn't restart-loop a disabled longrun (mirrors hermes-webui-run).
+set -u
+if [ ! -f /opt/camofox-browser/server.js ]; then
+    echo "[camofox-browser] /opt/camofox-browser not present (clone/install failed) — idle"
+    exec tail -f /dev/null
+fi
+export CAMOFOX_PORT=9377
+export CAMOFOX_HOST=127.0.0.1
+export CAMOFOX_PROFILE_DIR=/opt/data/browser/profiles
+mkdir -p "$CAMOFOX_PROFILE_DIR"
+cd /opt/camofox-browser
+echo "[camofox-browser] starting on 127.0.0.1:9377 (profiles: $CAMOFOX_PROFILE_DIR)"
+exec node server.js
