@@ -21,17 +21,19 @@ RUN apk update && apk add --no-cache \
     mkdir -p /out && \
     mv caddy /out/caddy
 
-FROM alpine:3.22 AS couchdb
+FROM debian:trixie-slim AS couchdb
 
 ARG COUCHDB_VERSION=3.5.1
-RUN apk update && apk add --no-cache \
-    build-base \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     curl \
-    erlang26 \
-    erlang26-dev \
-    erlang26-reltool \
-    icu-dev \
-    openssl-dev \
+    ca-certificates \
+    erlang-dev \
+    erlang-nox \
+    erlang-reltool \
+    libicu-dev \
+    libssl-dev \
+    pkg-config \
     git && \
     curl -fsSL "https://archive.apache.org/dist/couchdb/source/${COUCHDB_VERSION}/apache-couchdb-${COUCHDB_VERSION}.tar.gz" -o couchdb.tar.gz && \
     mkdir /couchdb-src && \
@@ -39,7 +41,8 @@ RUN apk update && apk add --no-cache \
     cd /couchdb-src && \
     ./configure --disable-docs --disable-fauxton --js-engine=quickjs --disable-spidermonkey && \
     make release && \
-    mv /couchdb-src/rel/couchdb /out
+    mv /couchdb-src/rel/couchdb /out && \
+    rm -rf /var/lib/apt/lists/*
 
 # engraph binary (optional — if cargo build fails, a stub is placed; setup_engraph handles first-run build)
 FROM alpine:3.22 AS engraph
