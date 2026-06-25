@@ -62,27 +62,19 @@ def test_group_blocks_shell_and_notes(everstone):
         assert result is not None and "block" in str(result), tool
 
 
-def test_group_allows_tasks(everstone):
-    # Group chats allow terminal with an `es tasks ...` command (no composition).
-    assert (
-        _policy(
-            everstone["container_name"],
-            "terminal",
-            session_key="agent:main:telegram:group:-100",
-            command="es tasks list --list inbox",
-        )
-        is None
-    )
-    # supergroup too
-    assert (
-        _policy(
-            everstone["container_name"],
-            "terminal",
-            session_key="agent:main:telegram:supergroup:-100",
-            command="es tasks list --list inbox",
-        )
-        is None
-    )
+def test_group_allows_tasks_and_cal_tools(everstone):
+    # MCP-only era: groups allow the es task + calendar tools BY NAME (es_tasks_*,
+    # es_cal_*); notes (es_notes_*) and everything else are blocked. There is no
+    # shell to gate anymore.
+    c = everstone["container_name"]
+    for tool in ("es_tasks_list", "es_tasks_add", "es_cal_agenda"):
+        assert _policy(c, tool, session_key="agent:main:telegram:group:-100") is None, tool
+    for tool in ("es_notes_journal", "es_notes_read"):
+        r = _policy(c, tool, session_key="agent:main:telegram:group:-100")
+        assert r is not None and "block" in str(r), tool
+    # supergroup treated the same
+    assert _policy(c, "es_tasks_list", session_key="agent:main:telegram:supergroup:-100") is None
+    assert _policy(c, "es_notes_journal", session_key="agent:main:telegram:supergroup:-100") is not None
 
 
 def test_opaque_session_fails_closed(everstone):
