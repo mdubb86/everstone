@@ -59,10 +59,11 @@ RUN cargo install --git https://github.com/devwhodevs/engraph --root /usr/local 
 # build network blocks, and assumes apt/glibc). We reproduce its canonical layout
 # explicitly: a git checkout + a uv venv with `.[all]`, plus our es CLI, the
 # access_hook plugin, and the telegram adapter installed INTO that venv.
-FROM alpine:3.22 AS hermes-build
-RUN apk add --no-cache \
-        python3 py3-pip git \
-        gcc g++ musl-dev python3-dev libffi-dev openssl-dev rust cargo make
+FROM debian:trixie-slim AS hermes-build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv python3-dev git \
+        build-essential libffi-dev libssl-dev cargo curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 RUN pip install --break-system-packages uv
 # Canonical layout at a FIXED path — the final stage COPYs to the identical path
 # so the venv's absolute paths + the editable install resolve.
@@ -80,39 +81,53 @@ COPY access_hook /opt/access_hook
 RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python /opt/access_hook
 RUN rm -rf /usr/local/lib/hermes-agent/.git
 
-FROM alpine:3.22
+FROM debian:trixie-slim
 
 ARG TARGETARCH
 ARG S6_OVERLAY_VERSION=3.2.0.2
 ARG S6_OVERLAY_BASE_URL="https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}"
-RUN apk update && apk add --no-cache \
+# System deps for the s6-supervised services + the Hermes runtime, PLUS the
+# Firefox/Camoufox shared libs (baked in here so sub-project B is just
+# `pip install camoufox` + enable the browser toolset). Debian trixie uses the
+# `t64` (64-bit time) names for several libs (gtk/asound/atk/cups).
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
     curl \
     tar \
-    xz \
-    erlang26 \
-    icu-libs \
+    xz-utils \
+    unzip \
+    erlang-nox \
+    libicu76 \
     openssl \
     python3 \
-    py3-pip \
+    python3-pip \
+    python3-venv \
     git \
-    deno \
     jq \
-    py3-yaml \
-    py3-jsonschema \
+    python3-yaml \
+    python3-jsonschema \
     bash \
     ripgrep \
     findutils \
     coreutils \
     nodejs \
     npm \
-    ffmpeg && \
+    ffmpeg \
+    libstdc++6 \
+    libffi8 \
+    libgtk-3-0t64 libx11-xcb1 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+    libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64 libdbus-glib-1-2 \
+    libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libnss3 libnspr4 libxtst6 \
+    libxshmfence1 fonts-liberation && \
     ARCH=$( [ "$TARGETARCH" = "arm64" ] && echo aarch64 || echo x86_64 ) && \
     curl -fsSL "${S6_OVERLAY_BASE_URL}/s6-overlay-${ARCH}.tar.xz" | tar xJ -C / && \
     curl -fsSL "${S6_OVERLAY_BASE_URL}/s6-overlay-noarch.tar.xz" | tar xJ -C / && \
-    addgroup -g 5984 couchdb && \
-    adduser -D -u 5984 -G couchdb -h /home/couchdb couchdb
+    curl -fsSL "https://github.com/denoland/deno/releases/latest/download/deno-${ARCH}-unknown-linux-gnu.zip" -o /tmp/deno.zip && \
+    unzip -o /tmp/deno.zip -d /usr/local/bin && rm /tmp/deno.zip && \
+    groupadd -g 5984 couchdb && \
+    useradd -m -u 5984 -g 5984 -d /home/couchdb couchdb && \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=caddy /out/caddy /opt/bin/caddy
 COPY --from=couchdb /out /opt/bin/couchdb
@@ -122,8 +137,7 @@ COPY --from=engraph /usr/local/bin/engraph /usr/local/bin/engraph
 # image carries NO compilers — only the runtime shared libs the musl wheels link
 # against. The venv holds Hermes + es + access_hook + the telegram adapter (one
 # interpreter). Hermes's own non-pip deps (Node, ffmpeg, ripgrep) are satisfied
-# by the apk packages above — detected via shutil.which on PATH.
-RUN apk add --no-cache libstdc++ libffi openssl
+# by the apt packages above — detected via shutil.which on PATH.
 COPY --from=hermes-build /usr/local/lib/hermes-agent /usr/local/lib/hermes-agent
 RUN ln -sf /usr/local/lib/hermes-agent/.venv/bin/hermes /usr/local/bin/hermes && \
     ln -sf /usr/local/lib/hermes-agent/.venv/bin/es-mcp /usr/local/bin/es-mcp
