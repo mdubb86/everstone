@@ -31,5 +31,8 @@ def test_missing_creds_raises(tmp_path, monkeypatch):
         google_auth.load_credentials()
 
 
-def test_scopes_is_calendar_only_for_now():
-    assert google_auth.GOOGLE_SCOPES == ["https://www.googleapis.com/auth/calendar"]
+def test_scopes_are_calendar_and_contacts():
+    assert google_auth.GOOGLE_SCOPES == [
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/contacts.readonly",
+    ]
