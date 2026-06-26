@@ -39,11 +39,23 @@
 		reverse_proxy localhost:8081
 	}
 
-	# Everything not matched above → the hermes-webui (served at root). When the
-	# web UI is disabled (no webui.password) or still starting, the proxy 502s;
-	# handle_errors turns that into a friendly page instead of a raw gateway error.
-	handle /* {
+	# Web UI (hermes-webui) is mounted under /hermes/ — NOT the root — so its PWA
+	# service worker is scoped to /hermes/ and cannot intercept root-level browser
+	# navigations like the OAuth callback (/oauth/google/callback above). handle_path
+	# strips the /hermes prefix so the upstream server (which has no base-path /
+	# X-Forwarded-Prefix support) keeps operating at root; the browser keeps /hermes/
+	# in the address bar, so the UI's dynamic <base href> resolves all its relative
+	# assets, fetches, manifest, and SW registration under /hermes/. When the web UI
+	# is disabled (no webui.password) or still starting, the proxy 502s and
+	# handle_errors turns it into the friendly "web UI not enabled" page.
+	handle_path /hermes/* {
 		reverse_proxy localhost:8787
+	}
+
+	# Everything else (bare /, old root bookmarks, bare /hermes without the slash) →
+	# send to the UI. /hermes/* is handled above, so this never loops.
+	handle {
+		redir /hermes/ 302
 	}
 
 	handle_errors {
