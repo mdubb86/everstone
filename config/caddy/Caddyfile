@@ -53,9 +53,11 @@
 	}
 
 	# Everything else (bare /, old root bookmarks, bare /hermes without the slash) →
-	# send to the UI. /hermes/* is handled above, so this never loops.
-	handle {
-		redir /hermes/ 302
+	# send to the UI. /hermes/* is handled above, so this never loops. The `*`
+	# matcher is REQUIRED: `redir /hermes/ 302` mis-parses `/hermes/` as a path
+	# matcher (Location would become "302"); `redir * /hermes/ 302` redirects all.
+	handle /* {
+		redir * /hermes/ 302
 	}
 
 	handle_errors {
