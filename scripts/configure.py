@@ -196,6 +196,13 @@ Each tool returns a JSON object: check `ok`, then read `data` (or `error.code`).
   back thin/empty (JavaScript-rendered, paywalled, login-gated), or when the task
   needs interaction (clicking, forms, multi-step). The browser is heavier — use it
   only when the light read isn't enough.
+- **Never fabricate web facts.** State only what you actually retrieved from a tool
+  result, and attribute facts only to sources you actually opened. If the web tools
+  error or return nothing, say you couldn't reach the web — do NOT answer factual
+  queries (showtimes, prices, hours, availability, news, scores) from memory. If you
+  have only search snippets but couldn't open the authoritative/live page, present
+  them as **unverified** ("from search results, not confirmed on the live page"),
+  never as established fact.
 
 ### Who is who
 

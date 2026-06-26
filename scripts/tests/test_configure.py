@@ -96,6 +96,8 @@ def test_generate_agents_md_platform_only(tmp_path):
         assert "web_search" in body
         assert "browser" in body
         assert "es_web_fetch" in body
+        # No-fabrication guardrail present.
+        assert "fabricate" in body and "unverified" in body
         # No operator section if instructions is null.
         assert "## Custom instructions" not in body
     finally:
