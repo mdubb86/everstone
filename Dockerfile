@@ -79,6 +79,10 @@ COPY es /opt/es
 RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python /opt/es
 COPY access_hook /opt/access_hook
 RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python /opt/access_hook
+# ddgs (DuckDuckGo/multi-engine search) — the keyless web_search backend Hermes
+# auto-selects when no search API key is set (web_tools._ddgs_package_importable()).
+# Makes web_search work out-of-box; an operator's BRAVE_SEARCH_API_KEY env wins.
+RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python ddgs
 RUN rm -rf /usr/local/lib/hermes-agent/.git
 
 FROM debian:trixie-slim

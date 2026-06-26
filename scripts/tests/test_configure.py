@@ -92,7 +92,9 @@ def test_generate_agents_md_platform_only(tmp_path):
         assert "there is no MCP" not in body           # stale claim gone
         assert "read_file" not in body                 # no file-tool guidance
         assert "everstone_tasks" not in body
-        # No operator section if instructions is null.
+        # Web research: search-first, escalate to the browser.
+        assert "web_search" in body
+        assert "browser" in body
         # No operator section if instructions is null.
         assert "## Custom instructions" not in body
     finally:
