@@ -95,6 +95,7 @@ def test_generate_agents_md_platform_only(tmp_path):
         # Web research: search-first, escalate to the browser.
         assert "web_search" in body
         assert "browser" in body
+        assert "es_web_fetch" in body
         # No operator section if instructions is null.
         assert "## Custom instructions" not in body
     finally:

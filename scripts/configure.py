@@ -188,14 +188,14 @@ Each tool returns a JSON object: check `ok`, then read `data` (or `error.code`).
 
 ### Web research
 
-- For anything on the open web, call `web_search` first — it's the fast, cheap
-  way to find facts and URLs.
-- Escalate to the browser when search isn't enough: if `web_search` errors or
-  comes back thin, or you need to actually read or interact with a specific page
-  (paywalled, login required, a JavaScript app, or a multi-step flow), use the
-  `browser_*` tools to open and work the page directly.
-- Prefer `web_search` for quick lookups; reserve the browser for pages that
-  genuinely need loading or interaction (it's heavier).
+- To **find** information or a source you don't already have, use `web_search` —
+  it returns results and URLs.
+- To **read** a specific page you already have a URL for (including a `web_search`
+  result), use `es_web_fetch(url)` — a fast, light read of the page text.
+- **Escalate to the browser** (`browser_*`) when `es_web_fetch` errors or comes
+  back thin/empty (JavaScript-rendered, paywalled, login-gated), or when the task
+  needs interaction (clicking, forms, multi-step). The browser is heavier — use it
+  only when the light read isn't enough.
 
 ### Who is who
 
