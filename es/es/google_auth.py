@@ -10,7 +10,10 @@ from googleapiclient.discovery import build
 
 # Union of scopes for all enabled Google capabilities. Append here when adding
 # a new Google capability (e.g. gmail.readonly for es mail) — then re-consent.
-GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar"]
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/contacts.readonly",
+]
 
 _DEFAULT_CREDS_PATH = "/opt/data/hermes/es/google-credentials.json"
 
@@ -34,3 +37,7 @@ def load_credentials():
 
 def calendar_service():
     return build("calendar", "v3", credentials=load_credentials(), cache_discovery=False)
+
+
+def people_service():
+    return build("people", "v1", credentials=load_credentials(), cache_discovery=False)

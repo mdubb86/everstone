@@ -31,7 +31,10 @@ def _gcal_config():
 
 
 # Keep in sync with es/es/google_auth.py: GOOGLE_SCOPES / _DEFAULT_CREDS_PATH
-GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar"]
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/contacts.readonly",
+]
 CREDS_PATH = Path(os.environ.get("ES_GOOGLE_CREDS_PATH", "/opt/data/hermes/es/google-credentials.json"))
 CALLBACK_PATH = "/oauth/google/callback"
 PORT = int(os.environ.get("EVERSTONE_GCAL_OAUTH_PORT", "8081"))
