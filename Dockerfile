@@ -71,14 +71,18 @@ RUN git clone --depth 1 --branch main \
         https://github.com/NousResearch/hermes-agent /usr/local/lib/hermes-agent
 WORKDIR /usr/local/lib/hermes-agent
 RUN uv venv && uv pip install -e '.[all]'
-# Telegram adapter (NOT in .[all]) + es CLI + access_hook plugin go into the venv
-# so Hermes runs one interpreter that can load the plugin (hermes_plugins entry
-# point) and resolve `es`.
+# Telegram adapter (NOT in .[all]) + es package + access_hook plugin go into the
+# venv so Hermes runs one interpreter that can load the plugin (hermes_plugins
+# entry point) and resolve `es`.
 RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python "python-telegram-bot>=21"
 COPY es /opt/es
 RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python /opt/es
 COPY access_hook /opt/access_hook
 RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python /opt/access_hook
+# typer powers the operator admin CLI (/scripts/everstone_cli.py → `esadmin`).
+# The agent-facing `es` CLI was removed, so `es` no longer carries typer; the
+# admin CLI still needs it, so install it directly into the venv.
+RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python "typer>=0.12"
 # ddgs (DuckDuckGo/multi-engine search) — the keyless web_search backend Hermes
 # auto-selects when no search API key is set (web_tools._ddgs_package_importable()).
 # Makes web_search work out-of-box; an operator's BRAVE_SEARCH_API_KEY env wins.
