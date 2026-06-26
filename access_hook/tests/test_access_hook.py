@@ -59,6 +59,13 @@ def test_group_blocks_non_es_tools():
         assert r is not None and "block" in str(r), tool
 
 
+def test_group_blocks_es_contacts_tools():
+    # Contacts are private: es_contacts_* is neither es_tasks_* nor es_cal_*,
+    # so it's blocked in groups (DM-only).
+    r = run_policy("es_contacts_search", "agent:main:telegram:group:-100")
+    assert r is not None and "block" in str(r)
+
+
 def test_supergroup_treated_same():
     assert run_policy("es_tasks_list", "agent:main:telegram:supergroup:-100") is None
     assert run_policy("es_notes_read", "agent:main:telegram:supergroup:-100") is not None
