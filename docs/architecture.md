@@ -24,10 +24,20 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   Alpine/musl. `HERMES_HOME=/opt/data/hermes` (the mounted state) is unchanged.
 - **Web UI = hermes-webui** (`nesquena/hermes-webui`), an **opt-in** s6 service: a
   browser UI that runs the agent **in-process** under the agent venv. It is served
-  by Caddy at the `:80` root (binds `127.0.0.1:8787`), and **bypasses the Telegram
-  allowlist + access_hook** (full agent tools), so it runs **only if `webui.password`
-  is set** in `config.yaml` — unset → the service stays idle (no restart-loop) and
-  Caddy's root returns a "web UI not enabled" page. Reach it over Tailscale only.
+  by Caddy under **`/hermes/`** (binds `127.0.0.1:8787`; Caddy strips the `/hermes`
+  prefix via `handle_path`, and the bare root and unmatched paths 302 to `/hermes/`),
+  and **bypasses the Telegram allowlist + access_hook** (full agent tools), so it runs
+  **only if `webui.password` is set** in `config.yaml` — unset → the service stays idle
+  (no restart-loop) and `/hermes/` returns a "web UI not enabled" page. Reach it over
+  Tailscale only. **It is mounted under a subpath (not root) on purpose:** the UI is a
+  PWA, and at the root its service worker (scope `/`) intercepted root-level browser
+  navigations — notably the OAuth callback `/oauth/google/callback` — and served its
+  offline shell, so the auth code never reached the listener. Under `/hermes/` the SW
+  scope is confined. No upstream patch is needed: hermes-webui is fully base-relative
+  (`<base href>` derived from the URL, relative manifest/SW/fetches), so it works behind
+  a prefix-stripping proxy. **Migration when cutting over an existing instance:** clear
+  site data once per browser (DevTools → Application → Clear site data) to evict the old
+  root-scoped service worker — a plain hard reload does not unregister it.
   Launched with `bootstrap.py --foreground` so s6 supervises `server.py` directly
   (without it, bootstrap double-forks and s6 restart-loops). `HERMES_WEBUI_AGENT_DIR=`
   the canonical checkout makes discovery work.
