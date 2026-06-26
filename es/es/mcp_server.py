@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
+import httpx
+import trafilatura
 
 from es import config
 from es.deeplink import build_deeplink
@@ -312,6 +314,41 @@ def es_notes_list(topic: Optional[str] = None, since: Optional[str] = None,
     """List journal entries (frontmatter summaries), filtered by topic link, since a
     date (YYYY-MM-DD), or a specific day."""
     return _notes_client().list_journal(topic=topic, since=since, day=day)
+
+
+_WEB_FETCH_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                 "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+_WEB_FETCH_TIMEOUT = 12.0
+_WEB_FETCH_THIN_CHARS = 300
+_WEB_FETCH_MAX_BYTES = 3_000_000
+
+
+def _http_get(url: str):
+    """Single seam for the HTTP GET (monkeypatched in tests)."""
+    with httpx.Client(follow_redirects=True, timeout=_WEB_FETCH_TIMEOUT,
+                      headers={"User-Agent": _WEB_FETCH_UA}) as client:
+        return client.get(url)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_web_fetch(url: str) -> dict:
+    """Fetch a URL and return its readable text (light; no browser, no key).
+    Returns {url, title, text, status, thin}. An error or thin=true means the
+    page couldn't be read lightly — escalate to the browser_* tools."""
+    resp = _http_get(url)
+    resp.raise_for_status()
+    ctype = str(resp.headers.get("content-type", "")).lower()
+    final_url = str(resp.url)
+    if "text/html" not in ctype:
+        return {"url": final_url, "title": "", "text": "", "status": resp.status_code,
+                "thin": True, "note": f"non-HTML content ({ctype or 'unknown'}); not extracted"}
+    html = resp.text[:_WEB_FETCH_MAX_BYTES]
+    text = trafilatura.extract(html) or ""
+    meta = trafilatura.extract_metadata(html)
+    title = (getattr(meta, "title", "") or "") if meta else ""
+    return {"url": final_url, "title": title, "text": text, "status": resp.status_code,
+            "thin": len(text) < _WEB_FETCH_THIN_CHARS}
 
 
 def main() -> None:

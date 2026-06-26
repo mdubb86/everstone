@@ -349,3 +349,46 @@ def test_es_cal_conflicts_empty_when_disjoint(fake_svc):
     fake_svc.events.return_value.list.return_value.execute.return_value = _events([a, b])
     out = mcp_server.es_cal_conflicts("2026-06-08", "2026-06-09", "Family")
     assert out["data"] == []
+
+
+# ── es_web_fetch tool ───────────────────────────────────────────────────────
+
+import httpx as _httpx
+from types import SimpleNamespace
+
+
+def _fake_resp(status=200, ctype="text/html; charset=utf-8", text="", url="https://ex.com/a"):
+    def raise_for_status():
+        if status >= 400:
+            raise _httpx.HTTPStatusError("err", request=None, response=None)
+    return SimpleNamespace(status_code=status, headers={"content-type": ctype},
+                           text=text, url=url, raise_for_status=raise_for_status)
+
+
+def test_es_web_fetch_ok(monkeypatch):
+    html = "<html><head><title>Hello</title></head><body>" + ("word " * 200) + "</body></html>"
+    monkeypatch.setattr("es.mcp_server._http_get", lambda u: _fake_resp(text=html))
+    out = mcp_server.es_web_fetch("https://ex.com/a")
+    assert out["ok"] is True
+    assert out["data"]["thin"] is False
+    assert out["data"]["text"] and "word" in out["data"]["text"]
+
+
+def test_es_web_fetch_thin(monkeypatch):
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(text="<html><body>hi</body></html>"))
+    out = mcp_server.es_web_fetch("https://ex.com/a")
+    assert out["ok"] is True and out["data"]["thin"] is True
+
+
+def test_es_web_fetch_non2xx_is_error(monkeypatch):
+    monkeypatch.setattr("es.mcp_server._http_get", lambda u: _fake_resp(status=403))
+    out = mcp_server.es_web_fetch("https://ex.com/a")
+    assert out["ok"] is False and "error" in out
+
+
+def test_es_web_fetch_non_html_skips_extract(monkeypatch):
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="application/pdf", text="%PDF..."))
+    out = mcp_server.es_web_fetch("https://ex.com/a.pdf")
+    assert out["ok"] is True and out["data"]["text"] == "" and out["data"]["thin"] is True
