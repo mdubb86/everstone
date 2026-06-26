@@ -88,6 +88,7 @@ def test_generate_agents_md_platform_only(tmp_path):
         # MCP-tool reality: the agent acts through es_* tools, not a shell/CLI.
         assert "es_tasks_" in body
         assert "es_notes_" in body
+        assert "es_contacts_search" in body
         assert "es tasks" not in body                  # no CLI invocation
         assert "there is no MCP" not in body           # stale claim gone
         assert "read_file" not in body                 # no file-tool guidance

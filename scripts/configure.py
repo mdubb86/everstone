@@ -167,6 +167,8 @@ access. Your EverStone capabilities:
   delete). (Present only if Google Calendar is configured.)
 - **Notes** — the `es_notes_*` tools (journal, topic, topics, read, list) over
   <name>'s Obsidian vault.
+- **Contacts** — the `es_contacts_search` tool: look up someone's phone, email,
+  or address from <name>'s Google contacts (read-only; DM only).
 Each tool returns a JSON object: check `ok`, then read `data` (or `error.code`).
 
 ### Tasks
