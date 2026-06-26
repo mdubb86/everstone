@@ -35,3 +35,39 @@ def test_supervised_services_up(everstone):
     ).stdout
     for svc in ("caddy", "couchdb", "radicale", "hermes", "livesync-bridge"):
         assert svc in out, f"service {svc} not running: {out}"
+
+
+def test_root_redirects_to_webui_subpath(everstone):
+    r = requests.get(f"{everstone['base_url']}/", timeout=5, allow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers.get("Location", "").endswith("/hermes/"), r.headers.get("Location")
+
+
+def test_unmatched_path_redirects_to_webui_subpath(everstone):
+    # Old root bookmarks (any unmatched path) land in the UI rather than 404.
+    r = requests.get(f"{everstone['base_url']}/nope", timeout=5, allow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers.get("Location", "").endswith("/hermes/"), r.headers.get("Location")
+
+
+def test_oauth_callback_not_swallowed_by_webui(everstone):
+    # The OAuth callback must keep its own route (-> auth listener on :8081), NOT
+    # fall into the /hermes/ catch-all. The auth listener isn't running in e2e, so
+    # Caddy 502s and handle_errors returns the friendly 200 page; the key assertion
+    # is that it is NOT a 302 redirect to /hermes/.
+    r = requests.get(
+        f"{everstone['base_url']}/oauth/google/callback",
+        timeout=5, allow_redirects=False,
+    )
+    assert r.status_code != 302, "OAuth callback was redirected — route lost to catch-all"
+
+
+def test_webui_subpath_proxied_not_redirected(everstone):
+    # Web UI is disabled in e2e (no webui.password) -> /hermes/ 502s -> handle_errors
+    # -> friendly "web UI not enabled" 200 page. The point: /hermes/ is PROXIED
+    # (reaches the webui handler), not redirected, and not a raw gateway error.
+    r = requests.get(
+        f"{everstone['base_url']}/hermes/", timeout=5, allow_redirects=False,
+    )
+    assert r.status_code == 200, r.status_code
+    assert "web UI not enabled" in r.text, r.text[:200]
