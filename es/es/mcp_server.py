@@ -14,7 +14,7 @@ import trafilatura
 
 from es import config
 from es.deeplink import build_deeplink
-from es.google_auth import calendar_service
+from es.google_auth import calendar_service, people_service
 from es.tasks_client import TasksClient
 from es.vault_client import VaultClient
 from es.capabilities import cal as cal_cap
@@ -349,6 +349,43 @@ def es_web_fetch(url: str) -> dict:
     title = (getattr(meta, "title", "") or "") if meta else ""
     return {"url": final_url, "title": title, "text": text, "status": resp.status_code,
             "thin": len(text) < _WEB_FETCH_THIN_CHARS}
+
+
+_CONTACTS_READ_MASK = "names,phoneNumbers,emailAddresses,addresses,organizations"
+
+
+def _contact_view(person: dict) -> dict:
+    """Flatten a People API Person into {name, phones, emails, addresses, org}."""
+    names = person.get("names") or []
+    orgs = person.get("organizations") or []
+    return {
+        "name": names[0].get("displayName", "") if names else "",
+        "phones": [p.get("value", "") for p in person.get("phoneNumbers") or []],
+        "emails": [e.get("value", "") for e in person.get("emailAddresses") or []],
+        "addresses": [a.get("formattedValue", "") for a in person.get("addresses") or []],
+        "org": orgs[0].get("name", "") if orgs else "",
+    }
+
+
+@mcp.tool()
+@mcp_envelope
+def es_contacts_search(query: str, max_results: int = 10) -> list:
+    """Search the owner's Google contacts (read-only). Returns a list of
+    {name, phones, emails, addresses, org}. Names/phones/emails/addresses are
+    lists (a contact may have several)."""
+    svc = people_service()
+    # People API quirk: searchContacts needs a primed cache. Issue a best-effort
+    # warm-up empty-query call first so the real query returns results.
+    try:
+        svc.people().searchContacts(
+            query="", pageSize=1, readMask=_CONTACTS_READ_MASK,
+        ).execute()
+    except Exception:  # noqa: BLE001 — warm-up is best-effort; ignore failures
+        pass
+    resp = svc.people().searchContacts(
+        query=query, pageSize=max_results, readMask=_CONTACTS_READ_MASK,
+    ).execute()
+    return [_contact_view(r["person"]) for r in resp.get("results", []) if r.get("person")]
 
 
 def main() -> None:

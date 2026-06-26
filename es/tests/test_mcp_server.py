@@ -392,3 +392,77 @@ def test_es_web_fetch_non_html_skips_extract(monkeypatch):
                         lambda u: _fake_resp(ctype="application/pdf", text="%PDF..."))
     out = mcp_server.es_web_fetch("https://ex.com/a.pdf")
     assert out["ok"] is True and out["data"]["text"] == "" and out["data"]["thin"] is True
+
+
+@pytest.fixture
+def fake_people(monkeypatch):
+    svc = MagicMock()
+    monkeypatch.setattr("es.mcp_server.people_service", lambda: svc)
+    return svc
+
+
+def _set_search_result(svc, results):
+    """Wire svc.people().searchContacts(...).execute() to return {"results": results}.
+
+    searchContacts is called more than once (a warm-up empty-query call precedes
+    the real query), so .execute() must keep returning the same payload.
+    """
+    svc.people.return_value.searchContacts.return_value.execute.return_value = {
+        "results": results
+    }
+
+
+def test_es_contacts_search_ok(fake_people):
+    _set_search_result(fake_people, [{"person": {
+        "names": [{"displayName": "Mom"}],
+        "phoneNumbers": [{"value": "555-1212"}],
+        "emailAddresses": [{"value": "mom@x.com"}],
+    }}])
+    out = mcp_server.es_contacts_search("mom")
+    assert out["ok"] is True
+    assert out["data"][0]["name"] == "Mom"
+    assert out["data"][0]["phones"] == ["555-1212"]
+    assert out["data"][0]["emails"] == ["mom@x.com"]
+    assert out["data"][0]["addresses"] == []
+    assert out["data"][0]["org"] == ""
+
+
+def test_es_contacts_search_passes_readmask_and_query(fake_people):
+    _set_search_result(fake_people, [])
+    mcp_server.es_contacts_search("alice", max_results=5)
+    _, kwargs = fake_people.people.return_value.searchContacts.call_args
+    assert kwargs["query"] == "alice"
+    assert kwargs["pageSize"] == 5
+    assert kwargs["readMask"] == (
+        "names,phoneNumbers,emailAddresses,addresses,organizations"
+    )
+
+
+def test_es_contacts_search_empty_results_ok(fake_people):
+    _set_search_result(fake_people, [])
+    out = mcp_server.es_contacts_search("nobody")
+    assert out["ok"] is True
+    assert out["data"] == []
+
+
+def test_es_contacts_search_maps_org_and_address(fake_people):
+    _set_search_result(fake_people, [{"person": {
+        "names": [{"displayName": "Bob Vance"}],
+        "addresses": [{"formattedValue": "123 Main St"}],
+        "organizations": [{"name": "Vance Refrigeration"}],
+    }}])
+    out = mcp_server.es_contacts_search("bob")
+    assert out["data"][0]["name"] == "Bob Vance"
+    assert out["data"][0]["addresses"] == ["123 Main St"]
+    assert out["data"][0]["org"] == "Vance Refrigeration"
+    assert out["data"][0]["phones"] == []
+    assert out["data"][0]["emails"] == []
+
+
+def test_es_contacts_search_warms_cache(fake_people):
+    """A warm-up empty-query call precedes the real query."""
+    _set_search_result(fake_people, [])
+    mcp_server.es_contacts_search("x")
+    calls = fake_people.people.return_value.searchContacts.call_args_list
+    assert len(calls) >= 2
+    assert calls[0].kwargs["query"] == ""
