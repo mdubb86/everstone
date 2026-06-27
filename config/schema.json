@@ -93,6 +93,16 @@
         }
       }
     },
+    "brave": {
+      "type": "object",
+      "description": "Optional Brave Search API key — enables the Brave web-search backend for the agent. Omit (or leave api_key null) to fall back to the keyless ddgs backend.",
+      "properties": {
+        "api_key": {
+          "type": ["string", "null"],
+          "description": "Brave Search API key (https://brave.com/search/api/). The free tier works. Wired into Hermes as BRAVE_SEARCH_API_KEY. Stays in your local config.yaml — never check in."
+        }
+      }
+    },
     "gcalcli": {
       "type": ["object", "null"],
       "description": "Optional Google Calendar access via the `gcalcli` CLI. Omit / null to disable (agent gets no calendar access). When set, the agent can read + write calendars listed in `calendars`. Auth is one-time interactive: `everstone auth gcal`.",

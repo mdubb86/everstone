@@ -85,6 +85,24 @@ if [ -n "$GH_TOKEN" ]; then
     echo "[setup_hermes] git configured to use GH_TOKEN for github.com clones"
 fi
 
+# Brave Search API key: config.yaml is authoritative (key `brave.api_key`). Wire
+# it into the profile .env as BRAVE_SEARCH_API_KEY — the env var Hermes' web_tools
+# backend selector checks to pick the Brave backend (else it falls back to the
+# keyless ddgs backend). Runs EVERY start (not just first-create) so existing
+# profiles pick up config changes; an empty/removed key clears the line.
+BRAVE_ENV="/opt/data/hermes/profiles/everstone/.env"
+BRAVE_KEY="$(config-get brave.api_key)"
+if [ -f "$BRAVE_ENV" ]; then
+    grep -v '^BRAVE_SEARCH_API_KEY=' "$BRAVE_ENV" > "$BRAVE_ENV.tmp" && mv "$BRAVE_ENV.tmp" "$BRAVE_ENV"
+fi
+if [ -n "$BRAVE_KEY" ]; then
+    mkdir -p "$(dirname "$BRAVE_ENV")"
+    printf 'BRAVE_SEARCH_API_KEY=%s\n' "$BRAVE_KEY" >> "$BRAVE_ENV"
+    echo "[setup_hermes] wired BRAVE_SEARCH_API_KEY from config.brave.api_key"
+else
+    echo "[setup_hermes] brave.api_key unset — web_search uses keyless ddgs backend"
+fi
+
 # Note: SOUL.md is rendered + overwritten above (via render_soul.py) on every
 # container start from config.yaml's `agent.soul`. To customize, edit that field,
 # not the profile's SOUL.md directly.

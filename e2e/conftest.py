@@ -30,6 +30,8 @@ obsidian:
 telegram:
   owner_user_id: 123456
   bot_token: TEST_TOKEN
+brave:
+  api_key: test-brave-key-e2e
 """)
 
 @pytest.fixture(scope="session")

@@ -233,3 +233,13 @@ def test_config_schema_has_no_hermes_section():
     assert "hermes" not in schema.get("required", []), "hermes must be removed from required"
 
 
+def test_config_schema_has_brave_api_key():
+    import json, pathlib
+    schema = json.loads((pathlib.Path(__file__).parents[2] / "config/schema.json").read_text())
+    brave = schema["properties"].get("brave")
+    assert brave is not None, "brave section missing from schema"
+    assert "api_key" in brave["properties"], "brave.api_key missing from schema"
+    # Optional, like github — never required.
+    assert "brave" not in schema.get("required", [])
+
+

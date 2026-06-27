@@ -120,8 +120,16 @@ hermes:
 # github:
 #   token: ghp_xxxxxxxxxxxxxxxxxxxx
 
-# Optional: hermes-webui — a browser UI for the agent, served at the server root
-# (reach it over Tailscale/LAN). It talks to the agent IN-PROCESS, so it has
+# Optional: Brave Search API key — enables the Brave web-search backend for the
+# agent's `web_search`. The free tier works. Omit (or leave null) and the agent
+# falls back to the keyless ddgs backend. Get a key at https://brave.com/search/api/.
+#
+# brave:
+#   api_key: BSA_xxxxxxxxxxxxxxxxxxxx
+
+# Optional: hermes-webui — a browser UI for the agent, served under /hermes/
+# (the bare root redirects there; reach it over Tailscale/LAN). It talks to the
+# agent IN-PROCESS, so it has
 # FULL agent tools (shell, files) — owner-DM-equivalent, bypassing the Telegram
 # allowlist. Therefore:
 #   - Set a STRONG password to ENABLE it. Leaving it unset DISABLES the web UI.
