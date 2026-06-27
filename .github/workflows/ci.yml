@@ -1,0 +1,35 @@
+name: CI
+
+# Fast validation on every main push + PR — catches code/test breakage BEFORE a
+# release tag triggers the (heavy) image build. This does NOT build or publish the
+# image; the release workflow (build.yml, on v* tags) is the only thing that does.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install es + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./es
+          pip install pytest radicale requests jsonschema
+
+      - name: es tests
+        run: pytest es/tests -q
+
+      - name: scripts tests
+        run: PYTHONPATH=scripts pytest scripts/tests -q
