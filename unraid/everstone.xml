@@ -16,11 +16,11 @@ After it boots, finish the one-time setup: set the model with `esadmin model &lt
 &#xD;
 Do NOT expose this to the internet — front it with your own HTTPS reverse proxy or Tailscale. Full deployment guide: https://github.com/mdubb86/everstone/blob/main/docs/BOOTSTRAP.md</Overview>
   <Category>Productivity: Network:Other</Category>
-  <WebUI>http://[IP]:[PORT:80]/</WebUI>
+  <WebUI>http://[IP]:[PORT:80]/hermes/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/mdubb86/everstone/main/unraid/everstone.xml</TemplateURL>
   <Icon></Icon>
   <Date>2026-06-15</Date>
-  <Config Name="Web / CalDAV / Sync port" Target="80" Default="8580" Mode="tcp" Description="Host port mapped to the container's Caddy (:80) — serves the web UI (if enabled) at /, CalDAV at /caldav, CouchDB/LiveSync at /db, and the Google OAuth callback. Point your reverse proxy / Tailscale at this port. Unraid's own UI uses 80/443, so pick a high port (e.g. 8580)." Type="Port" Display="always" Required="true" Mask="false">8580</Config>
+  <Config Name="Web / CalDAV / Sync port" Target="80" Default="8580" Mode="tcp" Description="Host port mapped to the container's Caddy (:80) — serves the web UI (if enabled) at /hermes/ (the bare root redirects there), CalDAV at /caldav, CouchDB/LiveSync at /db, and the Google OAuth callback at /oauth/google/callback. Point your reverse proxy / Tailscale at this port. Unraid's own UI uses 80/443, so pick a high port (e.g. 8580)." Type="Port" Display="always" Required="true" Mask="false">8580</Config>
   <Config Name="config.yaml (CREATE THIS FILE FIRST)" Target="/opt/config.yaml" Default="/mnt/user/appdata/everstone/config.yaml" Mode="ro" Description="Your EverStone configuration and secrets. Create this file BEFORE starting: copy config.example.yaml from the repo, fill it in, and save it at this exact host path. If it does not exist, Docker will create a directory here and the container will fail. Mounted read-only." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/everstone/config.yaml</Config>
   <Config Name="Data" Target="/opt/data" Default="/mnt/user/appdata/everstone/data" Mode="rw" Description="Persistent state: CouchDB, the Obsidian vault, Radicale tasks, the Hermes profile + sessions, web-UI state, and backups. Preserve this across upgrades." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/everstone/data</Config>
 </Container>

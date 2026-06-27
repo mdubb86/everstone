@@ -23,6 +23,48 @@ default:
 build:
     docker build -t {{IMAGE}} .
 
+# CI (.github/workflows/build.yml) publishes ghcr.io/mdubb86/everstone on push:
+# :latest on main, plus :X.Y.Z and :X.Y for a tag. Unraid pulls :latest.
+# Cut a semver release: prompt for the bump, tag vX.Y.Z, push main + tag.
+release:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{justfile_directory()}}"
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    if [ "$branch" != "main" ]; then echo "Not on main (on '$branch')."; exit 1; fi
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "Working tree not clean — commit, gitignore, or remove everything first:"
+        git status --short; exit 1
+    fi
+    current=$(git tag --sort=-v:refname | head -1)
+    if [ -z "$current" ]; then current="v0.0.0"; fi
+    echo "Current latest tag: $current"
+    cur=${current#v}
+    IFS=. read -r MA MI PA <<<"$cur"
+    printf "Bump:\n  1) major  -> v%s.0.0\n  2) minor  -> v%s.%s.0\n  3) patch  -> v%s.%s.%s\n  4) custom\n" \
+        "$((MA+1))" "$MA" "$((MI+1))" "$MA" "$MI" "$((PA+1))"
+    read -rp "Choice [3]: " choice
+    if [ -z "$choice" ]; then choice=3; fi
+    case "$choice" in
+        1) new="$((MA+1)).0.0";;
+        2) new="$MA.$((MI+1)).0";;
+        3) new="$MA.$MI.$((PA+1))";;
+        4) read -rp "Version (X.Y.Z, no leading v): " new;;
+        *) echo "Invalid choice."; exit 1;;
+    esac
+    if ! [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "Not semver: $new"; exit 1; fi
+    tag="v$new"
+    if git rev-parse "$tag" >/dev/null 2>&1; then echo "Tag $tag already exists."; exit 1; fi
+    echo
+    echo "Will push main, then tag $tag and push it."
+    echo "CI publishes ghcr.io/mdubb86/everstone:latest + :$new (+ :${new%.*}). Unraid pulls :latest."
+    read -rp "Proceed? [y/N] " ok
+    case "$ok" in [yY]) ;; *) echo "Aborted."; exit 1;; esac
+    git push origin main
+    git tag -a "$tag" -m "Release $tag"
+    git push origin "$tag"
+    echo "Done. Watch: https://github.com/mdubb86/everstone/actions"
+
 # Start the dev container on :80 (with persistent ./.everstone-data)
 dev: build _check-config
     mkdir -p {{DATA_DIR}}
