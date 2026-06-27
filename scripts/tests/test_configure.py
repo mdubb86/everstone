@@ -48,6 +48,10 @@ def test_generate_livesync_bridge_config(tmp_path):
         assert "name" in couchdb_peer and "name" in storage_peer
         assert storage_peer["baseDir"] == "/opt/data/vault/"
         assert couchdb_peer["group"] == storage_peer["group"]
+        # Reliable sync of es-notes writes: reconcile the vault on every (re)start,
+        # and use chokidar so writes into freshly-created subdirs aren't dropped.
+        assert storage_peer["scanOfflineChanges"] is True
+        assert storage_peer["useChokidar"] is True
     finally:
         del os.environ["EVERSTONE_CONFIG_DIR"]
 

@@ -357,6 +357,20 @@ def generate_livesync_bridge_config(config: dict) -> None:
                 "name": "vault",
                 "group": "everstone",
                 "baseDir": "/opt/data/vault/",
+                # Reconcile the on-disk vault against CouchDB on every (re)start.
+                # Defaults off (the bridge logs "[vault] Scan offline changes:
+                # Disabled"); without it, any file the live watcher missed — e.g. a
+                # note es-notes wrote while the bridge was stalled/down — is never
+                # pushed, and a restart won't recover it. With it on, startup does a
+                # filesystem walk() and pushes anything CouchDB is missing.
+                "scanOfflineChanges": True,
+                # Use chokidar instead of Deno's native recursive watcher. The native
+                # watcher is unreliable for subdirectories created AFTER the watch
+                # starts, and es-notes creates them constantly (journal/YYYY-MM-DD/ is
+                # new every day, topics/ on first note), so live writes into a fresh
+                # subdir get silently dropped. chokidar watches new subdirs correctly.
+                # (Statically imported by the bridge, so it's pre-cached in the image.)
+                "useChokidar": True,
             },
         ]
     }
