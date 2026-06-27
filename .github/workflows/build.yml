@@ -60,6 +60,10 @@ jobs:
             type=raw,value=latest
             type=sha
 
+      - name: Short commit SHA
+        id: gitsha
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
@@ -68,5 +72,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Baked into the image and served at /version. github.ref_name is the
+          # v* tag (this workflow only runs on tags); gitsha is the short commit.
+          build-args: |
+            EVERSTONE_VERSION=${{ github.ref_name }}
+            EVERSTONE_COMMIT=${{ steps.gitsha.outputs.short }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

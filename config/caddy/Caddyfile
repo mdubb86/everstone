@@ -3,6 +3,15 @@
 		respond "OK" 200
 	}
 
+	# Build identity, baked into the image (ENV EVERSTONE_VERSION / _COMMIT) and
+	# read at request time via Caddy's {env.*} placeholders — no rebuild needed
+	# to reflect a different running image. Plain text/JSON, no auth (same as
+	# /health). e.g. {"version":"v0.2.0","commit":"abc1234"}.
+	handle_path /version {
+		header Content-Type application/json
+		respond `{"version":"{env.EVERSTONE_VERSION}","commit":"{env.EVERSTONE_COMMIT}"}` 200
+	}
+
 	handle_path /db/* {
 		reverse_proxy localhost:5984 {
 			flush_interval -1

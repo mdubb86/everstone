@@ -21,7 +21,10 @@ default:
 
 # Build the image
 build:
-    docker build -t {{IMAGE}} .
+    docker build -t {{IMAGE}} \
+        --build-arg EVERSTONE_VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)" \
+        --build-arg EVERSTONE_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+        .
 
 # CI (.github/workflows/build.yml) publishes ghcr.io/mdubb86/everstone on push:
 # :latest on main, plus :X.Y.Z and :X.Y for a tag. Unraid pulls :latest.

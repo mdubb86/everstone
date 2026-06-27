@@ -217,6 +217,14 @@ ENV HERMES_HOME=/opt/data/hermes
 # (localhost:9377). Setting CAMOFOX_URL is what makes Hermes's is_camofox_mode()
 # active, so the browser toolset drives Camoufox instead of a Chromium engine.
 ENV CAMOFOX_URL=http://localhost:9377
+# Release identity, baked at build time: CI passes the v* tag + short sha; local
+# `just build` passes `git describe`/`rev-parse`. Served at /version via Caddy's
+# {env.EVERSTONE_VERSION} / {env.EVERSTONE_COMMIT} placeholders. Defaults make a
+# plain `docker build` still produce a valid (if vague) /version response.
+ARG EVERSTONE_VERSION=dev
+ARG EVERSTONE_COMMIT=unknown
+ENV EVERSTONE_VERSION=$EVERSTONE_VERSION
+ENV EVERSTONE_COMMIT=$EVERSTONE_COMMIT
 ENTRYPOINT ["/scripts/entrypoint"]
 EXPOSE 80
 VOLUME ["/opt/config.yaml", "/opt/data"]

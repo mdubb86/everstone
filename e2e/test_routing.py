@@ -8,6 +8,17 @@ def test_health(everstone):
     assert r.status_code == 200 and r.text.strip() == "OK"
 
 
+def test_version(everstone):
+    # /version is baked at build time (just build passes git describe + short sha)
+    # and served as JSON. Values vary per build, so assert structure + non-empty.
+    r = requests.get(f"{everstone['base_url']}/version", timeout=5)
+    assert r.status_code == 200, r.status_code
+    assert "application/json" in r.headers.get("Content-Type", ""), r.headers
+    body = r.json()
+    assert body.get("version"), body
+    assert body.get("commit"), body
+
+
 def test_caldav_reachable(everstone):
     # Radicale returns 302/207/401 depending on path — anything non-5xx means it's up
     r = requests.get(
