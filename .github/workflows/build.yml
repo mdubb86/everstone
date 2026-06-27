@@ -49,11 +49,16 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # A v0.1.1 tag produces: :0.1.1 (full version), :0.1 (major.minor),
+          # :latest (always the newest release), and :sha-<short> (exact commit).
+          # IMPORTANT: every line below must be a bare `type=...` spec — metadata-action
+          # treats an inline `#` as part of the value, not a comment (it does NOT parse
+          # YAML comments inside this block scalar). Keep docs out here, above `tags:`.
           tags: |
-            type=semver,pattern={{version}}          # :0.1.0
-            type=semver,pattern={{major}}.{{minor}}   # :0.1
-            type=raw,value=latest                     # :latest tracks the newest release
-            type=sha                                  # :sha-<short>
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+            type=sha
 
       - name: Build and push
         uses: docker/build-push-action@v7
