@@ -351,6 +351,24 @@ def generate_livesync_bridge_config(config: dict) -> None:
                 "passphrase": config["livesync"]["passphrase"],
                 "obfuscatePassphrase": config["livesync"]["passphrase"],
                 "baseDir": "",
+                # Chunking/E2EE tweaks MUST match the plugin's settings (the conf
+                # in config/setup-obsidian-livesync, which the plugins adopt as
+                # their tweak_values). The bridge reads these only from its config
+                # — never from the remote tweak_values — and otherwise falls back
+                # to library defaults (customChunkSize 0, chunkSplitterVersion "").
+                # A mismatch makes the bridge split/hash notes differently than the
+                # plugins (e.g. a 1.7 KB note into 22 tiny chunks), breaking chunk
+                # dedup and round-trips. Keep this block in sync with that script.
+                "customChunkSize": 60,
+                "minimumChunkSize": 20,
+                "chunkSplitterVersion": "v3-rabin-karp",
+                "hashAlg": "xxhash64",
+                "E2EEAlgorithm": "v2",
+                "useEden": False,
+                "enableCompression": False,
+                "handleFilenameCaseSensitive": False,
+                "doNotUseFixedRevisionForChunks": True,
+                "useDynamicIterationCount": False,
             },
             {
                 "type": "storage",

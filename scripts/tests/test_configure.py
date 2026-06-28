@@ -52,6 +52,13 @@ def test_generate_livesync_bridge_config(tmp_path):
         # and use chokidar so writes into freshly-created subdirs aren't dropped.
         assert storage_peer["scanOfflineChanges"] is True
         assert storage_peer["useChokidar"] is True
+        # The bridge reads chunk/E2EE tweaks only from its own config (never the
+        # remote tweak_values), so they must match the plugin's settings in
+        # config/setup-obsidian-livesync or the bridge chunks/hashes differently.
+        assert couchdb_peer["customChunkSize"] == 60
+        assert couchdb_peer["chunkSplitterVersion"] == "v3-rabin-karp"
+        assert couchdb_peer["doNotUseFixedRevisionForChunks"] is True
+        assert couchdb_peer["handleFilenameCaseSensitive"] is False
     finally:
         del os.environ["EVERSTONE_CONFIG_DIR"]
 
