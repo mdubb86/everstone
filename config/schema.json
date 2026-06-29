@@ -52,7 +52,8 @@
       "type": "object",
       "required": ["passphrase"],
       "properties": {
-        "passphrase": { "type": "string", "minLength": 1 }
+        "passphrase": { "type": "string", "minLength": 1 },
+        "tweaks": { "type": "object" }
       }
     },
     "obsidian": {

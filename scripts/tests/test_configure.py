@@ -10,7 +10,7 @@ SAMPLE = {
   "agent": {"name": "Jarvis", "soul": "I am <agent.name>, in <name>'s hub. Vault: <obsidian.vault_name>.", "skills": []},
   "couchdb": {"user":"u","password":"p","database":"vault"},
   "caldav": {"user":"cu","password":"cp"},
-  "livesync": {"passphrase":"ph"},
+  "livesync": {"passphrase":"ph", "tweaks": {"customChunkSize":60, "chunkSplitterVersion":"v3-rabin-karp", "hashAlg":"xxhash64", "doNotUseFixedRevisionForChunks":True, "handleFilenameCaseSensitive":False}},
   "obsidian": {"vault_name":"myvault"},
   "telegram": {"owner_user_id":111,"bot_token":"TKN","commands":[]},
 }
@@ -52,9 +52,10 @@ def test_generate_livesync_bridge_config(tmp_path):
         # and use chokidar so writes into freshly-created subdirs aren't dropped.
         assert storage_peer["scanOfflineChanges"] is True
         assert storage_peer["useChokidar"] is True
-        # The bridge reads chunk/E2EE tweaks only from its own config (never the
-        # remote tweak_values), so they must match the plugin's settings in
-        # config/setup-obsidian-livesync or the bridge chunks/hashes differently.
+        # Bridge aligns to the plugins' chunk/E2EE format at runtime via
+        # useRemoteTweaks, and seeds the same canonical values (defaults.yaml
+        # livesync.tweaks) for cold start — single source of truth, no drift.
+        assert couchdb_peer["useRemoteTweaks"] is True
         assert couchdb_peer["customChunkSize"] == 60
         assert couchdb_peer["chunkSplitterVersion"] == "v3-rabin-karp"
         assert couchdb_peer["doNotUseFixedRevisionForChunks"] is True

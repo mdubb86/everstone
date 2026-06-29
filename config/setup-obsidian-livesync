@@ -63,8 +63,14 @@ async function main() {
 
     const uri_passphrase = friendlyString();
 
-    // Conf shape matches upstream `generate_setupuri.ts` plus Config Doctor's
-    // current recommendations (chunk size 60, v3 splitter, usePluginSyncV2).
+    // The chunk/E2EE *format* tweaks (customChunkSize, chunkSplitterVersion,
+    // hashAlg, ...) are injected from defaults.yaml `livesync.tweaks` so every
+    // device — and the bridge — share one canonical definition and can't drift.
+    // The fields below are plugin *behaviour* defaults (not format), kept here.
+    // readChunksOnline:false keeps every device eager/offline-capable; lower a
+    // single device's syncMaxSizeInMB (or flip this) per-device for a phone that
+    // shouldn't pull large attachments.
+    const formatTweaks = {{LIVESYNC_TWEAKS_JSON}};
     const conf = {
         couchDB_URI,
         couchDB_USER: username,
@@ -82,17 +88,15 @@ async function main() {
         batches_limit: 50,
         useHistory: true,
         disableRequestURI: true,
-        customChunkSize: 60,
         usePluginSyncV2: true,
-        chunkSplitterVersion: "v3-rabin-karp",
         syncMode: "LIVESYNC",
         syncAfterMerge: false,
         concurrencyOfReadChunksOnline: 100,
         minimumIntervalOfReadChunksOnline: 100,
-        handleFilenameCaseSensitive: false,
-        doNotUseFixedRevisionForChunks: true,
+        readChunksOnline: false,
         settingVersion: 10,
         notifyThresholdOfRemoteStorageSize: 800,
+        ...formatTweaks,
     };
 
     const encryptedConf = encodeURIComponent(

@@ -97,6 +97,9 @@ def generate_setup_livesync_script(config: dict) -> None:
     result = result.replace("{{COUCHDB_DATABASE}}", config["couchdb"]["database"])
     result = result.replace("{{LIVESYNC_PASSPHRASE}}", config["livesync"]["passphrase"])
     result = result.replace("{{PUBLIC_URL}}", config["public_url"].rstrip("/"))
+    # Same canonical chunk/E2EE tweaks the bridge gets (defaults.yaml
+    # livesync.tweaks), so the URI provisions plugins identically to the bridge.
+    result = result.replace("{{LIVESYNC_TWEAKS_JSON}}", json.dumps(config["livesync"]["tweaks"]))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(result)
@@ -351,24 +354,17 @@ def generate_livesync_bridge_config(config: dict) -> None:
                 "passphrase": config["livesync"]["passphrase"],
                 "obfuscatePassphrase": config["livesync"]["passphrase"],
                 "baseDir": "",
-                # Chunking/E2EE tweaks MUST match the plugin's settings (the conf
-                # in config/setup-obsidian-livesync, which the plugins adopt as
-                # their tweak_values). The bridge reads these only from its config
-                # — never from the remote tweak_values — and otherwise falls back
-                # to library defaults (customChunkSize 0, chunkSplitterVersion "").
-                # A mismatch makes the bridge split/hash notes differently than the
-                # plugins (e.g. a 1.7 KB note into 22 tiny chunks), breaking chunk
-                # dedup and round-trips. Keep this block in sync with that script.
-                "customChunkSize": 60,
-                "minimumChunkSize": 20,
-                "chunkSplitterVersion": "v3-rabin-karp",
-                "hashAlg": "xxhash64",
-                "E2EEAlgorithm": "v2",
-                "useEden": False,
-                "enableCompression": False,
-                "handleFilenameCaseSensitive": False,
-                "doNotUseFixedRevisionForChunks": True,
-                "useDynamicIterationCount": False,
+                # Stay aligned with the plugins' chunk/E2EE format. At runtime the
+                # bridge adopts the canonical tweak_values the clients maintain in
+                # the remote DB (useRemoteTweaks, applied on (re)start). The spread
+                # seeds those same values from defaults.yaml livesync.tweaks —
+                # identical to the setup URI — so a cold-started bridge, before any
+                # client has connected to write tweak_values, still produces the
+                # correct chunk format. Without this the bridge falls back to lib
+                # defaults (customChunkSize 0, chunkSplitterVersion "") and silently
+                # over-chunks/bloats. One source of truth; they can't diverge.
+                "useRemoteTweaks": True,
+                **config["livesync"]["tweaks"],
             },
             {
                 "type": "storage",
