@@ -57,9 +57,10 @@ profile config directly. They survive reboots — EverStone won't overwrite them
 
 ## What EverStone provides as infrastructure (not Hermes config)
 
-- **`es`** — the agent tool-gateway CLI (`es cal`, `es tasks`); reads
-  `config.yaml` directly.
-- **access_hook** — the `pre_tool_call` plugin gating group chats to `es tasks`.
+- **`es-mcp`** — the agent's capability surface as an MCP server (the `es_tasks_*`,
+  `es_cal_*`, `es_notes_*`, contacts/web tools); registered under `mcp_servers:
+  everstone-es` and reads `config.yaml` directly.
+- **access_hook** — the `pre_tool_call` plugin gating group chats to tasks only.
 - **skills** (e.g. calendar), **`AGENTS.md`** (environment facts), and the
   gcal/CalDAV/`public_url` config consumed by `es`/auth/services.
 

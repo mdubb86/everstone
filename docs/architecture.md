@@ -42,49 +42,61 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   (without it, bootstrap double-forks and s6 restart-loops). `HERMES_WEBUI_AGENT_DIR=`
   the canonical checkout makes discovery work.
 
-## Agent tool surface — the `es` CLI
+## Agent tool surface — the `es` MCP server
 
-- **One agent-facing CLI, `es`** (Typer), is the sanctioned interface for every
-  EverStone capability. Capabilities are **Typer sub-apps** in an explicit
-  registry: `es tasks` (CalDAV) and `es cal` (Google Calendar). Adding a tool =
-  a new module + one mount line.
-- `es` **reads `/opt/config.yaml` directly** (no envdir for tools). Output is a
-  **JSON envelope** (`{"ok": true, "data": …}` / `{"ok": false, "error": {code,message}}`),
-  with `--pretty` for humans.
-- `es cal` → **Google Calendar API directly** (`google-api-python-client`);
-  gcalcli was dropped. `es tasks` → `es.tasks_client.TasksClient` (caldav), in-process.
-- **`es tasks` is a full CalDAV task model** — verbs `list`/`add`/`edit`/`done`/
-  `delete`/`lists`/`list-create`/`list-delete`/`clear`; flat lists with optional
-  **one-level subtasks** (`RELATED-TO;RELTYPE=PARENT`: `add --parent` files a child
-  in the parent's list, `edit --parent` re-parents/moves or detaches, `delete`
-  refuses a parent with children unless `--force` cascades; completion is
-  independent), `CATEGORIES` tags, `DUE`/`VALARM`, default list **`TODO`**. It is a **general mechanism** —
-  no list is special-cased in the CLI (spec D5); all task *policy* lives in three
-  skills: **`todos`** (the `TODO` catch-all; due/reminders/tags), **`shopping`**
-  (🛒-prefixed persistent store lists; clear-after-trip, never delete), and
-  **`checklists`** (ad-hoc lists; create→run-down→delete).
-- Kept **separate from the operator admin CLI `esadmin`** (ops: `status`/`logs`/
-  `restart`/`backup`/`sync-state`; plus `auth` (google only — `auth hermes` was
-  replaced by `model`)/`model`/`session`/`setup`/`calendars`/`chat`; source
-  `scripts/everstone_cli.py`). It's a deliberately **unified operator surface**
-  — it may include thin passthroughs to Hermes (`chat`, `session`) so there's
-  less to remember. Dev passthroughs: `just es <args>` runs the **agent** `es`;
-  `just esadmin <args>` runs the admin CLI; `just model <value>` runs
-  `esadmin model`. (The container name and the Hermes profile are both still
-  `everstone`.)
+- **The agent's EverStone capabilities are exposed as MCP tools**, served by a
+  **FastMCP** server in `es/es/mcp_server.py` (entry point `es-mcp`, registered in
+  the Hermes profile under `mcp_servers: everstone-es`). Hermes spawns it as a
+  subprocess and calls its tools. There is **no `es` CLI** — the agent is **"locked"**
+  to this curated tool set (terminal/file toolsets are dropped), so the exposed tools
+  *are* the capability boundary, not just a convention. Adding a capability = a new
+  `@mcp.tool()` in the server backed by a thin client module.
+- Tools, by capability:
+  - **Tasks** — `es_tasks_*` (list/add/edit/done/delete/lists/list_create/
+    list_delete/clear), backed by `es.tasks_client.TasksClient` (caldav, in-process).
+  - **Calendar** — `es_cal_*` (agenda/search/conflicts/add/edit/delete) → **Google
+    Calendar API directly** (`google-api-python-client`); gcalcli was dropped.
+  - **Notes** — `es_notes_*` (journal/topic/topics/read/list) → the Obsidian vault
+    via `es.vault_client.VaultClient` (see "Notes vault & LiveSync" below).
+  - **Contacts / web** — `es_contacts_search` (read-only Google contacts) and a
+    web-fetch tool (`trafilatura`).
+- Every tool returns a **JSON envelope** (`{"ok": true, "data": …}` /
+  `{"ok": false, "error": {code,message}}`). The server **reads `/opt/config.yaml`
+  directly** (no envdir).
+- **`es_tasks_*` is a full CalDAV task model** — flat lists with optional **one-level
+  subtasks** (`RELATED-TO;RELTYPE=PARENT`: `add(parent=…)` files a child in the
+  parent's list, `edit(parent=…)` re-parents/detaches, `delete` refuses a parent
+  with children unless `force` cascades; completion is independent), `CATEGORIES`
+  tags, `DUE`/`VALARM`, default list **`TODO`**. It is a **general mechanism** — no
+  list is special-cased in code; all task *policy* lives in skills: **`todos`** (the
+  `TODO` catch-all), **`shopping`** (🛒-prefixed persistent lists; clear-after-trip,
+  never delete), **`checklists`** (ad-hoc; create→run-down→delete), and
+  **`note-taking`** (journal-vs-topic routing for the vault).
+- The capability server is kept **separate from the operator admin CLI `esadmin`**
+  (`scripts/everstone_cli.py`, Typer): `status`/`logs`/`restart`/`backup`/
+  `sync-state`; plus `auth` (google only — `auth hermes` was replaced by `model`)/
+  `model`/`session`/`setup`/`calendars`/`chat`. `esadmin` is the **operator**
+  surface; the `es_*` tools are the **agent** surface. Dev passthroughs:
+  `just esadmin <args>` and `just model <value>` (= `esadmin model`). (The container
+  name and the Hermes profile are both `everstone`.)
+- **History:** EverStone was originally CLI-first (an `es` Typer CLI invoked through
+  Hermes' terminal tool). It was migrated to **MCP-only** specifically to *lock* the
+  agent to a curated surface — the fault-isolation that made the CLI-as-subprocess
+  design attractive is preserved (the MCP server is still a separate process), while
+  dropping terminal/file access makes the tool set the security boundary.
 
-## Two integration surfaces — plugin (gate) vs CLI (worker)
+## Two integration surfaces — capability server (es) vs gate (access_hook)
 
 - **`access_hook`** is an in-process Hermes **`pre_tool_call` plugin**. It gates
-  tools by chat: DM = full trust; **groups = only `es tasks`** (argv check). It
-  must be in-process (it intercepts). It **fails CLOSED** in our code because
-  **Hermes is fail-OPEN on hook exceptions**. Verified to be a *complete*
-  chokepoint for the agent's tool calls (terminal, execute_code, MCP, plugin,
-  subagent). It is **not** the security floor — **container isolation** is.
-- **`es`** is an out-of-process **worker** (subprocess via the terminal tool),
-  so a hang/crash can't take down the gateway. This is why EverStone is
-  **CLI-first** (it earlier reverted an MCP approach): token-cheap, fault-isolated,
-  operator-runnable, decoupled from Hermes' (churny) plugin API.
+  tools by chat: DM = full trust; **groups = tasks only** (tool/argv check). It must
+  be in-process (it intercepts). It **fails CLOSED** in our code because **Hermes is
+  fail-OPEN on hook exceptions**. It is a *complete* chokepoint for the agent's tool
+  calls (MCP, plugin, subagent, …). It is **not** the security floor — **container
+  isolation** is.
+- **`es-mcp`** runs as a **separate subprocess** (the MCP server Hermes spawns), so a
+  hang/crash in a capability can't take down the gateway. The curated MCP tool set +
+  the dropped terminal/file toolsets are what make the agent "locked"; `access_hook`
+  then narrows that set further per chat type.
 
 ## Google auth
 
@@ -96,6 +108,32 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   callback, `scripts/auth_gcal.py`). `es` capabilities only *consume* the stored
   credential. `es` deps must include **`google-auth-oauthlib`** (the flow lib
   gcalcli used to provide).
+
+## Notes vault & LiveSync
+
+The `es_notes_*` tools write to an Obsidian vault on disk at `/opt/data/vault`
+(journal entries under `journal/YYYY-MM-DD/`, curated docs under `topics/`). That
+directory is the filesystem end of a three-link chain:
+
+`es_notes_* → /opt/data/vault → livesync-bridge ⇄ CouchDB ⇄ Obsidian (Self-hosted LiveSync)`
+
+- **livesync-bridge** (`vrtmrz/livesync-bridge`, an s6 service) mirrors the vault
+  directory ⇄ the CouchDB `everstone` DB; its config is generated by
+  `generate_livesync_bridge_config` in `scripts/configure.py`.
+- The bridge's storage peer **must** run with `useChokidar: true` and
+  `scanOfflineChanges: true`. The native Deno recursive watcher silently drops writes
+  into subdirectories created *after* it starts watching — and es-notes makes new
+  subdirs constantly (a fresh `journal/YYYY-MM-DD/` every day) — so chokidar handles
+  new subdirs and the offline scan reconciles on every (re)start as a safety net.
+  Without both, a note can land on disk yet never reach CouchDB/Obsidian.
+- The bridge reads its chunk/E2EE tweaks (`customChunkSize`, `chunkSplitterVersion`,
+  `handleFilenameCaseSensitive`, …) **only** from its own config — never the remote
+  `tweak_values` — so they must match the plugin settings baked into
+  `config/setup-obsidian-livesync`, or the bridge hashes/chunks content differently.
+- Gotcha: LiveSync's **remote-lock** (set by a "Rebuild") admits only the rebuilding
+  device to `accepted_nodes`; other devices stay blocked until they complete a Fetch.
+  A stale lock can wedge a device even when data is converged — it's clearable on the
+  milestone `_local` doc in CouchDB.
 
 ## Config & env model
 
@@ -170,12 +208,10 @@ pin + timeouts. (Currently live-set in the profile config — see follow-ups.)
 ## Open follow-ups
 
 - **Profile-local skills aren't version-controlled.** The agent skills (`calendar`,
-  `todos`, `shopping`, `checklists`) live in the profile data dir
-  (`$DATA_DIR/hermes/profiles/everstone/skills/<name>/SKILL.md`) — gitignored,
-  persisted via the host mount, lost if the data dir is wiped. Shipping the core
-  skills via the repo (e.g. a `skills/` dir installed at boot) for reproducibility
-  is a future decision; for now they're operator content per the "persist via
-  mount" preference.
-- `--pretty` is root-only (`es --pretty cal …`); make it per-verb (agents trail it).
+  `todos`, `shopping`, `checklists`, `note-taking`, `research`) live in the profile
+  data dir (`$DATA_DIR/hermes/profiles/everstone/skills/<name>/SKILL.md`) —
+  gitignored, persisted via the host mount, lost if the data dir is wiped. Shipping
+  the core skills via the repo (e.g. a `skills/` dir installed at boot) for
+  reproducibility is a future decision; for now they're operator content.
 - Bake the `auxiliary.vision` config into `setup_hermes` (currently only live-set
   in the data dir).

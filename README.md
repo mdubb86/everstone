@@ -6,14 +6,15 @@ to manage your calendar, tasks, and notes:
 
 - **Telegram** — you chat with the agent through your own private bot. Full tools in
   your DM; **tasks-only in any group chat**, enforced by a fail-closed access hook.
-- **Google Calendar** (`es cal`) — read/write events across your calendars.
-- **CalDAV tasks** via Radicale (`es tasks`) — to-dos, shopping lists, checklists,
-  due dates, reminders, and one level of subtasks. Syncs with apps like Tasks.org.
-- **Obsidian notes** via CouchDB + the LiveSync bridge.
+- **Google Calendar** (the `es_cal_*` tools) — read/write events across your calendars.
+- **CalDAV tasks** via Radicale (the `es_tasks_*` tools) — to-dos, shopping lists,
+  checklists, due dates, reminders, and one level of subtasks. Syncs with apps like Tasks.org.
+- **Obsidian notes** (the `es_notes_*` tools) via CouchDB + the LiveSync bridge.
 - **Caddy** reverse proxy and **s6** supervision tie it together.
 
-The agent works through a single auditable CLI, `es`, rather than ad-hoc shell, and its
-behavior is shaped by a small set of skills (to-dos, shopping, checklists, calendar).
+The agent acts through a curated set of **MCP tools** (`es_*`) — not ad-hoc shell — so the
+exposed tools are its capability boundary; its behavior is shaped by a small set of skills
+(to-dos, shopping, checklists, calendar, note-taking).
 
 ## Install
 
@@ -33,7 +34,7 @@ gitignored.
 
 | Path | What |
 |---|---|
-| `es/` | the `es` agent CLI (Typer) — `es cal`, `es tasks` |
+| `es/` | the `es` MCP server (FastMCP) — exposes the agent's `es_tasks_*` / `es_cal_*` / `es_notes_*` / contacts tools |
 | `access_hook/` | the fail-closed `pre_tool_call` hook that gates tools by chat type |
 | `scripts/` | setup / configure / admin (`esadmin`) + the Google OAuth helper |
 | `services/` | s6 service definitions (Hermes gateway, CouchDB, Radicale, Caddy, …) |
