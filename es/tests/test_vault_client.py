@@ -64,7 +64,7 @@ def test_write_journal_creates_dated_file(vc, tmp_path, monkeypatch):
     monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-06-21T14:32")
     out = vc.write_journal("Update on EverStone notes model", "the body",
                            tags=["everstone"], topics=["EverStone"], meta=None)
-    p = tmp_path / "journal" / "2026-06-21" / "Update on EverStone notes model.md"
+    p = tmp_path / "Journal" / "2026-06-21" / "Update on EverStone notes model.md"
     assert p.exists()
     text = p.read_text()
     assert "the body" in text
@@ -84,14 +84,14 @@ def test_write_journal_collision_suffix(vc, tmp_path, monkeypatch):
 
 def test_write_topic_creates_empty(vc, tmp_path):
     out = vc.write_topic("Home network")
-    p = tmp_path / "topics" / "Home network.md"
+    p = tmp_path / "Topics" / "Home network.md"
     assert p.exists() and out["created"] is True
 
 
 def test_write_topic_sets_body(vc, tmp_path):
     vc.write_topic("Home network")
     out = vc.write_topic("Home network", body="Router in the closet.")
-    assert (tmp_path / "topics" / "Home network.md").read_text().strip() == "Router in the closet."
+    assert (tmp_path / "Topics" / "Home network.md").read_text().strip() == "Router in the closet."
     assert out["created"] is False
 
 
@@ -99,7 +99,7 @@ def test_write_topic_appends_update(vc, tmp_path, monkeypatch):
     monkeypatch.setattr(vault_client, "_today", lambda: "2026-06-21")
     vc.write_topic("Home network", body="State.")
     vc.write_topic("Home network", update="Swapped the router.")
-    text = (tmp_path / "topics" / "Home network.md").read_text()
+    text = (tmp_path / "Topics" / "Home network.md").read_text()
     assert "## Updates" in text
     assert "- 2026-06-21: Swapped the router." in text
     assert "State." in text
@@ -168,3 +168,43 @@ def test_list_journal_by_topic(vc, monkeypatch):
 def test_list_journal_since(vc, monkeypatch):
     _seed_two_days(vc, monkeypatch)
     assert [e["title"] for e in vc.list_journal(since="2026-06-21")] == ["Day21 entry"]
+
+
+def test_journal_folder_is_configurable(tmp_path, monkeypatch):
+    monkeypatch.setattr(vault_client, "_today", lambda: "2026-07-04")
+    monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-07-04T09:00")
+    vc = vault_client.VaultClient(tmp_path, "V", journal_folder="Diary")
+    vc.write_journal("Note", "b", tags=None, topics=None, meta=None)
+    assert (tmp_path / "Diary" / "2026-07-04" / "Note.md").exists()
+
+
+def test_write_topic_defaults_to_first_category(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics", "People"))
+    vc.write_topic("Kitchen fridge", body="state")
+    assert (tmp_path / "Topics" / "Kitchen fridge.md").exists()
+
+
+def test_write_topic_files_under_named_category(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics", "People"))
+    vc.write_topic("Allison", body="s", category="People")
+    assert (tmp_path / "People" / "Allison.md").exists()
+
+
+def test_write_topic_rejects_offlist_category(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    with pytest.raises(vault_client.InvalidCategory):
+        vc.write_topic("X", body="s", category="Projects")
+
+
+def test_write_topic_existing_updates_in_place_ignoring_category(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics", "People"))
+    vc.write_topic("Allison", body="s", category="People")
+    vc.write_topic("Allison", update="note")  # no category → must find existing in People
+    assert "note" in (tmp_path / "People" / "Allison.md").read_text()
+    assert not (tmp_path / "Topics" / "Allison.md").exists()
+
+
+def test_list_topics_scans_all_categories(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics", "People"))
+    vc.write_topic("Fridge"); vc.write_topic("Allison", category="People")
+    assert sorted(vc.list_topics()) == ["Allison", "Fridge"]

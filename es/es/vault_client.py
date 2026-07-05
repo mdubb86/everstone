@@ -29,6 +29,10 @@ class InvalidTopic(Exception):
     es_code = "invalid_topic"
 
 
+class InvalidCategory(Exception):
+    es_code = "invalid_category"
+
+
 def _sanitize_title(title: str) -> str:
     """Keep spaces/unicode; strip filesystem-illegal chars. Collapse whitespace."""
     cleaned = ILLEGAL.sub("", title)
@@ -90,9 +94,12 @@ def _now_iso() -> str:
 
 
 class VaultClient:
-    def __init__(self, root, vault_name: str = ""):
+    def __init__(self, root, vault_name: str = "",
+                 journal_folder: str = "Journal", categories=("Topics",)):
         self.root = Path(root)
         self.vault_name = vault_name
+        self.journal_folder = journal_folder or "Journal"
+        self.categories = list(categories) if categories else ["Topics"]
 
     def _rel(self, path: Path) -> str:
         return str(path.relative_to(self.root))
@@ -108,22 +115,32 @@ class VaultClient:
         clean = _sanitize_title(title)
         if not clean:
             raise InvalidTopic(f"empty title after sanitization: {title!r}")
-        folder = self.root / "journal" / _today()
+        folder = self.root / self.journal_folder / _today()
         folder.mkdir(parents=True, exist_ok=True)
         fname = _unique_filename(folder, clean)
         fm = _render_frontmatter(_now_iso(), "everstone", tags or [], topics or [], meta or {})
         (folder / fname).write_text(fm + (body or "") + "\n")
         return self._result(folder / fname)
 
-    def _topic_path(self, name: str) -> Path:
+    def _find_topic(self, clean: str) -> Optional[Path]:
+        """First existing `clean` topic across category folders (flat form). None if absent."""
+        for cat in self.categories:
+            flat = self.root / cat / f"{clean}.md"
+            if flat.is_file():
+                return flat
+        return None
+
+    def write_topic(self, name: str, body: Optional[str] = None,
+                    update: Optional[str] = None, category: Optional[str] = None) -> dict:
         clean = _sanitize_title(name)
         if not clean:
             raise InvalidTopic(f"empty topic name: {name!r}")
-        return self.root / "topics" / f"{clean}.md"
-
-    def write_topic(self, name: str, body: Optional[str] = None,
-                    update: Optional[str] = None) -> dict:
-        path = self._topic_path(name)
+        if category is not None and category not in self.categories:
+            raise InvalidCategory(f"category not allowed: {category!r}")
+        path = self._find_topic(clean)
+        if path is None:
+            cat = category or self.categories[0]
+            path = self.root / cat / f"{clean}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         created = not path.exists()
         text = "" if created else path.read_text()
@@ -139,12 +156,14 @@ class VaultClient:
         return self._result(path, created=created, updated=not created)
 
     def list_topics(self, like: Optional[str] = None) -> List[str]:
-        folder = self.root / "topics"
-        if not folder.is_dir():
-            return []
-        names = sorted(p.stem for p in folder.glob("*.md"))
+        names = set()
+        for cat in self.categories:
+            folder = self.root / cat
+            if folder.is_dir():
+                names.update(p.stem for p in folder.glob("*.md"))
+        result = sorted(names)
         if not like:
-            return names
+            return result
         q = like.lower()
 
         def matches(name: str) -> bool:
@@ -155,16 +174,17 @@ class VaultClient:
             it = iter(low)
             return all(ch in it for ch in q)
 
-        return [n for n in names if matches(n)]
+        return [n for n in result if matches(n)]
 
     def _resolve(self, target: str) -> Path:
         cand = self.root / target
         if cand.is_file():
             return cand
         if not target.endswith(".md"):
-            tcand = self._topic_path(target)
-            if tcand.is_file():
-                return tcand
+            clean = _sanitize_title(target)
+            found = self._find_topic(clean) if clean else None
+            if found:
+                return found
         raise NoteNotFound(f"note not found: {target!r}")
 
     def read_note(self, target: str) -> dict:
@@ -174,7 +194,7 @@ class VaultClient:
 
     def list_journal(self, topic: Optional[str] = None, since: Optional[str] = None,
                      day: Optional[str] = None) -> List[dict]:
-        base = self.root / "journal"
+        base = self.root / self.journal_folder
         if not base.is_dir():
             return []
         want_topic = _normalize_topic(topic) if topic else None
