@@ -46,8 +46,10 @@ def _client():
 
 def _notes_client():
     cfg = config.load_config()
-    vault = (cfg.get("obsidian") or {}).get("vault_name", "")
-    return VaultClient(config.vault_root(), vault)
+    obs = cfg.get("obsidian") or {}
+    return VaultClient(config.vault_root(), obs.get("vault_name", ""),
+                       journal_folder=obs.get("journal_folder", "Journal"),
+                       categories=obs.get("categories") or ["Topics"])
 
 
 @mcp.tool()
@@ -285,10 +287,11 @@ def es_notes_journal(title: str, body: str, tags: Optional[list] = None,
 @mcp.tool()
 @mcp_envelope
 def es_notes_topic(name: str, body: Optional[str] = None,
-                   update: Optional[str] = None) -> dict:
+                   update: Optional[str] = None, category: Optional[str] = None) -> dict:
     """Create/edit a topic doc. body overwrites the curated state; update appends a
-    dated line under ## Updates; neither just ensures the topic exists."""
-    return _notes_client().write_topic(name, body=body, update=update)
+    dated line under ## Updates. category files a NEW topic under an approved folder
+    (default the first configured); an existing topic updates in place."""
+    return _notes_client().write_topic(name, body=body, update=update, category=category)
 
 
 @mcp.tool()

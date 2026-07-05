@@ -301,7 +301,16 @@ def test_es_notes_topic_ok(fake_vault):
     fake_vault.write_topic.return_value = {"path": "topics/EverStone.md", "created": True}
     out = mcp_server.es_notes_topic("EverStone", body="state")
     assert out["ok"] is True and out["data"]["created"] is True
-    fake_vault.write_topic.assert_called_once_with("EverStone", body="state", update=None)
+    fake_vault.write_topic.assert_called_once_with(
+        "EverStone", body="state", update=None, category=None)
+
+
+def test_es_notes_topic_passes_category(fake_vault):
+    fake_vault.write_topic.return_value = {"path": "People/Allison.md", "created": True}
+    out = mcp_server.es_notes_topic("Allison", body="s", category="People")
+    assert out["ok"] is True
+    fake_vault.write_topic.assert_called_once_with(
+        "Allison", body="s", update=None, category="People")
 
 
 def test_es_notes_topics_ok(fake_vault):

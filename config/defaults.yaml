@@ -21,7 +21,7 @@ livesync:
     handleFilenameCaseSensitive: false
     doNotUseFixedRevisionForChunks: true
     useDynamicIterationCount: false
-obsidian: {vault_name: Everstone}
+obsidian: {vault_name: Everstone, journal_folder: Journal, categories: [Topics]}
 telegram: {owner_user_id: null, bot_token: null, commands: []}
 github: {token: null}
 gcalcli: null
