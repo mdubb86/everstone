@@ -222,14 +222,19 @@ class VaultClient:
                 return found
         raise NoteNotFound(f"note not found: {target!r}")
 
+    def _is_structural_folder(self, folder: Path) -> bool:
+        """True if `folder` is a note *container* (a category folder, or a day folder
+        under the journal folder) rather than a note's own folder-note directory."""
+        return ((folder.parent == self.root and folder.name in self.categories)
+                or folder.parent == self.root / self.journal_folder)
+
     def attach(self, target: str, source: str) -> dict:
         note = self._resolve(target)
         src = Path(source)
         if not src.is_file():
             raise AttachmentSourceNotFound(f"source not found: {source!r}")
-        name = note.stem
-        if note.parent.name != name:            # flat → promote to same-name folder-note
-            folder = note.parent / name
+        if self._is_structural_folder(note.parent):   # flat → promote to same-name folder-note
+            folder = note.parent / note.stem
             folder.mkdir(parents=True, exist_ok=True)
             note = note.rename(folder / note.name)
         folder = note.parent

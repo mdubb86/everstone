@@ -293,6 +293,28 @@ def test_attach_promotes_journal_entry(tmp_path, monkeypatch):
     assert (day / "Router swap" / "photo.jpg").exists()
 
 
+def test_attach_topic_titled_like_category_promotes(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc.write_topic("Topics", body="s")   # Topics/Topics.md — title == category (degenerate)
+    s = tmp_path / "a.png"; s.write_bytes(b"x")
+    vc.attach("Topics", str(s))
+    assert (tmp_path / "Topics" / "Topics" / "Topics.md").exists()
+    assert (tmp_path / "Topics" / "Topics" / "a.png").exists()
+    assert not (tmp_path / "Topics" / "Topics.md").exists()  # flat gone (promoted)
+
+
+def test_attach_journal_titled_like_day_promotes(tmp_path, monkeypatch):
+    monkeypatch.setattr(vault_client, "_today", lambda: "2026-07-04")
+    monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-07-04T09:00")
+    vc = vault_client.VaultClient(tmp_path, "V")
+    out = vc.write_journal("2026-07-04", "b", tags=None, topics=None, meta=None)  # title == day
+    s = tmp_path / "p.jpg"; s.write_bytes(b"x")
+    vc.attach(out["path"], str(s))
+    day = tmp_path / "Journal" / "2026-07-04"
+    assert (day / "2026-07-04" / "2026-07-04.md").exists()
+    assert (day / "2026-07-04" / "p.jpg").exists()
+
+
 def test_attach_missing_source_raises(tmp_path):
     vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
     vc.write_topic("Fridge", body="s")
