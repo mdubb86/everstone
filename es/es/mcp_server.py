@@ -304,6 +304,16 @@ def es_notes_topics(like: Optional[str] = None) -> list:
 
 @mcp.tool()
 @mcp_envelope
+def es_notes_attach(target: str, source: str) -> dict:
+    """Copy a local file into the vault next to `target` (a topic name or a note path)
+    and return {ref} — the ![[…]] embed to place in the note body. Does NOT edit the
+    note; the agent embeds the ref via es_notes_edit / es_notes_topic. source is a local
+    path (copied in, original left in place); URLs are not fetched here."""
+    return _notes_client().attach(target, source)
+
+
+@mcp.tool()
+@mcp_envelope
 def es_notes_read(target: str) -> dict:
     """Read a note's frontmatter + body. target is a vault-relative path or a topic
     name. Returns {path, frontmatter, body}."""

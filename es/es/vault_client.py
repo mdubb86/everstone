@@ -6,6 +6,7 @@ entry; topics are hand-curated. The topics/ folder IS the topic-name registry.
 """
 import os
 import re
+import shutil
 from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
@@ -33,6 +34,10 @@ class InvalidCategory(Exception):
     es_code = "invalid_category"
 
 
+class AttachmentSourceNotFound(Exception):
+    es_code = "attachment_source_not_found"
+
+
 def _sanitize_title(title: str) -> str:
     """Keep spaces/unicode; strip filesystem-illegal chars. Collapse whitespace."""
     cleaned = ILLEGAL.sub("", title)
@@ -47,6 +52,19 @@ def _unique_filename(folder: Path, stem: str) -> str:
     while (folder / f"{stem} {n}.md").exists():
         n += 1
     return f"{stem} {n}.md"
+
+
+def _unique_attachment(folder: Path, filename: str) -> str:
+    """Sanitized original basename, deduped ' 2', ' 3'… before the extension."""
+    clean = re.sub(r"\s+", " ", ILLEGAL.sub("", filename)).strip() or "attachment"
+    stem, dot, ext = clean.rpartition(".")
+    if not dot:
+        stem, ext = clean, ""
+    cand, n = clean, 2
+    while (folder / cand).exists():
+        cand = f"{stem} {n}.{ext}" if ext else f"{stem} {n}"
+        n += 1
+    return cand
 
 
 def _normalize_topic(topic: str) -> str:
@@ -203,6 +221,21 @@ class VaultClient:
             if found:
                 return found
         raise NoteNotFound(f"note not found: {target!r}")
+
+    def attach(self, target: str, source: str) -> dict:
+        note = self._resolve(target)
+        src = Path(source)
+        if not src.is_file():
+            raise AttachmentSourceNotFound(f"source not found: {source!r}")
+        name = note.stem
+        if note.parent.name != name:            # flat → promote to same-name folder-note
+            folder = note.parent / name
+            folder.mkdir(parents=True, exist_ok=True)
+            note = note.rename(folder / note.name)
+        folder = note.parent
+        att = _unique_attachment(folder, src.name)
+        shutil.copy2(src, folder / att)
+        return self._result(note, ref=f"![[{att}]]", attachment=self._rel(folder / att))
 
     def read_note(self, target: str) -> dict:
         path = self._resolve(target)

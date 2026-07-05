@@ -245,3 +245,56 @@ def test_list_journal_includes_folder_notes(tmp_path, monkeypatch):
     vc.write_journal("Flat entry", "b", tags=None, topics=None, meta=None)
     _make_folder_note(tmp_path / "Journal" / "2026-07-04", "Foldered entry", "---\n---\nb")
     assert {e["title"] for e in vc.list_journal()} == {"Flat entry", "Foldered entry"}
+
+
+def test_attach_promotes_flat_topic_and_copies(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc.write_topic("Kitchen fridge", body="state")
+    src = tmp_path / "src.pdf"; src.write_bytes(b"%PDF-1.4")
+    out = vc.attach("Kitchen fridge", str(src))
+    assert (tmp_path / "Topics" / "Kitchen fridge" / "Kitchen fridge.md").exists()
+    assert not (tmp_path / "Topics" / "Kitchen fridge.md").exists()
+    assert (tmp_path / "Topics" / "Kitchen fridge" / "src.pdf").exists()
+    assert out["ref"] == "![[src.pdf]]"
+    assert src.exists()  # original left in place (copied, not moved)
+
+
+def test_attach_second_file_no_double_promote(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc.write_topic("Fridge", body="s")
+    s1 = tmp_path / "a.png"; s1.write_bytes(b"1")
+    s2 = tmp_path / "b.png"; s2.write_bytes(b"2")
+    vc.attach("Fridge", str(s1))
+    vc.attach("Fridge", str(s2))
+    folder = tmp_path / "Topics" / "Fridge"
+    assert (folder / "a.png").exists() and (folder / "b.png").exists()
+    assert (folder / "Fridge.md").exists()
+
+
+def test_attach_collision_suffixes(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc.write_topic("Fridge", body="s")
+    for _ in range(2):
+        s = tmp_path / "dup.png"; s.write_bytes(b"x")
+        vc.attach("Fridge", str(s))
+    folder = tmp_path / "Topics" / "Fridge"
+    assert (folder / "dup.png").exists() and (folder / "dup 2.png").exists()
+
+
+def test_attach_promotes_journal_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(vault_client, "_today", lambda: "2026-07-04")
+    monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-07-04T09:00")
+    vc = vault_client.VaultClient(tmp_path, "V")
+    out = vc.write_journal("Router swap", "b", tags=None, topics=None, meta=None)
+    s = tmp_path / "photo.jpg"; s.write_bytes(b"x")
+    vc.attach(out["path"], str(s))
+    day = tmp_path / "Journal" / "2026-07-04"
+    assert (day / "Router swap" / "Router swap.md").exists()
+    assert (day / "Router swap" / "photo.jpg").exists()
+
+
+def test_attach_missing_source_raises(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc.write_topic("Fridge", body="s")
+    with pytest.raises(vault_client.AttachmentSourceNotFound):
+        vc.attach("Fridge", str(tmp_path / "nope.pdf"))

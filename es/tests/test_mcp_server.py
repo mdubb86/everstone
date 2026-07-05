@@ -340,6 +340,15 @@ def test_es_notes_list_ok(fake_vault):
     fake_vault.list_journal.assert_called_once_with(topic="EverStone", since="2026-06-01", day=None)
 
 
+def test_es_notes_attach_ok(fake_vault):
+    fake_vault.attach.return_value = {"path": "Topics/Fridge/Fridge.md",
+                                      "obsidian_deeplink": "obsidian://x",
+                                      "ref": "![[m.pdf]]", "attachment": "Topics/Fridge/m.pdf"}
+    out = mcp_server.es_notes_attach("Fridge", "/cache/m.pdf")
+    assert out["ok"] is True and out["data"]["ref"] == "![[m.pdf]]"
+    fake_vault.attach.assert_called_once_with("Fridge", "/cache/m.pdf")
+
+
 def test_es_cal_agenda_localizes_times(fake_svc):
     ev = {"id": "e1", "summary": "Coffee",
           "start": {"dateTime": "2026-06-08T14:00:00Z"},
