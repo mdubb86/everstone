@@ -255,3 +255,27 @@ def test_config_schema_has_brave_api_key():
     assert "brave" not in schema.get("required", [])
 
 
+def test_migrate_vault_folders_renames_legacy(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "journal" / "2026-06-01").mkdir(parents=True)
+    (vault / "topics").mkdir(parents=True)
+    (vault / "topics" / "Home network.md").write_text("x")
+    configure.migrate_vault_folders(vault, "Journal", ["Topics"])
+    # On case-sensitive FS the dirs are renamed; on case-insensitive they already
+    # ARE the target. Either way the capitalized names must resolve with content.
+    assert (vault / "Journal" / "2026-06-01").is_dir()
+    assert (vault / "Topics" / "Home network.md").is_file()
+
+
+def test_migrate_vault_folders_noop_when_target_exists(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "journal").mkdir(parents=True)
+    (vault / "journal" / "old.md").write_text("old")
+    # exist_ok=True: on case-sensitive FS this creates a real second dir; on
+    # case-insensitive FS (macOS dev) it's a no-op since "Journal" IS "journal".
+    (vault / "Journal").mkdir(parents=True, exist_ok=True)
+    (vault / "Journal" / "new.md").write_text("new")
+    configure.migrate_vault_folders(vault, "Journal", ["Topics"])
+    assert (vault / "Journal" / "new.md").read_text() == "new"  # not clobbered
+
+

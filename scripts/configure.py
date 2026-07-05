@@ -418,7 +418,24 @@ def set_telegram_commands(config: dict) -> None:
         print(f"[configure] WARN: setMyCommands failed ({e}). Bot still functional.")
 
 
-def setup_data_directories() -> None:
+def migrate_vault_folders(vault_dir: Path, journal_folder: str, categories: list) -> None:
+    """Rename legacy lowercase note folders to the configured capitalized names.
+
+    Only touches the two historical folders (`journal`, `topics`). No-op when the
+    source is absent or the target already exists; a harmless identity on a
+    case-insensitive filesystem (macOS dev), a real rename on the Linux container.
+    """
+    topics_target = "Topics" if "Topics" in (categories or []) else (categories or ["Topics"])[0]
+    for old, new in (("journal", journal_folder), ("topics", topics_target)):
+        if old == new:
+            continue
+        src, dst = vault_dir / old, vault_dir / new
+        if src.is_dir() and not dst.exists():
+            print(f"[configure] Migrating vault folder {old!r} -> {new!r}")
+            src.rename(dst)
+
+
+def setup_data_directories(config: dict) -> None:
     """Create data directories with correct permissions."""
     data_dir = _data_dir()
 
@@ -435,9 +452,12 @@ def setup_data_directories() -> None:
         print("[configure] Initializing radicale directory")
         radicale_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize vault data directory
+    # Initialize vault data directory + migrate legacy lowercase folders
     vault_dir = data_dir / "vault"
     vault_dir.mkdir(parents=True, exist_ok=True)
+    obs = config.get("obsidian") or {}
+    migrate_vault_folders(vault_dir, obs.get("journal_folder", "Journal"),
+                          obs.get("categories") or ["Topics"])
 
     # Initialize hermes data directory
     hermes_dir = data_dir / "hermes"
@@ -475,7 +495,7 @@ def main():
 
     # Setup data directories
     print("[configure] Setting up data directories")
-    setup_data_directories()
+    setup_data_directories(config)
 
     # Generate service configs
     print("[configure] Generating CouchDB config")
