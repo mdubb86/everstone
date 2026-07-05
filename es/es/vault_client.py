@@ -123,11 +123,14 @@ class VaultClient:
         return self._result(folder / fname)
 
     def _find_topic(self, clean: str) -> Optional[Path]:
-        """First existing `clean` topic across category folders (flat form). None if absent."""
+        """First existing `clean` topic across category folders (flat OR folder-note form)."""
         for cat in self.categories:
             flat = self.root / cat / f"{clean}.md"
             if flat.is_file():
                 return flat
+            folder = self.root / cat / clean / f"{clean}.md"
+            if folder.is_file():
+                return folder
         return None
 
     def write_topic(self, name: str, body: Optional[str] = None,
@@ -155,12 +158,21 @@ class VaultClient:
         path.write_text(text)
         return self._result(path, created=created, updated=not created)
 
+    @staticmethod
+    def _md_entries(folder: Path) -> List[Path]:
+        """Every note body in `folder`: flat *.md plus same-name folder-notes."""
+        out = list(folder.glob("*.md"))
+        for sub in folder.iterdir():
+            if sub.is_dir() and (sub / f"{sub.name}.md").is_file():
+                out.append(sub / f"{sub.name}.md")
+        return out
+
     def list_topics(self, like: Optional[str] = None) -> List[str]:
         names = set()
         for cat in self.categories:
             folder = self.root / cat
             if folder.is_dir():
-                names.update(p.stem for p in folder.glob("*.md"))
+                names.update(p.stem for p in self._md_entries(folder))
         result = sorted(names)
         if not like:
             return result
@@ -180,7 +192,12 @@ class VaultClient:
         cand = self.root / target
         if cand.is_file():
             return cand
-        if not target.endswith(".md"):
+        if target.endswith(".md"):
+            p = Path(target)
+            promoted = self.root / p.parent / p.stem / p.name
+            if promoted.is_file():
+                return promoted
+        else:
             clean = _sanitize_title(target)
             found = self._find_topic(clean) if clean else None
             if found:
@@ -207,7 +224,7 @@ class VaultClient:
                 continue
             if since and d < since:
                 continue
-            for f in sorted(dayfolder.glob("*.md")):
+            for f in sorted(self._md_entries(dayfolder)):
                 fm, _ = _split_frontmatter(f.read_text())
                 if want_topic and want_topic not in (fm.get("topics") or []):
                     continue

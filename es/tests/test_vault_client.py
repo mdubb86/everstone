@@ -208,3 +208,40 @@ def test_list_topics_scans_all_categories(tmp_path):
     vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics", "People"))
     vc.write_topic("Fridge"); vc.write_topic("Allison", category="People")
     assert sorted(vc.list_topics()) == ["Allison", "Fridge"]
+
+
+def _make_folder_note(base, name, body="x"):
+    d = base / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.md").write_text(body)
+    return d / f"{name}.md"
+
+
+def test_resolve_finds_folder_note_topic(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    _make_folder_note(tmp_path / "Topics", "Kitchen fridge", "body")
+    got = vc.read_note("Kitchen fridge")
+    assert got["body"].strip() == "body"
+
+
+def test_resolve_stale_flat_relpath_falls_back_to_folder(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    _make_folder_note(tmp_path / "Topics", "Fridge", "b")
+    got = vc.read_note("Topics/Fridge.md")   # the pre-promotion handle
+    assert got["body"].strip() == "b"
+
+
+def test_list_topics_includes_folder_notes(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc.write_topic("Flat")
+    _make_folder_note(tmp_path / "Topics", "Foldered")
+    assert sorted(vc.list_topics()) == ["Flat", "Foldered"]
+
+
+def test_list_journal_includes_folder_notes(tmp_path, monkeypatch):
+    vc = vault_client.VaultClient(tmp_path, "V")
+    monkeypatch.setattr(vault_client, "_today", lambda: "2026-07-04")
+    monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-07-04T09:00")
+    vc.write_journal("Flat entry", "b", tags=None, topics=None, meta=None)
+    _make_folder_note(tmp_path / "Journal" / "2026-07-04", "Foldered entry", "---\n---\nb")
+    assert {e["title"] for e in vc.list_journal()} == {"Flat entry", "Foldered entry"}
