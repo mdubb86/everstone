@@ -314,6 +314,16 @@ def es_notes_attach(target: str, source: str) -> dict:
 
 @mcp.tool()
 @mcp_envelope
+def es_notes_edit(target: str, body: Optional[str] = None,
+                  append: Optional[str] = None) -> dict:
+    """Edit an existing note (journal entry or topic; target is a note path or topic
+    name). body overwrites the body; append adds to it (frontmatter is preserved).
+    Use append to embed an attachment ref returned by es_notes_attach."""
+    return _notes_client().edit_note(target, body=body, append=append)
+
+
+@mcp.tool()
+@mcp_envelope
 def es_notes_read(target: str) -> dict:
     """Read a note's frontmatter + body. target is a vault-relative path or a topic
     name. Returns {path, frontmatter, body}."""

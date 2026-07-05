@@ -141,6 +141,24 @@ def test_read_note_missing_topic_raises(vc):
         vc.read_note("Nonexistent")
 
 
+def test_edit_note_append_preserves_frontmatter(tmp_path, monkeypatch):
+    monkeypatch.setattr(vault_client, "_today", lambda: "2026-07-04")
+    monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-07-04T09:00")
+    vc = vault_client.VaultClient(tmp_path, "V")
+    out = vc.write_journal("Entry", "line one", tags=None, topics=["EverStone"], meta=None)
+    vc.edit_note(out["path"], append="![[photo.jpg]]")
+    got = vc.read_note(out["path"])
+    assert "line one" in got["body"] and "![[photo.jpg]]" in got["body"]
+    assert got["frontmatter"]["topics"] == ["[[EverStone]]"]
+
+
+def test_edit_note_body_overwrites(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc.write_topic("Fridge", body="old")
+    vc.edit_note("Fridge", body="new state")
+    assert vc.read_note("Fridge")["body"].strip() == "new state"
+
+
 def _seed_two_days(vc, monkeypatch):
     monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-06-20T09:00")
     monkeypatch.setattr(vault_client, "_today", lambda: "2026-06-20")

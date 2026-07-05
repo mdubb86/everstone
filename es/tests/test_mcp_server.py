@@ -349,6 +349,15 @@ def test_es_notes_attach_ok(fake_vault):
     fake_vault.attach.assert_called_once_with("Fridge", "/cache/m.pdf")
 
 
+def test_es_notes_edit_ok(fake_vault):
+    fake_vault.edit_note.return_value = {"path": "Journal/2026-07-04/E/E.md",
+                                         "obsidian_deeplink": "obsidian://x", "updated": True}
+    out = mcp_server.es_notes_edit("Journal/2026-07-04/E/E.md", append="![[p.jpg]]")
+    assert out["ok"] is True and out["data"]["updated"] is True
+    fake_vault.edit_note.assert_called_once_with(
+        "Journal/2026-07-04/E/E.md", body=None, append="![[p.jpg]]")
+
+
 def test_es_cal_agenda_localizes_times(fake_svc):
     ev = {"id": "e1", "summary": "Coffee",
           "start": {"dateTime": "2026-06-08T14:00:00Z"},

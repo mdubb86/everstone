@@ -103,6 +103,15 @@ def _split_frontmatter(text: str):
     return {}, text
 
 
+def _split_raw(text: str):
+    """Return (frontmatter_block_with_delimiters, body). No frontmatter → ('', text)."""
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            return text[:end + 5], text[end + 5:]
+    return "", text
+
+
 def _today() -> str:
     return date.today().isoformat()
 
@@ -241,6 +250,16 @@ class VaultClient:
         att = _unique_attachment(folder, src.name)
         shutil.copy2(src, folder / att)
         return self._result(note, ref=f"![[{att}]]", attachment=self._rel(folder / att))
+
+    def edit_note(self, target: str, body: Optional[str] = None,
+                  append: Optional[str] = None) -> dict:
+        path = self._resolve(target)
+        fm_text, existing = _split_raw(path.read_text())
+        new_body = body if body is not None else existing
+        if append is not None:
+            new_body = new_body.rstrip() + "\n" + append
+        path.write_text(fm_text + new_body.rstrip() + "\n")
+        return self._result(path, updated=True)
 
     def read_note(self, target: str) -> dict:
         path = self._resolve(target)
