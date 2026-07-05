@@ -308,7 +308,9 @@ def es_notes_attach(target: str, source: str) -> dict:
     """Copy a local file into the vault next to `target` (a topic name or a note path)
     and return {ref} — the ![[…]] embed to place in the note body. Does NOT edit the
     note; the agent embeds the ref via es_notes_edit / es_notes_topic. source is a local
-    path (copied in, original left in place); URLs are not fetched here."""
+    path (copied in, original left in place); URLs are not fetched here. It must be an
+    agent-produced, user-supplied, or cached file — NOT an arbitrary system path (the
+    file is copied into the synced vault)."""
     return _notes_client().attach(target, source)
 
 
