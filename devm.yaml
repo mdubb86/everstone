@@ -83,6 +83,11 @@ network:
     - pypi.org
     - files.pythonhosted.org
     - jsr.io
+    # livesync-bridge (notes sync) — deno fetches its deps from these at build
+    # pre-cache time and at runtime. jsr.io + registry.npmjs.org (above/below)
+    # cover jsr/npm specifiers; these cover deno.land/x + deno's own downloads.
+    - deno.land
+    - dl.deno.land
     - api.telegram.org
     # Hermes' Telegram adapter discovers Telegram API fallback IPs via DNS-over-HTTPS
     # before connecting; without these the connection stalls (attempt N/8).
