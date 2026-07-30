@@ -279,3 +279,38 @@ def test_migrate_vault_folders_noop_when_target_exists(tmp_path):
     assert (vault / "Journal" / "new.md").read_text() == "new"  # not clobbered
 
 
+def test_migrate_warns_and_leaves_when_both_distinct_folders_exist(tmp_path, capsys):
+    # Custom journal_folder ('Diary') so legacy 'journal' and target 'Diary' are
+    # genuinely distinct on any filesystem — the real "orphaned legacy" case.
+    vault = tmp_path / "vault"
+    (vault / "journal").mkdir(parents=True)
+    (vault / "journal" / "legacy.md").write_text("legacy")
+    (vault / "Diary").mkdir(parents=True)
+    (vault / "Diary" / "current.md").write_text("current")
+    configure.migrate_vault_folders(vault, "Diary", ["Topics"])
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "journal" in out
+    assert (vault / "journal" / "legacy.md").read_text() == "legacy"   # left in place
+    assert (vault / "Diary" / "current.md").read_text() == "current"   # untouched
+
+
+def test_migrate_idempotent_on_second_run(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "journal" / "2026-06-01").mkdir(parents=True)
+    (vault / "journal" / "2026-06-01" / "e.md").write_text("entry")
+    configure.migrate_vault_folders(vault, "Journal", ["Topics"])
+    configure.migrate_vault_folders(vault, "Journal", ["Topics"])  # second run: stable
+    assert (vault / "Journal" / "2026-06-01" / "e.md").read_text() == "entry"
+
+
+def test_migrate_custom_journal_folder_and_category(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "journal" / "d").mkdir(parents=True)
+    (vault / "topics").mkdir(parents=True)
+    (vault / "topics" / "T.md").write_text("t")
+    # journal -> Diary; topics -> first category (Projects) since 'Topics' absent
+    configure.migrate_vault_folders(vault, "Diary", ["Projects", "People"])
+    assert (vault / "Diary" / "d").is_dir()
+    assert (vault / "Projects" / "T.md").read_text() == "t"
+
+

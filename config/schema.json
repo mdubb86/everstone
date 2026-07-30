@@ -66,6 +66,16 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
           "minItems": 1
+        },
+        "attachments": {
+          "type": "object",
+          "properties": {
+            "sources": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "minItems": 1
+            }
+          }
         }
       }
     },

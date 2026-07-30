@@ -38,6 +38,14 @@ class AttachmentSourceNotFound(Exception):
     es_code = "attachment_source_not_found"
 
 
+class AttachmentSourceForbidden(Exception):
+    es_code = "attachment_source_forbidden"
+
+
+class NoteConflict(Exception):
+    es_code = "note_conflict"
+
+
 def _sanitize_title(title: str) -> str:
     """Keep spaces/unicode; strip filesystem-illegal chars. Collapse whitespace."""
     cleaned = ILLEGAL.sub("", title)
@@ -122,11 +130,22 @@ def _now_iso() -> str:
 
 class VaultClient:
     def __init__(self, root, vault_name: str = "",
-                 journal_folder: str = "Journal", categories=("Topics",)):
+                 journal_folder: str = "Journal", categories=("Topics",),
+                 attach_sources=None):
         self.root = Path(root)
         self.vault_name = vault_name
         self.journal_folder = journal_folder or "Journal"
         self.categories = list(categories) if categories else ["Topics"]
+        # Directories es_notes_attach may copy FROM. Fail-closed: empty → nothing
+        # allowed. Resolved once so symlink/`..` escapes can't dodge the check.
+        self.attach_sources = [Path(d).resolve() for d in (attach_sources or [])]
+
+    def _within_root(self, p: Path) -> bool:
+        """True if `p` (symlinks + `..` resolved) is inside the vault root."""
+        try:
+            return p.resolve().is_relative_to(self.root.resolve())
+        except (OSError, ValueError):
+            return False
 
     def _rel(self, path: Path) -> str:
         return str(path.relative_to(self.root))
@@ -216,13 +235,16 @@ class VaultClient:
         return [n for n in result if matches(n)]
 
     def _resolve(self, target: str) -> Path:
+        # Containment (_within_root) gates the raw-path branches so an absolute or
+        # `../` target can't escape the vault (read OR write). The topic branch
+        # builds paths under root/<category> from a sanitized name, so it's safe.
         cand = self.root / target
-        if cand.is_file():
+        if cand.is_file() and self._within_root(cand):
             return cand
         if target.endswith(".md"):
             p = Path(target)
             promoted = self.root / p.parent / p.stem / p.name
-            if promoted.is_file():
+            if promoted.is_file() and self._within_root(promoted):
                 return promoted
         else:
             clean = _sanitize_title(target)
@@ -242,14 +264,27 @@ class VaultClient:
         src = Path(source)
         if not src.is_file():
             raise AttachmentSourceNotFound(f"source not found: {source!r}")
+        # Confine source to an allowlisted dir (the Hermes media cache), resolving
+        # symlinks first so a link inside the cache can't point at a secret.
+        real = src.resolve()
+        if not any(real.is_relative_to(d) for d in self.attach_sources):
+            raise AttachmentSourceForbidden(
+                f"source not in an allowed attachments directory: {source!r}")
         if self._is_structural_folder(note.parent):   # flat → promote to same-name folder-note
             folder = note.parent / note.stem
+            dest = folder / note.name
+            if dest.exists():   # a folder-note of this name already exists → don't clobber
+                raise NoteConflict(
+                    f"note exists in both flat and folder form: {note.stem!r}")
             folder.mkdir(parents=True, exist_ok=True)
-            note = note.rename(folder / note.name)
+            note = note.rename(dest)
         folder = note.parent
         att = _unique_attachment(folder, src.name)
         shutil.copy2(src, folder / att)
-        return self._result(note, ref=f"![[{att}]]", attachment=self._rel(folder / att))
+        # Path-qualified embed so same-named attachments in other notes can't
+        # cross-resolve in Obsidian.
+        rel = self._rel(folder / att)
+        return self._result(note, ref=f"![[{rel}]]", attachment=rel)
 
     def edit_note(self, target: str, body: Optional[str] = None,
                   append: Optional[str] = None) -> dict:

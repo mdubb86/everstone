@@ -266,19 +266,21 @@ def test_list_journal_includes_folder_notes(tmp_path, monkeypatch):
 
 
 def test_attach_promotes_flat_topic_and_copies(tmp_path):
-    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",),
+                                  attach_sources=[str(tmp_path)])
     vc.write_topic("Kitchen fridge", body="state")
     src = tmp_path / "src.pdf"; src.write_bytes(b"%PDF-1.4")
     out = vc.attach("Kitchen fridge", str(src))
     assert (tmp_path / "Topics" / "Kitchen fridge" / "Kitchen fridge.md").exists()
     assert not (tmp_path / "Topics" / "Kitchen fridge.md").exists()
     assert (tmp_path / "Topics" / "Kitchen fridge" / "src.pdf").exists()
-    assert out["ref"] == "![[src.pdf]]"
+    assert out["ref"] == "![[Topics/Kitchen fridge/src.pdf]]"
     assert src.exists()  # original left in place (copied, not moved)
 
 
 def test_attach_second_file_no_double_promote(tmp_path):
-    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",),
+                                  attach_sources=[str(tmp_path)])
     vc.write_topic("Fridge", body="s")
     s1 = tmp_path / "a.png"; s1.write_bytes(b"1")
     s2 = tmp_path / "b.png"; s2.write_bytes(b"2")
@@ -290,7 +292,8 @@ def test_attach_second_file_no_double_promote(tmp_path):
 
 
 def test_attach_collision_suffixes(tmp_path):
-    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",),
+                                  attach_sources=[str(tmp_path)])
     vc.write_topic("Fridge", body="s")
     for _ in range(2):
         s = tmp_path / "dup.png"; s.write_bytes(b"x")
@@ -302,7 +305,7 @@ def test_attach_collision_suffixes(tmp_path):
 def test_attach_promotes_journal_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(vault_client, "_today", lambda: "2026-07-04")
     monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-07-04T09:00")
-    vc = vault_client.VaultClient(tmp_path, "V")
+    vc = vault_client.VaultClient(tmp_path, "V", attach_sources=[str(tmp_path)])
     out = vc.write_journal("Router swap", "b", tags=None, topics=None, meta=None)
     s = tmp_path / "photo.jpg"; s.write_bytes(b"x")
     vc.attach(out["path"], str(s))
@@ -312,7 +315,8 @@ def test_attach_promotes_journal_entry(tmp_path, monkeypatch):
 
 
 def test_attach_topic_titled_like_category_promotes(tmp_path):
-    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",),
+                                  attach_sources=[str(tmp_path)])
     vc.write_topic("Topics", body="s")   # Topics/Topics.md — title == category (degenerate)
     s = tmp_path / "a.png"; s.write_bytes(b"x")
     vc.attach("Topics", str(s))
@@ -324,7 +328,7 @@ def test_attach_topic_titled_like_category_promotes(tmp_path):
 def test_attach_journal_titled_like_day_promotes(tmp_path, monkeypatch):
     monkeypatch.setattr(vault_client, "_today", lambda: "2026-07-04")
     monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-07-04T09:00")
-    vc = vault_client.VaultClient(tmp_path, "V")
+    vc = vault_client.VaultClient(tmp_path, "V", attach_sources=[str(tmp_path)])
     out = vc.write_journal("2026-07-04", "b", tags=None, topics=None, meta=None)  # title == day
     s = tmp_path / "p.jpg"; s.write_bytes(b"x")
     vc.attach(out["path"], str(s))
@@ -334,7 +338,119 @@ def test_attach_journal_titled_like_day_promotes(tmp_path, monkeypatch):
 
 
 def test_attach_missing_source_raises(tmp_path):
-    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",),
+                                  attach_sources=[str(tmp_path)])
     vc.write_topic("Fridge", body="s")
     with pytest.raises(vault_client.AttachmentSourceNotFound):
         vc.attach("Fridge", str(tmp_path / "nope.pdf"))
+
+
+# --- source confinement (secret-exfiltration guard) ---
+
+def _cache_vault(tmp_path):
+    """A vault whose only allowed attachment source is tmp_path/cache."""
+    cache = tmp_path / "cache"; cache.mkdir()
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",),
+                                  attach_sources=[str(cache)])
+    vc.write_topic("Fridge", body="s")
+    return vc, cache
+
+
+def test_attach_source_inside_allowlist_ok(tmp_path):
+    vc, cache = _cache_vault(tmp_path)
+    src = cache / "photo.jpg"; src.write_bytes(b"x")
+    out = vc.attach("Fridge", str(src))
+    assert (tmp_path / "Topics" / "Fridge" / "photo.jpg").exists()
+    assert out["ref"].endswith("photo.jpg]]")
+
+
+def test_attach_source_outside_allowlist_forbidden(tmp_path):
+    vc, _cache = _cache_vault(tmp_path)
+    secret = tmp_path / "config.yaml"; secret.write_text("bot_token: SECRET")
+    with pytest.raises(vault_client.AttachmentSourceForbidden):
+        vc.attach("Fridge", str(secret))
+    assert not (tmp_path / "Topics" / "Fridge").exists()  # nothing copied/promoted
+
+
+def test_attach_source_absolute_outside_forbidden(tmp_path):
+    vc, _cache = _cache_vault(tmp_path)
+    with pytest.raises(vault_client.AttachmentSourceForbidden):
+        vc.attach("Fridge", "/etc/hosts")   # real absolute file, outside the allowlist
+
+
+def test_attach_source_symlink_escape_forbidden(tmp_path):
+    vc, cache = _cache_vault(tmp_path)
+    secret = tmp_path / "secret.txt"; secret.write_text("SECRET")
+    link = cache / "innocent.txt"; link.symlink_to(secret)  # lives in cache, points out
+    with pytest.raises(vault_client.AttachmentSourceForbidden):
+        vc.attach("Fridge", str(link))
+
+
+def test_attach_no_allowed_sources_forbids_everything(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))  # no attach_sources
+    vc.write_topic("Fridge", body="s")
+    src = tmp_path / "x.png"; src.write_bytes(b"1")
+    with pytest.raises(vault_client.AttachmentSourceForbidden):
+        vc.attach("Fridge", str(src))
+
+
+# --- target confinement (traversal / arbitrary overwrite guard) ---
+
+def test_resolve_rejects_parent_traversal(tmp_path):
+    outside = tmp_path.parent / "outside_note.md"; outside.write_text("secret body")
+    vc = vault_client.VaultClient(tmp_path, "V")
+    with pytest.raises(vault_client.NoteNotFound):
+        vc.read_note("../outside_note.md")
+
+
+def test_edit_note_absolute_escape_refuses_and_does_not_write(tmp_path):
+    outside = tmp_path.parent / "victim.md"; outside.write_text("original")
+    vc = vault_client.VaultClient(tmp_path, "V")
+    with pytest.raises(vault_client.NoteNotFound):
+        vc.edit_note(str(outside), body="HACKED")
+    assert outside.read_text() == "original"  # untouched
+
+
+def test_attach_target_traversal_refused(tmp_path):
+    vc, cache = _cache_vault(tmp_path)
+    src = cache / "a.png"; src.write_bytes(b"1")
+    with pytest.raises(vault_client.NoteNotFound):
+        vc.attach("../outside_note.md", str(src))
+
+
+# --- folder-note promotion clobber guard ---
+
+def test_attach_refuses_promotion_clobber(tmp_path):
+    vc, cache = _cache_vault(tmp_path)   # flat Topics/Fridge.md exists
+    _make_folder_note(tmp_path / "Topics", "Fridge", "folder body")  # also Topics/Fridge/Fridge.md
+    src = cache / "a.png"; src.write_bytes(b"1")
+    with pytest.raises(vault_client.NoteConflict):
+        vc.attach("Fridge", str(src))
+    assert (tmp_path / "Topics" / "Fridge" / "Fridge.md").read_text() == "folder body"  # intact
+
+
+# --- path-qualified embed ref ---
+
+def test_attach_ref_is_path_qualified(tmp_path):
+    vc, cache = _cache_vault(tmp_path)
+    src = cache / "img.png"; src.write_bytes(b"1")
+    out = vc.attach("Fridge", str(src))
+    assert out["ref"] == "![[Topics/Fridge/img.png]]"
+
+
+# --- edit_note coverage gaps ---
+
+def test_edit_note_no_frontmatter_append(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    _make_folder_note(tmp_path / "Topics", "Plain", "just a body")  # no frontmatter
+    vc.edit_note("Plain", append="![[x.png]]")
+    body = vc.read_note("Plain")["body"]
+    assert "just a body" in body and "![[x.png]]" in body
+
+
+def test_edit_note_body_and_append_together(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc.write_topic("T", body="old")
+    vc.edit_note("T", body="fresh", append="more")
+    body = vc.read_note("T")["body"]
+    assert "old" not in body and "fresh" in body and "more" in body

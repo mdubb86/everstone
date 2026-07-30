@@ -430,9 +430,17 @@ def migrate_vault_folders(vault_dir: Path, journal_folder: str, categories: list
         if old == new:
             continue
         src, dst = vault_dir / old, vault_dir / new
-        if src.is_dir() and not dst.exists():
+        if not src.is_dir():
+            continue
+        if not dst.exists():
             print(f"[configure] Migrating vault folder {old!r} -> {new!r}")
             src.rename(dst)
+        elif not src.samefile(dst):
+            # Both exist as DISTINCT dirs (case-sensitive FS): the legacy folder is
+            # now orphaned — invisible to es_notes_*. Surface it; don't auto-merge
+            # (collision risk). `samefile` skips the case-insensitive identity (macOS).
+            print(f"[configure] WARNING: legacy {old!r}/ left in place — {new!r}/ "
+                  f"already exists; merge {old!r} into {new!r} manually")
 
 
 def setup_data_directories(config: dict) -> None:

@@ -27,3 +27,17 @@ def vault_root() -> Path:
     """Obsidian vault root. Defaults to the in-container /opt/data/vault;
     override with ES_VAULT_PATH (tests point this at a tmp dir)."""
     return Path(os.environ.get("ES_VAULT_PATH", "/opt/data/vault"))
+
+
+# Directories es_notes_attach may copy files FROM. Default: the Hermes media
+# cache, where Telegram uploads + agent-generated media land. Secrets live in
+# the profile root (config.yaml, .env, es/), OUTSIDE cache/, so they're excluded.
+# Override (rarely needed) with obsidian.attachments.sources in config.yaml.
+_DEFAULT_ATTACH_SOURCES = ["/opt/data/hermes/profiles/everstone/cache"]
+
+
+def attach_source_dirs(obsidian=None) -> list:
+    """Allowed attachment source dirs, from obsidian.attachments.sources or the
+    default. Pass the already-loaded obsidian sub-config."""
+    obs = obsidian or {}
+    return list(((obs.get("attachments") or {}).get("sources")) or _DEFAULT_ATTACH_SOURCES)
