@@ -1,4 +1,15 @@
+# syntax=docker/dockerfile:1
 FROM alpine:3.22 AS caddy
+
+# devm/iron-proxy: trust the shim-injected CA so build-time HTTPS survives iron-proxy's
+# MITM. No-op on Mac/CI (no shim → empty secret → guard skips). One per HTTPS stage,
+# before the first HTTPS RUN. Drop-in dir persists so a later ca-certificates install
+# re-merges it; the `cat` fallback covers bases without update-ca-certificates (Alpine).
+RUN --mount=type=secret,id=devm-ca,dst=/tmp/devm-ca.crt,required=false \
+    if [ -s /tmp/devm-ca.crt ]; then mkdir -p /usr/local/share/ca-certificates && \
+        cp /tmp/devm-ca.crt /usr/local/share/ca-certificates/devm-ca.crt && \
+        { update-ca-certificates 2>/dev/null || cat /tmp/devm-ca.crt >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true; }; \
+    fi
 
 ARG TARGETARCH
 ARG GO_VERSION=1.24.3
@@ -23,6 +34,13 @@ RUN apk update && apk add --no-cache \
 
 FROM debian:trixie-slim AS couchdb
 
+# devm/iron-proxy CA trust for build-time HTTPS (see caddy stage). No-op on Mac/CI.
+RUN --mount=type=secret,id=devm-ca,dst=/tmp/devm-ca.crt,required=false \
+    if [ -s /tmp/devm-ca.crt ]; then mkdir -p /usr/local/share/ca-certificates && \
+        cp /tmp/devm-ca.crt /usr/local/share/ca-certificates/devm-ca.crt && \
+        { update-ca-certificates 2>/dev/null || cat /tmp/devm-ca.crt >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true; }; \
+    fi
+
 ARG COUCHDB_VERSION=3.5.1
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -46,6 +64,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # engraph binary (optional — if cargo build fails, a stub is placed; setup_engraph handles first-run build)
 FROM alpine:3.22 AS engraph
+# devm/iron-proxy CA trust for build-time HTTPS (see caddy stage). No-op on Mac/CI.
+RUN --mount=type=secret,id=devm-ca,dst=/tmp/devm-ca.crt,required=false \
+    if [ -s /tmp/devm-ca.crt ]; then mkdir -p /usr/local/share/ca-certificates && \
+        cp /tmp/devm-ca.crt /usr/local/share/ca-certificates/devm-ca.crt && \
+        { update-ca-certificates 2>/dev/null || cat /tmp/devm-ca.crt >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true; }; \
+    fi
 RUN apk add --no-cache rust cargo git
 # Place a stub first so COPY --from always succeeds; overwrite with real binary if build succeeds
 RUN mkdir -p /usr/local/bin && \
@@ -60,10 +84,21 @@ RUN cargo install --git https://github.com/devwhodevs/engraph --root /usr/local 
 # explicitly: a git checkout + a uv venv with `.[all]`, plus our es CLI, the
 # access_hook plugin, and the telegram adapter installed INTO that venv.
 FROM debian:trixie-slim AS hermes-build
+# devm/iron-proxy CA trust for build-time HTTPS (see caddy stage). No-op on Mac/CI.
+RUN --mount=type=secret,id=devm-ca,dst=/tmp/devm-ca.crt,required=false \
+    if [ -s /tmp/devm-ca.crt ]; then mkdir -p /usr/local/share/ca-certificates && \
+        cp /tmp/devm-ca.crt /usr/local/share/ca-certificates/devm-ca.crt && \
+        { update-ca-certificates 2>/dev/null || cat /tmp/devm-ca.crt >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true; }; \
+    fi
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip python3-venv python3-dev git \
         build-essential libffi-dev libssl-dev cargo curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
+# uv bundles its own (webpki) CA roots and ignores the system store, so it can't
+# see the devm CA merged above → iron-proxy's MITM fails with UnknownIssuer.
+# UV_NATIVE_TLS=1 switches uv to the system trust store. Portable: on Mac/CI the
+# system store holds the real roots, so uv works there unchanged.
+ENV UV_NATIVE_TLS=1
 RUN pip install --break-system-packages uv
 # Canonical layout at a FIXED path — the final stage COPYs to the identical path
 # so the venv's absolute paths + the editable install resolve.
@@ -90,6 +125,13 @@ RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python ddgs
 RUN rm -rf /usr/local/lib/hermes-agent/.git
 
 FROM debian:trixie-slim
+
+# devm/iron-proxy CA trust for build-time HTTPS (see caddy stage). No-op on Mac/CI.
+RUN --mount=type=secret,id=devm-ca,dst=/tmp/devm-ca.crt,required=false \
+    if [ -s /tmp/devm-ca.crt ]; then mkdir -p /usr/local/share/ca-certificates && \
+        cp /tmp/devm-ca.crt /usr/local/share/ca-certificates/devm-ca.crt && \
+        { update-ca-certificates 2>/dev/null || cat /tmp/devm-ca.crt >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true; }; \
+    fi
 
 ARG TARGETARCH
 ARG S6_OVERLAY_VERSION=3.2.0.2
@@ -164,8 +206,8 @@ RUN git clone --depth 1 --recurse-submodules --shallow-submodules \
 RUN echo "deno-precache v2" && \
     if [ -f /opt/livesync-bridge/main.ts ]; then \
         cd /opt/livesync-bridge && \
-        ( deno install --node-modules-dir=auto --entrypoint main.ts || \
-          deno cache --node-modules-dir=auto main.ts || \
+        ( DENO_TLS_CA_STORE=system deno install --node-modules-dir=auto --entrypoint main.ts || \
+          DENO_TLS_CA_STORE=system deno cache --node-modules-dir=auto main.ts || \
           echo "[livesync-bridge] deno dep pre-cache failed — will retry at runtime" ); \
     fi
 
@@ -184,7 +226,7 @@ RUN git clone --depth 1 \
         https://github.com/jo-inc/camofox-browser /opt/camofox-browser || \
     echo "[camofox-browser] clone failed — browser unavailable"
 RUN if [ -f /opt/camofox-browser/package.json ]; then \
-        cd /opt/camofox-browser && npm install 2>&1 | tail -5 || \
+        cd /opt/camofox-browser && NODE_OPTIONS=--use-openssl-ca npm install 2>&1 | tail -5 || \
         echo "[camofox-browser] npm install failed — browser unavailable at runtime"; \
     fi
 

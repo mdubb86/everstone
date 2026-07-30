@@ -22,7 +22,6 @@ radfire_data/
 
 # devm: CLI-owned render cache + persisted VM state (Claude config/creds, etc.)
 .devm/
-/devm.yaml
 
 # Build/export artifacts
 *.tar

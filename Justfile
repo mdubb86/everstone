@@ -68,18 +68,20 @@ release:
     git push origin "$tag"
     echo "Done. Watch: https://github.com/mdubb86/everstone/actions"
 
-# Start the dev container on :80 (with persistent ./.everstone-data)
+# Start the dev container, publishing its :80 on the host's :8080 (with persistent
+# ./.everstone-data). Host :8080 not :80 because under devm the VM's :80 is taken by
+# devm's own Caddy, which fronts everstone.test → localhost:8080 (see devm.yaml).
 dev: build _check-config
     mkdir -p {{DATA_DIR}}
     docker rm -f {{DEV_NAME}} 2>/dev/null || true
     docker run -d \
         --name {{DEV_NAME}} \
         --restart unless-stopped \
-        -p 80:80 \
+        -p 8080:80 \
         -v {{CONFIG}}:/opt/config.yaml:ro \
         -v {{DATA_DIR}}:/opt/data \
         {{IMAGE}}
-    @sleep 3 && echo "" && curl -fsS http://localhost/health && echo "  ← /health reachable"
+    @sleep 3 && echo "" && curl -fsS http://localhost:8080/health && echo "  ← /health reachable"
 
 # Tail dev container logs (Ctrl-C to stop)
 logs:

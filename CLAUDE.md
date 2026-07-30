@@ -55,7 +55,7 @@ cd e2e && uv run pytest test_routing.py -v   # single e2e module
 
 **Notes sync chain:** the agent writes to the vault at `/opt/data/vault` via `es_notes_*`; the **livesync-bridge** mirrors that directory ↔ CouchDB; Obsidian's Self-hosted LiveSync plugin syncs CouchDB ↔ devices. The bridge's storage peer must run with `useChokidar: true` + `scanOfflineChanges: true` (set in `generate_livesync_bridge_config`) — the native Deno watcher silently drops writes into subdirectories created after it starts (e.g. each day's `journal/YYYY-MM-DD/`). Full detail (chunk-tweak matching, remote-lock): `docs/architecture.md` → "Notes vault & LiveSync."
 
-**Dev vs prod.** Dev runs inside an ephemeral **devm/SBX VM** (`devm.yaml`, gitignored); persistent state lives on a host mount that maps to the container's `/opt/data`. Prod is plain `docker run` on Unraid with bind mounts. Both: `config.yaml`→`/opt/config.yaml` (ro), data dir→`/opt/data`.
+**Dev vs prod.** Dev runs inside an ephemeral **devm/SBX VM** (`devm.yaml`, committed — portable, secret-free); persistent state lives on a host mount that maps to the container's `/opt/data`. Prod is plain `docker run` on Unraid with bind mounts. Both: `config.yaml`→`/opt/config.yaml` (ro), data dir→`/opt/data`.
 
 ## Gotchas worth knowing before you change things
 
