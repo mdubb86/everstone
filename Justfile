@@ -29,7 +29,10 @@ build:
 # CI (.github/workflows/build.yml) publishes ghcr.io/mdubb86/everstone on push:
 # :latest on main, plus :X.Y.Z and :X.Y for a tag. Unraid pulls :latest.
 # Cut a semver release: prompt for the bump, tag vX.Y.Z, push main + tag.
-release:
+# Cut a release. Interactive by default; pass a bump to run non-interactively:
+#   just release minor        # (or major / patch)
+#   just release v0.2.0       # (or 0.2.0) explicit version
+release bump="":
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{justfile_directory()}}"
@@ -44,25 +47,38 @@ release:
     echo "Current latest tag: $current"
     cur=${current#v}
     IFS=. read -r MA MI PA <<<"$cur"
-    printf "Bump:\n  1) major  -> v%s.0.0\n  2) minor  -> v%s.%s.0\n  3) patch  -> v%s.%s.%s\n  4) custom\n" \
-        "$((MA+1))" "$MA" "$((MI+1))" "$MA" "$MI" "$((PA+1))"
-    read -rp "Choice [3]: " choice
-    if [ -z "$choice" ]; then choice=3; fi
-    case "$choice" in
-        1) new="$((MA+1)).0.0";;
-        2) new="$MA.$((MI+1)).0";;
-        3) new="$MA.$MI.$((PA+1))";;
-        4) read -rp "Version (X.Y.Z, no leading v): " new;;
-        *) echo "Invalid choice."; exit 1;;
-    esac
+    bump="{{bump}}"
+    if [ -n "$bump" ]; then
+        case "$bump" in
+            major) new="$((MA+1)).0.0";;
+            minor) new="$MA.$((MI+1)).0";;
+            patch) new="$MA.$MI.$((PA+1))";;
+            v*)    new="${bump#v}";;
+            *)     new="$bump";;
+        esac
+    else
+        printf "Bump:\n  1) major  -> v%s.0.0\n  2) minor  -> v%s.%s.0\n  3) patch  -> v%s.%s.%s\n  4) custom\n" \
+            "$((MA+1))" "$MA" "$((MI+1))" "$MA" "$MI" "$((PA+1))"
+        read -rp "Choice [3]: " choice
+        if [ -z "$choice" ]; then choice=3; fi
+        case "$choice" in
+            1) new="$((MA+1)).0.0";;
+            2) new="$MA.$((MI+1)).0";;
+            3) new="$MA.$MI.$((PA+1))";;
+            4) read -rp "Version (X.Y.Z, no leading v): " new;;
+            *) echo "Invalid choice."; exit 1;;
+        esac
+    fi
     if ! [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "Not semver: $new"; exit 1; fi
     tag="v$new"
     if git rev-parse "$tag" >/dev/null 2>&1; then echo "Tag $tag already exists."; exit 1; fi
     echo
     echo "Will push main, then tag $tag and push it."
     echo "CI publishes ghcr.io/mdubb86/everstone:latest + :$new (+ :${new%.*}). Unraid pulls :latest."
-    read -rp "Proceed? [y/N] " ok
-    case "$ok" in [yY]) ;; *) echo "Aborted."; exit 1;; esac
+    if [ -z "$bump" ]; then
+        read -rp "Proceed? [y/N] " ok
+        case "$ok" in [yY]) ;; *) echo "Aborted."; exit 1;; esac
+    fi
     git push origin main
     git tag -a "$tag" -m "Release $tag"
     git push origin "$tag"
