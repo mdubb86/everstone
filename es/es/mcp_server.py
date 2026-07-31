@@ -46,8 +46,11 @@ def _client():
 
 def _notes_client():
     cfg = config.load_config()
-    vault = (cfg.get("obsidian") or {}).get("vault_name", "")
-    return VaultClient(config.vault_root(), vault)
+    obs = cfg.get("obsidian") or {}
+    return VaultClient(config.vault_root(), obs.get("vault_name", ""),
+                       journal_folder=obs.get("journal_folder", "Journal"),
+                       categories=obs.get("categories") or ["Topics"],
+                       attach_sources=config.attach_source_dirs(obs))
 
 
 @mcp.tool()
@@ -285,10 +288,11 @@ def es_notes_journal(title: str, body: str, tags: Optional[list] = None,
 @mcp.tool()
 @mcp_envelope
 def es_notes_topic(name: str, body: Optional[str] = None,
-                   update: Optional[str] = None) -> dict:
+                   update: Optional[str] = None, category: Optional[str] = None) -> dict:
     """Create/edit a topic doc. body overwrites the curated state; update appends a
-    dated line under ## Updates; neither just ensures the topic exists."""
-    return _notes_client().write_topic(name, body=body, update=update)
+    dated line under ## Updates. category files a NEW topic under an approved folder
+    (default the first configured); an existing topic updates in place."""
+    return _notes_client().write_topic(name, body=body, update=update, category=category)
 
 
 @mcp.tool()
@@ -297,6 +301,29 @@ def es_notes_topics(like: Optional[str] = None) -> list:
     """List canonical topic names (the registry); like fuzzy-matches. Use before
     creating a topic to resolve/dedup an existing one."""
     return _notes_client().list_topics(like=like)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_notes_attach(target: str, source: str) -> dict:
+    """Copy a local file into the vault next to `target` (a topic name or a note path)
+    and return {ref} — the path-qualified ![[…]] embed to place in the note body. Does
+    NOT edit the note; the agent embeds the ref via es_notes_edit / es_notes_topic.
+    source is a local path (copied in, original left in place); URLs are not fetched
+    here. source must be a file already in the agent's media cache (a Telegram upload
+    or agent-generated file) — paths outside the allowed cache dirs are rejected, since
+    the file is copied into the synced vault."""
+    return _notes_client().attach(target, source)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_notes_edit(target: str, body: Optional[str] = None,
+                  append: Optional[str] = None) -> dict:
+    """Edit an existing note (journal entry or topic; target is a note path or topic
+    name). body overwrites the body (body='' clears it); append adds to it (frontmatter
+    is preserved). Use append to embed an attachment ref returned by es_notes_attach."""
+    return _notes_client().edit_note(target, body=body, append=append)
 
 
 @mcp.tool()

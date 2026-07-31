@@ -3,8 +3,25 @@ name: null
 agent: {name: null, soul: null, instructions: null, skills: []}
 couchdb: {user: everstone, password: null, database: everstone}
 caldav: {user: everstone, password: null}
-livesync: {passphrase: null}
-obsidian: {vault_name: Everstone}
+livesync:
+  passphrase: null
+  # Canonical chunk/E2EE *format* tweaks shared by every LiveSync participant:
+  # the Obsidian plugins (baked into the setup URI) AND the bridge (seeded here
+  # as a cold-start fallback, then kept aligned at runtime via useRemoteTweaks).
+  # These MUST be identical across all clients or replication produces
+  # incompatible chunks. Single source of truth — change here only.
+  tweaks:
+    customChunkSize: 60
+    minimumChunkSize: 20
+    chunkSplitterVersion: v3-rabin-karp
+    hashAlg: xxhash64
+    E2EEAlgorithm: v2
+    useEden: false
+    enableCompression: false
+    handleFilenameCaseSensitive: false
+    doNotUseFixedRevisionForChunks: true
+    useDynamicIterationCount: false
+obsidian: {vault_name: Everstone, journal_folder: Journal, categories: [Topics]}
 telegram: {owner_user_id: null, bot_token: null, commands: []}
 github: {token: null}
 gcalcli: null

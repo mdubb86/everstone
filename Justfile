@@ -29,7 +29,10 @@ build:
 # CI (.github/workflows/build.yml) publishes ghcr.io/mdubb86/everstone on push:
 # :latest on main, plus :X.Y.Z and :X.Y for a tag. Unraid pulls :latest.
 # Cut a semver release: prompt for the bump, tag vX.Y.Z, push main + tag.
-release:
+# Cut a release. Interactive by default; pass a bump to run non-interactively:
+#   just release minor        # (or major / patch)
+#   just release v0.2.0       # (or 0.2.0) explicit version
+release bump="":
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{justfile_directory()}}"
@@ -44,42 +47,57 @@ release:
     echo "Current latest tag: $current"
     cur=${current#v}
     IFS=. read -r MA MI PA <<<"$cur"
-    printf "Bump:\n  1) major  -> v%s.0.0\n  2) minor  -> v%s.%s.0\n  3) patch  -> v%s.%s.%s\n  4) custom\n" \
-        "$((MA+1))" "$MA" "$((MI+1))" "$MA" "$MI" "$((PA+1))"
-    read -rp "Choice [3]: " choice
-    if [ -z "$choice" ]; then choice=3; fi
-    case "$choice" in
-        1) new="$((MA+1)).0.0";;
-        2) new="$MA.$((MI+1)).0";;
-        3) new="$MA.$MI.$((PA+1))";;
-        4) read -rp "Version (X.Y.Z, no leading v): " new;;
-        *) echo "Invalid choice."; exit 1;;
-    esac
+    bump="{{bump}}"
+    if [ -n "$bump" ]; then
+        case "$bump" in
+            major) new="$((MA+1)).0.0";;
+            minor) new="$MA.$((MI+1)).0";;
+            patch) new="$MA.$MI.$((PA+1))";;
+            v*)    new="${bump#v}";;
+            *)     new="$bump";;
+        esac
+    else
+        printf "Bump:\n  1) major  -> v%s.0.0\n  2) minor  -> v%s.%s.0\n  3) patch  -> v%s.%s.%s\n  4) custom\n" \
+            "$((MA+1))" "$MA" "$((MI+1))" "$MA" "$MI" "$((PA+1))"
+        read -rp "Choice [3]: " choice
+        if [ -z "$choice" ]; then choice=3; fi
+        case "$choice" in
+            1) new="$((MA+1)).0.0";;
+            2) new="$MA.$((MI+1)).0";;
+            3) new="$MA.$MI.$((PA+1))";;
+            4) read -rp "Version (X.Y.Z, no leading v): " new;;
+            *) echo "Invalid choice."; exit 1;;
+        esac
+    fi
     if ! [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "Not semver: $new"; exit 1; fi
     tag="v$new"
     if git rev-parse "$tag" >/dev/null 2>&1; then echo "Tag $tag already exists."; exit 1; fi
     echo
     echo "Will push main, then tag $tag and push it."
     echo "CI publishes ghcr.io/mdubb86/everstone:latest + :$new (+ :${new%.*}). Unraid pulls :latest."
-    read -rp "Proceed? [y/N] " ok
-    case "$ok" in [yY]) ;; *) echo "Aborted."; exit 1;; esac
+    if [ -z "$bump" ]; then
+        read -rp "Proceed? [y/N] " ok
+        case "$ok" in [yY]) ;; *) echo "Aborted."; exit 1;; esac
+    fi
     git push origin main
     git tag -a "$tag" -m "Release $tag"
     git push origin "$tag"
     echo "Done. Watch: https://github.com/mdubb86/everstone/actions"
 
-# Start the dev container on :80 (with persistent ./.everstone-data)
+# Start the dev container, publishing its :80 on the host's :8080 (with persistent
+# ./.everstone-data). Host :8080 not :80 because under devm the VM's :80 is taken by
+# devm's own Caddy, which fronts everstone.test → localhost:8080 (see devm.yaml).
 dev: build _check-config
     mkdir -p {{DATA_DIR}}
     docker rm -f {{DEV_NAME}} 2>/dev/null || true
     docker run -d \
         --name {{DEV_NAME}} \
         --restart unless-stopped \
-        -p 80:80 \
+        -p 8080:80 \
         -v {{CONFIG}}:/opt/config.yaml:ro \
         -v {{DATA_DIR}}:/opt/data \
         {{IMAGE}}
-    @sleep 3 && echo "" && curl -fsS http://localhost/health && echo "  ← /health reachable"
+    @sleep 3 && echo "" && curl -fsS http://localhost:8080/health && echo "  ← /health reachable"
 
 # Tail dev container logs (Ctrl-C to stop)
 logs:

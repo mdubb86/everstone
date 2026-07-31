@@ -301,7 +301,16 @@ def test_es_notes_topic_ok(fake_vault):
     fake_vault.write_topic.return_value = {"path": "topics/EverStone.md", "created": True}
     out = mcp_server.es_notes_topic("EverStone", body="state")
     assert out["ok"] is True and out["data"]["created"] is True
-    fake_vault.write_topic.assert_called_once_with("EverStone", body="state", update=None)
+    fake_vault.write_topic.assert_called_once_with(
+        "EverStone", body="state", update=None, category=None)
+
+
+def test_es_notes_topic_passes_category(fake_vault):
+    fake_vault.write_topic.return_value = {"path": "People/Allison.md", "created": True}
+    out = mcp_server.es_notes_topic("Allison", body="s", category="People")
+    assert out["ok"] is True
+    fake_vault.write_topic.assert_called_once_with(
+        "Allison", body="s", update=None, category="People")
 
 
 def test_es_notes_topics_ok(fake_vault):
@@ -329,6 +338,24 @@ def test_es_notes_list_ok(fake_vault):
     out = mcp_server.es_notes_list(topic="EverStone", since="2026-06-01", day=None)
     assert out == {"ok": True, "data": [{"title": "T", "path": "journal/d/T.md"}]}
     fake_vault.list_journal.assert_called_once_with(topic="EverStone", since="2026-06-01", day=None)
+
+
+def test_es_notes_attach_ok(fake_vault):
+    fake_vault.attach.return_value = {"path": "Topics/Fridge/Fridge.md",
+                                      "obsidian_deeplink": "obsidian://x",
+                                      "ref": "![[m.pdf]]", "attachment": "Topics/Fridge/m.pdf"}
+    out = mcp_server.es_notes_attach("Fridge", "/cache/m.pdf")
+    assert out["ok"] is True and out["data"]["ref"] == "![[m.pdf]]"
+    fake_vault.attach.assert_called_once_with("Fridge", "/cache/m.pdf")
+
+
+def test_es_notes_edit_ok(fake_vault):
+    fake_vault.edit_note.return_value = {"path": "Journal/2026-07-04/E/E.md",
+                                         "obsidian_deeplink": "obsidian://x", "updated": True}
+    out = mcp_server.es_notes_edit("Journal/2026-07-04/E/E.md", append="![[p.jpg]]")
+    assert out["ok"] is True and out["data"]["updated"] is True
+    fake_vault.edit_note.assert_called_once_with(
+        "Journal/2026-07-04/E/E.md", body=None, append="![[p.jpg]]")
 
 
 def test_es_cal_agenda_localizes_times(fake_svc):

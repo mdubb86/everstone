@@ -97,6 +97,9 @@ def generate_setup_livesync_script(config: dict) -> None:
     result = result.replace("{{COUCHDB_DATABASE}}", config["couchdb"]["database"])
     result = result.replace("{{LIVESYNC_PASSPHRASE}}", config["livesync"]["passphrase"])
     result = result.replace("{{PUBLIC_URL}}", config["public_url"].rstrip("/"))
+    # Same canonical chunk/E2EE tweaks the bridge gets (defaults.yaml
+    # livesync.tweaks), so the URI provisions plugins identically to the bridge.
+    result = result.replace("{{LIVESYNC_TWEAKS_JSON}}", json.dumps(config["livesync"]["tweaks"]))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(result)
@@ -351,24 +354,17 @@ def generate_livesync_bridge_config(config: dict) -> None:
                 "passphrase": config["livesync"]["passphrase"],
                 "obfuscatePassphrase": config["livesync"]["passphrase"],
                 "baseDir": "",
-                # Chunking/E2EE tweaks MUST match the plugin's settings (the conf
-                # in config/setup-obsidian-livesync, which the plugins adopt as
-                # their tweak_values). The bridge reads these only from its config
-                # — never from the remote tweak_values — and otherwise falls back
-                # to library defaults (customChunkSize 0, chunkSplitterVersion "").
-                # A mismatch makes the bridge split/hash notes differently than the
-                # plugins (e.g. a 1.7 KB note into 22 tiny chunks), breaking chunk
-                # dedup and round-trips. Keep this block in sync with that script.
-                "customChunkSize": 60,
-                "minimumChunkSize": 20,
-                "chunkSplitterVersion": "v3-rabin-karp",
-                "hashAlg": "xxhash64",
-                "E2EEAlgorithm": "v2",
-                "useEden": False,
-                "enableCompression": False,
-                "handleFilenameCaseSensitive": False,
-                "doNotUseFixedRevisionForChunks": True,
-                "useDynamicIterationCount": False,
+                # Stay aligned with the plugins' chunk/E2EE format. At runtime the
+                # bridge adopts the canonical tweak_values the clients maintain in
+                # the remote DB (useRemoteTweaks, applied on (re)start). The spread
+                # seeds those same values from defaults.yaml livesync.tweaks —
+                # identical to the setup URI — so a cold-started bridge, before any
+                # client has connected to write tweak_values, still produces the
+                # correct chunk format. Without this the bridge falls back to lib
+                # defaults (customChunkSize 0, chunkSplitterVersion "") and silently
+                # over-chunks/bloats. One source of truth; they can't diverge.
+                "useRemoteTweaks": True,
+                **config["livesync"]["tweaks"],
             },
             {
                 "type": "storage",
@@ -422,7 +418,32 @@ def set_telegram_commands(config: dict) -> None:
         print(f"[configure] WARN: setMyCommands failed ({e}). Bot still functional.")
 
 
-def setup_data_directories() -> None:
+def migrate_vault_folders(vault_dir: Path, journal_folder: str, categories: list) -> None:
+    """Rename legacy lowercase note folders to the configured capitalized names.
+
+    Only touches the two historical folders (`journal`, `topics`). No-op when the
+    source is absent or the target already exists; a harmless identity on a
+    case-insensitive filesystem (macOS dev), a real rename on the Linux container.
+    """
+    topics_target = "Topics" if "Topics" in (categories or []) else (categories or ["Topics"])[0]
+    for old, new in (("journal", journal_folder), ("topics", topics_target)):
+        if old == new:
+            continue
+        src, dst = vault_dir / old, vault_dir / new
+        if not src.is_dir():
+            continue
+        if not dst.exists():
+            print(f"[configure] Migrating vault folder {old!r} -> {new!r}")
+            src.rename(dst)
+        elif not src.samefile(dst):
+            # Both exist as DISTINCT dirs (case-sensitive FS): the legacy folder is
+            # now orphaned — invisible to es_notes_*. Surface it; don't auto-merge
+            # (collision risk). `samefile` skips the case-insensitive identity (macOS).
+            print(f"[configure] WARNING: legacy {old!r}/ left in place — {new!r}/ "
+                  f"already exists; merge {old!r} into {new!r} manually")
+
+
+def setup_data_directories(config: dict) -> None:
     """Create data directories with correct permissions."""
     data_dir = _data_dir()
 
@@ -439,9 +460,12 @@ def setup_data_directories() -> None:
         print("[configure] Initializing radicale directory")
         radicale_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize vault data directory
+    # Initialize vault data directory + migrate legacy lowercase folders
     vault_dir = data_dir / "vault"
     vault_dir.mkdir(parents=True, exist_ok=True)
+    obs = config.get("obsidian") or {}
+    migrate_vault_folders(vault_dir, obs.get("journal_folder", "Journal"),
+                          obs.get("categories") or ["Topics"])
 
     # Initialize hermes data directory
     hermes_dir = data_dir / "hermes"
@@ -479,7 +503,7 @@ def main():
 
     # Setup data directories
     print("[configure] Setting up data directories")
-    setup_data_directories()
+    setup_data_directories(config)
 
     # Generate service configs
     print("[configure] Generating CouchDB config")

@@ -6,6 +6,7 @@ entry; topics are hand-curated. The topics/ folder IS the topic-name registry.
 """
 import os
 import re
+import shutil
 from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
@@ -29,6 +30,22 @@ class InvalidTopic(Exception):
     es_code = "invalid_topic"
 
 
+class InvalidCategory(Exception):
+    es_code = "invalid_category"
+
+
+class AttachmentSourceNotFound(Exception):
+    es_code = "attachment_source_not_found"
+
+
+class AttachmentSourceForbidden(Exception):
+    es_code = "attachment_source_forbidden"
+
+
+class NoteConflict(Exception):
+    es_code = "note_conflict"
+
+
 def _sanitize_title(title: str) -> str:
     """Keep spaces/unicode; strip filesystem-illegal chars. Collapse whitespace."""
     cleaned = ILLEGAL.sub("", title)
@@ -43,6 +60,19 @@ def _unique_filename(folder: Path, stem: str) -> str:
     while (folder / f"{stem} {n}.md").exists():
         n += 1
     return f"{stem} {n}.md"
+
+
+def _unique_attachment(folder: Path, filename: str) -> str:
+    """Sanitized original basename, deduped ' 2', ' 3'… before the extension."""
+    clean = re.sub(r"\s+", " ", ILLEGAL.sub("", filename)).strip() or "attachment"
+    stem, dot, ext = clean.rpartition(".")
+    if not dot:
+        stem, ext = clean, ""
+    cand, n = clean, 2
+    while (folder / cand).exists():
+        cand = f"{stem} {n}.{ext}" if ext else f"{stem} {n}"
+        n += 1
+    return cand
 
 
 def _normalize_topic(topic: str) -> str:
@@ -81,6 +111,15 @@ def _split_frontmatter(text: str):
     return {}, text
 
 
+def _split_raw(text: str):
+    """Return (frontmatter_block_with_delimiters, body). No frontmatter → ('', text)."""
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            return text[:end + 5], text[end + 5:]
+    return "", text
+
+
 def _today() -> str:
     return date.today().isoformat()
 
@@ -90,9 +129,23 @@ def _now_iso() -> str:
 
 
 class VaultClient:
-    def __init__(self, root, vault_name: str = ""):
+    def __init__(self, root, vault_name: str = "",
+                 journal_folder: str = "Journal", categories=("Topics",),
+                 attach_sources=None):
         self.root = Path(root)
         self.vault_name = vault_name
+        self.journal_folder = journal_folder or "Journal"
+        self.categories = list(categories) if categories else ["Topics"]
+        # Directories es_notes_attach may copy FROM. Fail-closed: empty → nothing
+        # allowed. Resolved once so symlink/`..` escapes can't dodge the check.
+        self.attach_sources = [Path(d).resolve() for d in (attach_sources or [])]
+
+    def _within_root(self, p: Path) -> bool:
+        """True if `p` (symlinks + `..` resolved) is inside the vault root."""
+        try:
+            return p.resolve().is_relative_to(self.root.resolve())
+        except (OSError, ValueError):
+            return False
 
     def _rel(self, path: Path) -> str:
         return str(path.relative_to(self.root))
@@ -108,22 +161,35 @@ class VaultClient:
         clean = _sanitize_title(title)
         if not clean:
             raise InvalidTopic(f"empty title after sanitization: {title!r}")
-        folder = self.root / "journal" / _today()
+        folder = self.root / self.journal_folder / _today()
         folder.mkdir(parents=True, exist_ok=True)
         fname = _unique_filename(folder, clean)
         fm = _render_frontmatter(_now_iso(), "everstone", tags or [], topics or [], meta or {})
         (folder / fname).write_text(fm + (body or "") + "\n")
         return self._result(folder / fname)
 
-    def _topic_path(self, name: str) -> Path:
+    def _find_topic(self, clean: str) -> Optional[Path]:
+        """First existing `clean` topic across category folders (flat OR folder-note form)."""
+        for cat in self.categories:
+            flat = self.root / cat / f"{clean}.md"
+            if flat.is_file():
+                return flat
+            folder = self.root / cat / clean / f"{clean}.md"
+            if folder.is_file():
+                return folder
+        return None
+
+    def write_topic(self, name: str, body: Optional[str] = None,
+                    update: Optional[str] = None, category: Optional[str] = None) -> dict:
         clean = _sanitize_title(name)
         if not clean:
             raise InvalidTopic(f"empty topic name: {name!r}")
-        return self.root / "topics" / f"{clean}.md"
-
-    def write_topic(self, name: str, body: Optional[str] = None,
-                    update: Optional[str] = None) -> dict:
-        path = self._topic_path(name)
+        if category is not None and category not in self.categories:
+            raise InvalidCategory(f"category not allowed: {category!r}")
+        path = self._find_topic(clean)
+        if path is None:
+            cat = category or self.categories[0]
+            path = self.root / cat / f"{clean}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         created = not path.exists()
         text = "" if created else path.read_text()
@@ -138,13 +204,24 @@ class VaultClient:
         path.write_text(text)
         return self._result(path, created=created, updated=not created)
 
+    @staticmethod
+    def _md_entries(folder: Path) -> List[Path]:
+        """Every note body in `folder`: flat *.md plus same-name folder-notes."""
+        out = list(folder.glob("*.md"))
+        for sub in folder.iterdir():
+            if sub.is_dir() and (sub / f"{sub.name}.md").is_file():
+                out.append(sub / f"{sub.name}.md")
+        return out
+
     def list_topics(self, like: Optional[str] = None) -> List[str]:
-        folder = self.root / "topics"
-        if not folder.is_dir():
-            return []
-        names = sorted(p.stem for p in folder.glob("*.md"))
+        names = set()
+        for cat in self.categories:
+            folder = self.root / cat
+            if folder.is_dir():
+                names.update(p.stem for p in self._md_entries(folder))
+        result = sorted(names)
         if not like:
-            return names
+            return result
         q = like.lower()
 
         def matches(name: str) -> bool:
@@ -155,17 +232,69 @@ class VaultClient:
             it = iter(low)
             return all(ch in it for ch in q)
 
-        return [n for n in names if matches(n)]
+        return [n for n in result if matches(n)]
 
     def _resolve(self, target: str) -> Path:
+        # Containment (_within_root) gates the raw-path branches so an absolute or
+        # `../` target can't escape the vault (read OR write). The topic branch
+        # builds paths under root/<category> from a sanitized name, so it's safe.
         cand = self.root / target
-        if cand.is_file():
+        if cand.is_file() and self._within_root(cand):
             return cand
-        if not target.endswith(".md"):
-            tcand = self._topic_path(target)
-            if tcand.is_file():
-                return tcand
+        if target.endswith(".md"):
+            p = Path(target)
+            promoted = self.root / p.parent / p.stem / p.name
+            if promoted.is_file() and self._within_root(promoted):
+                return promoted
+        else:
+            clean = _sanitize_title(target)
+            found = self._find_topic(clean) if clean else None
+            if found:
+                return found
         raise NoteNotFound(f"note not found: {target!r}")
+
+    def _is_structural_folder(self, folder: Path) -> bool:
+        """True if `folder` is a note *container* (a category folder, or a day folder
+        under the journal folder) rather than a note's own folder-note directory."""
+        return ((folder.parent == self.root and folder.name in self.categories)
+                or folder.parent == self.root / self.journal_folder)
+
+    def attach(self, target: str, source: str) -> dict:
+        note = self._resolve(target)
+        src = Path(source)
+        if not src.is_file():
+            raise AttachmentSourceNotFound(f"source not found: {source!r}")
+        # Confine source to an allowlisted dir (the Hermes media cache), resolving
+        # symlinks first so a link inside the cache can't point at a secret.
+        real = src.resolve()
+        if not any(real.is_relative_to(d) for d in self.attach_sources):
+            raise AttachmentSourceForbidden(
+                f"source not in an allowed attachments directory: {source!r}")
+        if self._is_structural_folder(note.parent):   # flat → promote to same-name folder-note
+            folder = note.parent / note.stem
+            dest = folder / note.name
+            if dest.exists():   # a folder-note of this name already exists → don't clobber
+                raise NoteConflict(
+                    f"note exists in both flat and folder form: {note.stem!r}")
+            folder.mkdir(parents=True, exist_ok=True)
+            note = note.rename(dest)
+        folder = note.parent
+        att = _unique_attachment(folder, src.name)
+        shutil.copy2(src, folder / att)
+        # Path-qualified embed so same-named attachments in other notes can't
+        # cross-resolve in Obsidian.
+        rel = self._rel(folder / att)
+        return self._result(note, ref=f"![[{rel}]]", attachment=rel)
+
+    def edit_note(self, target: str, body: Optional[str] = None,
+                  append: Optional[str] = None) -> dict:
+        path = self._resolve(target)
+        fm_text, existing = _split_raw(path.read_text())
+        new_body = body if body is not None else existing
+        if append is not None:
+            new_body = new_body.rstrip() + "\n" + append
+        path.write_text(fm_text + new_body.rstrip() + "\n")
+        return self._result(path, updated=True)
 
     def read_note(self, target: str) -> dict:
         path = self._resolve(target)
@@ -174,7 +303,7 @@ class VaultClient:
 
     def list_journal(self, topic: Optional[str] = None, since: Optional[str] = None,
                      day: Optional[str] = None) -> List[dict]:
-        base = self.root / "journal"
+        base = self.root / self.journal_folder
         if not base.is_dir():
             return []
         want_topic = _normalize_topic(topic) if topic else None
@@ -187,7 +316,7 @@ class VaultClient:
                 continue
             if since and d < since:
                 continue
-            for f in sorted(dayfolder.glob("*.md")):
+            for f in sorted(self._md_entries(dayfolder)):
                 fm, _ = _split_frontmatter(f.read_text())
                 if want_topic and want_topic not in (fm.get("topics") or []):
                     continue

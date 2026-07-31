@@ -1,0 +1,132 @@
+project:
+  name: everstone
+
+# everstone's multi-stage build is disk-heavy (CouchDB/Erlang from source, the
+# Hermes venv, the ~300MB Camoufox binary, Firefox libs) and Docker CE's containerd
+# snapshotter keeps compressed content + extracted snapshots at once (~2x peak).
+# The 32GB default is tight; 64GB gives headroom for the build + cross-run cache.
+disk: "64GB"
+
+# Docker as a first-class devm feature (devm 0.7): installs Docker in the VM AND
+# makes container egress trust iron-proxy transparently. everstone builds + runs
+# as a Docker container *inside* the VM (couchdb/caddy/radicale/hermes/engraph).
+# This supersedes the old hand-rolled `packages: [docker.io]` + docker.socket
+# SocketGroup override — the feature owns daemon install and guest-user access.
+docker: true
+
+# Apt packages installed at VM creation. everstone's dev workflow is entirely
+# `just`-driven (build/dev/es/esadmin/e2e); trixie ships `just` in apt.
+packages:
+  - just
+
+# Provisioning runs install commands as the unprivileged guest user `devm`
+# (uid 1000, HOME=/home/devm) — NOT root — but `devm` has passwordless sudo.
+# Egress is UNRESTRICTED during provisioning; the iron-proxy allowlist below only
+# gates the running VM.
+install:
+  # Claude Code (native installer). It installs as `devm` into ~/.local/bin/claude
+  # (the canonical path Claude self-checks for). Relocate the versioned binary to
+  # /usr/local/bin so it's on the default system PATH regardless of login-shell
+  # PATH resets. (The old recipe assumed install ran as root under an `agent` user;
+  # neither holds here — hence installing as `devm` + a sudo relocate.)
+  - curl -fsSL https://claude.ai/install.sh | bash && sudo install -m 755 "$HOME/.local/share/claude/versions/"* /usr/local/bin/claude
+
+# Persist Claude Code state (OAuth login + conversation transcripts + memory)
+# across VM recreates. CLAUDE_CONFIG_DIR relocates all of Claude's ~/.claude state
+# to this path. .devm/.claude is gitignored AND rides inside the workspace
+# bind-mount, so it lives on the Mac host and survives `devm teardown` (which
+# deletes the Tart VM, not the repo). devm never prunes it — it only rewrites its
+# own static files + templates/*.sh.
+env:
+  # Moved from project.hostname_apex (deprecated in devm 0.3). Exposed to templates
+  # as {{.Env.HOSTNAME_APEX}}; not used by Caddy/devm — just a template variable.
+  HOSTNAME_APEX: test.everstone.waage.haus
+  # devm expands $WORKSPACE (the repo root) in env values, so these are now
+  # portable host-relative paths and the file is safe to commit. .devm/ is
+  # gitignored, rides inside the workspace bind-mount (so it lives on the Mac
+  # host), and survives `devm teardown` (which deletes the Tart VM, not the
+  # repo). devm never prunes it — it only rewrites its own static files.
+  CLAUDE_CONFIG_DIR: $WORKSPACE/.devm/.claude
+  # Kill Sentry error reporting + telemetry (cleaner than allowlisting *.sentry.io).
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+  # everstone's /opt/data binds from here. Same .devm/ treatment as the claude config.
+  EVERSTONE_DATA_DIR: $WORKSPACE/.devm/.everstone
+
+# iron-proxy egress allowlist (per-project; enforced by SNI/Host on the Mac).
+# Gates the RUNNING VM only — install steps above run with unrestricted egress.
+# iron-proxy egress allowlist. `docker: true` auto-allows the Docker Hub hosts, BUT
+# a live `devm reconcile` rebuilds the running allowlist from THIS list and drops the
+# implicit ones — so we pin them explicitly here to survive reconciles. The rest are
+# what the image build + agent need: Alpine, Go (caddy), CouchDB source, Rust/engraph
+# crates, Python wheels, JSR (livesync-bridge/Deno), Telegram bot API, ChatGPT/Codex.
+network:
+  allow:
+    # Docker Hub (buildkit `docker/dockerfile` frontend + base-image pulls)
+    - registry-1.docker.io
+    - auth.docker.io
+    - production.cloudfront.docker.com
+    - dl-cdn.alpinelinux.org
+    - go.dev
+    - dl.google.com               # go.dev/dl/* 302-redirects here for the tarball
+    - storage.googleapis.com
+    - proxy.golang.org
+    - sum.golang.org
+    - github.com
+    - api.github.com              # uv git-dependency resolution (.[all]) + gh metadata
+    - objects.githubusercontent.com     # legacy GitHub release-asset CDN
+    - release-assets.githubusercontent.com  # current GitHub release-asset CDN (xcaddy/s6/deno/camoufox)
+    - registry.npmjs.org          # npm install (camofox-browser) + deno npm: deps
+    - archive.apache.org
+    - crates.io
+    - static.crates.io
+    - index.crates.io
+    - pypi.org
+    - files.pythonhosted.org
+    - jsr.io
+    # livesync-bridge (notes sync) — deno fetches its deps from these at build
+    # pre-cache time and at runtime. jsr.io + registry.npmjs.org (above/below)
+    # cover jsr/npm specifiers; these cover deno.land/x + deno's own downloads.
+    - deno.land
+    - dl.deno.land
+    - api.telegram.org
+    # Hermes' Telegram adapter discovers Telegram API fallback IPs via DNS-over-HTTPS
+    # before connecting; without these the connection stalls (attempt N/8).
+    - cloudflare-dns.com
+    - dns.google
+    - chatgpt.com
+    - "*.openai.com"
+    # Claude Code — self-contained allowlist (per `devm recipes get tool/ai/claude`)
+    - api.anthropic.com         # Claude API (core)
+    - claude.ai                 # OAuth login + install.sh
+    - platform.claude.com       # Console account auth
+    - downloads.claude.ai       # native installer + plugin downloads
+    - raw.githubusercontent.com # plugin marketplace + /release-notes
+    - deb.debian.org     # VM base (Ubuntu/Debian) apt packages
+    - security.debian.org
+    - addons.mozilla.org # Firefox add-ons
+    # Agent web_search (Hermes' keyless `ddgs` backend fans out across engines) +
+    # reference sites the agent fetches. Add engines here as ddgs adds/denies them.
+    - html.duckduckgo.com
+    - search.brave.com
+    - search.yahoo.com
+    - www.google.com
+    - www.mojeek.com
+    - www.startpage.com
+    - en.wikipedia.org
+    - grokipedia.com
+
+# everstone's internal Caddy serves the sync surfaces (/db, /caldav, /git, /health)
+# inside the VM. It MUST NOT publish on VM :80 — devm runs its OWN Caddy on :80 to
+# front `hostname` services (and reverse-proxies each hostname to localhost:<port>).
+# So the dev container publishes on VM :8080 (`just dev` -p 8080:80) and this
+# service points there; devm's Caddy fronts everstone.test → localhost:8080.
+# `expose_host: true` opts the hostname into devm's shared LAN dispatcher on
+# <mac-lan-ip>:42000 (devm 0.9.7 — the old "0.0.0.0:80" bind-IP is ignored). LAN
+# path: NPM (holding the trusted cert for the public apex) forwards to
+# <mac-lan-ip>:42000 preserving the Host header; devm dispatches by Host → this
+# service. The hostname below is what NPM must send as Host.
+services:
+  everstone:
+    port: 8080
+    hostname: everstone.test
+    expose_host: true

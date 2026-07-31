@@ -52,14 +52,31 @@
       "type": "object",
       "required": ["passphrase"],
       "properties": {
-        "passphrase": { "type": "string", "minLength": 1 }
+        "passphrase": { "type": "string", "minLength": 1 },
+        "tweaks": { "type": "object" }
       }
     },
     "obsidian": {
       "type": "object",
       "required": ["vault_name"],
       "properties": {
-        "vault_name": { "type": "string", "minLength": 1 }
+        "vault_name": { "type": "string", "minLength": 1 },
+        "journal_folder": { "type": "string", "minLength": 1 },
+        "categories": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        },
+        "attachments": {
+          "type": "object",
+          "properties": {
+            "sources": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "minItems": 1
+            }
+          }
+        }
       }
     },
     "telegram": {

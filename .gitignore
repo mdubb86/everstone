@@ -22,7 +22,6 @@ radfire_data/
 
 # devm: CLI-owned render cache + persisted VM state (Claude config/creds, etc.)
 .devm/
-/devm.yaml
 
 # Build/export artifacts
 *.tar
@@ -32,6 +31,9 @@ docs/superpowers/
 
 # User config (template lives in config.example.yaml)
 /config.yaml
+
+# Personal / operational notes (prod access, host-specific) — local only
+/CLAUDE.local.md
 
 # OS
 .DS_Store

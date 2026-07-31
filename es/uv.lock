@@ -359,7 +359,7 @@ requires-dist = [
     { name = "google-auth-oauthlib", specifier = ">=1" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "icalendar", specifier = ">=5.0" },
-    { name = "mcp", specifier = ">=1.0" },
+    { name = "mcp", specifier = ">=1.0,<2" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "trafilatura", specifier = ">=1.8" },
 ]

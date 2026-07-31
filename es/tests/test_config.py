@@ -29,3 +29,17 @@ def test_missing_file_raises(tmp_path, monkeypatch):
 
 def test_caldav_url_is_the_radicale_constant():
     assert config.CALDAV_URL == "http://localhost:5232"
+
+
+def test_attach_source_dirs_defaults_to_hermes_cache():
+    assert config.attach_source_dirs({}) == ["/opt/data/hermes/profiles/everstone/cache"]
+
+
+def test_attach_source_dirs_honors_config_override():
+    obs = {"attachments": {"sources": ["/a/cache", "/b/inbox"]}}
+    assert config.attach_source_dirs(obs) == ["/a/cache", "/b/inbox"]
+
+
+def test_attach_source_dirs_ignores_empty_override():
+    assert config.attach_source_dirs({"attachments": {"sources": []}}) == \
+        ["/opt/data/hermes/profiles/everstone/cache"]

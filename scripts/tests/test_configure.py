@@ -10,7 +10,7 @@ SAMPLE = {
   "agent": {"name": "Jarvis", "soul": "I am <agent.name>, in <name>'s hub. Vault: <obsidian.vault_name>.", "skills": []},
   "couchdb": {"user":"u","password":"p","database":"vault"},
   "caldav": {"user":"cu","password":"cp"},
-  "livesync": {"passphrase":"ph"},
+  "livesync": {"passphrase":"ph", "tweaks": {"customChunkSize":60, "chunkSplitterVersion":"v3-rabin-karp", "hashAlg":"xxhash64", "doNotUseFixedRevisionForChunks":True, "handleFilenameCaseSensitive":False}},
   "obsidian": {"vault_name":"myvault"},
   "telegram": {"owner_user_id":111,"bot_token":"TKN","commands":[]},
 }
@@ -52,9 +52,10 @@ def test_generate_livesync_bridge_config(tmp_path):
         # and use chokidar so writes into freshly-created subdirs aren't dropped.
         assert storage_peer["scanOfflineChanges"] is True
         assert storage_peer["useChokidar"] is True
-        # The bridge reads chunk/E2EE tweaks only from its own config (never the
-        # remote tweak_values), so they must match the plugin's settings in
-        # config/setup-obsidian-livesync or the bridge chunks/hashes differently.
+        # Bridge aligns to the plugins' chunk/E2EE format at runtime via
+        # useRemoteTweaks, and seeds the same canonical values (defaults.yaml
+        # livesync.tweaks) for cold start — single source of truth, no drift.
+        assert couchdb_peer["useRemoteTweaks"] is True
         assert couchdb_peer["customChunkSize"] == 60
         assert couchdb_peer["chunkSplitterVersion"] == "v3-rabin-karp"
         assert couchdb_peer["doNotUseFixedRevisionForChunks"] is True
@@ -252,5 +253,64 @@ def test_config_schema_has_brave_api_key():
     assert "api_key" in brave["properties"], "brave.api_key missing from schema"
     # Optional, like github — never required.
     assert "brave" not in schema.get("required", [])
+
+
+def test_migrate_vault_folders_renames_legacy(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "journal" / "2026-06-01").mkdir(parents=True)
+    (vault / "topics").mkdir(parents=True)
+    (vault / "topics" / "Home network.md").write_text("x")
+    configure.migrate_vault_folders(vault, "Journal", ["Topics"])
+    # On case-sensitive FS the dirs are renamed; on case-insensitive they already
+    # ARE the target. Either way the capitalized names must resolve with content.
+    assert (vault / "Journal" / "2026-06-01").is_dir()
+    assert (vault / "Topics" / "Home network.md").is_file()
+
+
+def test_migrate_vault_folders_noop_when_target_exists(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "journal").mkdir(parents=True)
+    (vault / "journal" / "old.md").write_text("old")
+    # exist_ok=True: on case-sensitive FS this creates a real second dir; on
+    # case-insensitive FS (macOS dev) it's a no-op since "Journal" IS "journal".
+    (vault / "Journal").mkdir(parents=True, exist_ok=True)
+    (vault / "Journal" / "new.md").write_text("new")
+    configure.migrate_vault_folders(vault, "Journal", ["Topics"])
+    assert (vault / "Journal" / "new.md").read_text() == "new"  # not clobbered
+
+
+def test_migrate_warns_and_leaves_when_both_distinct_folders_exist(tmp_path, capsys):
+    # Custom journal_folder ('Diary') so legacy 'journal' and target 'Diary' are
+    # genuinely distinct on any filesystem — the real "orphaned legacy" case.
+    vault = tmp_path / "vault"
+    (vault / "journal").mkdir(parents=True)
+    (vault / "journal" / "legacy.md").write_text("legacy")
+    (vault / "Diary").mkdir(parents=True)
+    (vault / "Diary" / "current.md").write_text("current")
+    configure.migrate_vault_folders(vault, "Diary", ["Topics"])
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "journal" in out
+    assert (vault / "journal" / "legacy.md").read_text() == "legacy"   # left in place
+    assert (vault / "Diary" / "current.md").read_text() == "current"   # untouched
+
+
+def test_migrate_idempotent_on_second_run(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "journal" / "2026-06-01").mkdir(parents=True)
+    (vault / "journal" / "2026-06-01" / "e.md").write_text("entry")
+    configure.migrate_vault_folders(vault, "Journal", ["Topics"])
+    configure.migrate_vault_folders(vault, "Journal", ["Topics"])  # second run: stable
+    assert (vault / "Journal" / "2026-06-01" / "e.md").read_text() == "entry"
+
+
+def test_migrate_custom_journal_folder_and_category(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "journal" / "d").mkdir(parents=True)
+    (vault / "topics").mkdir(parents=True)
+    (vault / "topics" / "T.md").write_text("t")
+    # journal -> Diary; topics -> first category (Projects) since 'Topics' absent
+    configure.migrate_vault_folders(vault, "Diary", ["Projects", "People"])
+    assert (vault / "Diary" / "d").is_dir()
+    assert (vault / "Projects" / "T.md").read_text() == "t"
 
 

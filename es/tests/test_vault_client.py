@@ -64,7 +64,7 @@ def test_write_journal_creates_dated_file(vc, tmp_path, monkeypatch):
     monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-06-21T14:32")
     out = vc.write_journal("Update on EverStone notes model", "the body",
                            tags=["everstone"], topics=["EverStone"], meta=None)
-    p = tmp_path / "journal" / "2026-06-21" / "Update on EverStone notes model.md"
+    p = tmp_path / "Journal" / "2026-06-21" / "Update on EverStone notes model.md"
     assert p.exists()
     text = p.read_text()
     assert "the body" in text
@@ -84,14 +84,14 @@ def test_write_journal_collision_suffix(vc, tmp_path, monkeypatch):
 
 def test_write_topic_creates_empty(vc, tmp_path):
     out = vc.write_topic("Home network")
-    p = tmp_path / "topics" / "Home network.md"
+    p = tmp_path / "Topics" / "Home network.md"
     assert p.exists() and out["created"] is True
 
 
 def test_write_topic_sets_body(vc, tmp_path):
     vc.write_topic("Home network")
     out = vc.write_topic("Home network", body="Router in the closet.")
-    assert (tmp_path / "topics" / "Home network.md").read_text().strip() == "Router in the closet."
+    assert (tmp_path / "Topics" / "Home network.md").read_text().strip() == "Router in the closet."
     assert out["created"] is False
 
 
@@ -99,7 +99,7 @@ def test_write_topic_appends_update(vc, tmp_path, monkeypatch):
     monkeypatch.setattr(vault_client, "_today", lambda: "2026-06-21")
     vc.write_topic("Home network", body="State.")
     vc.write_topic("Home network", update="Swapped the router.")
-    text = (tmp_path / "topics" / "Home network.md").read_text()
+    text = (tmp_path / "Topics" / "Home network.md").read_text()
     assert "## Updates" in text
     assert "- 2026-06-21: Swapped the router." in text
     assert "State." in text
@@ -141,6 +141,24 @@ def test_read_note_missing_topic_raises(vc):
         vc.read_note("Nonexistent")
 
 
+def test_edit_note_append_preserves_frontmatter(tmp_path, monkeypatch):
+    monkeypatch.setattr(vault_client, "_today", lambda: "2026-07-04")
+    monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-07-04T09:00")
+    vc = vault_client.VaultClient(tmp_path, "V")
+    out = vc.write_journal("Entry", "line one", tags=None, topics=["EverStone"], meta=None)
+    vc.edit_note(out["path"], append="![[photo.jpg]]")
+    got = vc.read_note(out["path"])
+    assert "line one" in got["body"] and "![[photo.jpg]]" in got["body"]
+    assert got["frontmatter"]["topics"] == ["[[EverStone]]"]
+
+
+def test_edit_note_body_overwrites(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc.write_topic("Fridge", body="old")
+    vc.edit_note("Fridge", body="new state")
+    assert vc.read_note("Fridge")["body"].strip() == "new state"
+
+
 def _seed_two_days(vc, monkeypatch):
     monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-06-20T09:00")
     monkeypatch.setattr(vault_client, "_today", lambda: "2026-06-20")
@@ -168,3 +186,271 @@ def test_list_journal_by_topic(vc, monkeypatch):
 def test_list_journal_since(vc, monkeypatch):
     _seed_two_days(vc, monkeypatch)
     assert [e["title"] for e in vc.list_journal(since="2026-06-21")] == ["Day21 entry"]
+
+
+def test_journal_folder_is_configurable(tmp_path, monkeypatch):
+    monkeypatch.setattr(vault_client, "_today", lambda: "2026-07-04")
+    monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-07-04T09:00")
+    vc = vault_client.VaultClient(tmp_path, "V", journal_folder="Diary")
+    vc.write_journal("Note", "b", tags=None, topics=None, meta=None)
+    assert (tmp_path / "Diary" / "2026-07-04" / "Note.md").exists()
+
+
+def test_write_topic_defaults_to_first_category(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics", "People"))
+    vc.write_topic("Kitchen fridge", body="state")
+    assert (tmp_path / "Topics" / "Kitchen fridge.md").exists()
+
+
+def test_write_topic_files_under_named_category(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics", "People"))
+    vc.write_topic("Allison", body="s", category="People")
+    assert (tmp_path / "People" / "Allison.md").exists()
+
+
+def test_write_topic_rejects_offlist_category(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    with pytest.raises(vault_client.InvalidCategory):
+        vc.write_topic("X", body="s", category="Projects")
+
+
+def test_write_topic_existing_updates_in_place_ignoring_category(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics", "People"))
+    vc.write_topic("Allison", body="s", category="People")
+    vc.write_topic("Allison", update="note")  # no category → must find existing in People
+    assert "note" in (tmp_path / "People" / "Allison.md").read_text()
+    assert not (tmp_path / "Topics" / "Allison.md").exists()
+
+
+def test_list_topics_scans_all_categories(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics", "People"))
+    vc.write_topic("Fridge"); vc.write_topic("Allison", category="People")
+    assert sorted(vc.list_topics()) == ["Allison", "Fridge"]
+
+
+def _make_folder_note(base, name, body="x"):
+    d = base / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.md").write_text(body)
+    return d / f"{name}.md"
+
+
+def test_resolve_finds_folder_note_topic(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    _make_folder_note(tmp_path / "Topics", "Kitchen fridge", "body")
+    got = vc.read_note("Kitchen fridge")
+    assert got["body"].strip() == "body"
+
+
+def test_resolve_stale_flat_relpath_falls_back_to_folder(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    _make_folder_note(tmp_path / "Topics", "Fridge", "b")
+    got = vc.read_note("Topics/Fridge.md")   # the pre-promotion handle
+    assert got["body"].strip() == "b"
+
+
+def test_list_topics_includes_folder_notes(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc.write_topic("Flat")
+    _make_folder_note(tmp_path / "Topics", "Foldered")
+    assert sorted(vc.list_topics()) == ["Flat", "Foldered"]
+
+
+def test_list_journal_includes_folder_notes(tmp_path, monkeypatch):
+    vc = vault_client.VaultClient(tmp_path, "V")
+    monkeypatch.setattr(vault_client, "_today", lambda: "2026-07-04")
+    monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-07-04T09:00")
+    vc.write_journal("Flat entry", "b", tags=None, topics=None, meta=None)
+    _make_folder_note(tmp_path / "Journal" / "2026-07-04", "Foldered entry", "---\n---\nb")
+    assert {e["title"] for e in vc.list_journal()} == {"Flat entry", "Foldered entry"}
+
+
+def test_attach_promotes_flat_topic_and_copies(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",),
+                                  attach_sources=[str(tmp_path)])
+    vc.write_topic("Kitchen fridge", body="state")
+    src = tmp_path / "src.pdf"; src.write_bytes(b"%PDF-1.4")
+    out = vc.attach("Kitchen fridge", str(src))
+    assert (tmp_path / "Topics" / "Kitchen fridge" / "Kitchen fridge.md").exists()
+    assert not (tmp_path / "Topics" / "Kitchen fridge.md").exists()
+    assert (tmp_path / "Topics" / "Kitchen fridge" / "src.pdf").exists()
+    assert out["ref"] == "![[Topics/Kitchen fridge/src.pdf]]"
+    assert src.exists()  # original left in place (copied, not moved)
+
+
+def test_attach_second_file_no_double_promote(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",),
+                                  attach_sources=[str(tmp_path)])
+    vc.write_topic("Fridge", body="s")
+    s1 = tmp_path / "a.png"; s1.write_bytes(b"1")
+    s2 = tmp_path / "b.png"; s2.write_bytes(b"2")
+    vc.attach("Fridge", str(s1))
+    vc.attach("Fridge", str(s2))
+    folder = tmp_path / "Topics" / "Fridge"
+    assert (folder / "a.png").exists() and (folder / "b.png").exists()
+    assert (folder / "Fridge.md").exists()
+
+
+def test_attach_collision_suffixes(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",),
+                                  attach_sources=[str(tmp_path)])
+    vc.write_topic("Fridge", body="s")
+    for _ in range(2):
+        s = tmp_path / "dup.png"; s.write_bytes(b"x")
+        vc.attach("Fridge", str(s))
+    folder = tmp_path / "Topics" / "Fridge"
+    assert (folder / "dup.png").exists() and (folder / "dup 2.png").exists()
+
+
+def test_attach_promotes_journal_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(vault_client, "_today", lambda: "2026-07-04")
+    monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-07-04T09:00")
+    vc = vault_client.VaultClient(tmp_path, "V", attach_sources=[str(tmp_path)])
+    out = vc.write_journal("Router swap", "b", tags=None, topics=None, meta=None)
+    s = tmp_path / "photo.jpg"; s.write_bytes(b"x")
+    vc.attach(out["path"], str(s))
+    day = tmp_path / "Journal" / "2026-07-04"
+    assert (day / "Router swap" / "Router swap.md").exists()
+    assert (day / "Router swap" / "photo.jpg").exists()
+
+
+def test_attach_topic_titled_like_category_promotes(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",),
+                                  attach_sources=[str(tmp_path)])
+    vc.write_topic("Topics", body="s")   # Topics/Topics.md — title == category (degenerate)
+    s = tmp_path / "a.png"; s.write_bytes(b"x")
+    vc.attach("Topics", str(s))
+    assert (tmp_path / "Topics" / "Topics" / "Topics.md").exists()
+    assert (tmp_path / "Topics" / "Topics" / "a.png").exists()
+    assert not (tmp_path / "Topics" / "Topics.md").exists()  # flat gone (promoted)
+
+
+def test_attach_journal_titled_like_day_promotes(tmp_path, monkeypatch):
+    monkeypatch.setattr(vault_client, "_today", lambda: "2026-07-04")
+    monkeypatch.setattr(vault_client, "_now_iso", lambda: "2026-07-04T09:00")
+    vc = vault_client.VaultClient(tmp_path, "V", attach_sources=[str(tmp_path)])
+    out = vc.write_journal("2026-07-04", "b", tags=None, topics=None, meta=None)  # title == day
+    s = tmp_path / "p.jpg"; s.write_bytes(b"x")
+    vc.attach(out["path"], str(s))
+    day = tmp_path / "Journal" / "2026-07-04"
+    assert (day / "2026-07-04" / "2026-07-04.md").exists()
+    assert (day / "2026-07-04" / "p.jpg").exists()
+
+
+def test_attach_missing_source_raises(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",),
+                                  attach_sources=[str(tmp_path)])
+    vc.write_topic("Fridge", body="s")
+    with pytest.raises(vault_client.AttachmentSourceNotFound):
+        vc.attach("Fridge", str(tmp_path / "nope.pdf"))
+
+
+# --- source confinement (secret-exfiltration guard) ---
+
+def _cache_vault(tmp_path):
+    """A vault whose only allowed attachment source is tmp_path/cache."""
+    cache = tmp_path / "cache"; cache.mkdir()
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",),
+                                  attach_sources=[str(cache)])
+    vc.write_topic("Fridge", body="s")
+    return vc, cache
+
+
+def test_attach_source_inside_allowlist_ok(tmp_path):
+    vc, cache = _cache_vault(tmp_path)
+    src = cache / "photo.jpg"; src.write_bytes(b"x")
+    out = vc.attach("Fridge", str(src))
+    assert (tmp_path / "Topics" / "Fridge" / "photo.jpg").exists()
+    assert out["ref"].endswith("photo.jpg]]")
+
+
+def test_attach_source_outside_allowlist_forbidden(tmp_path):
+    vc, _cache = _cache_vault(tmp_path)
+    secret = tmp_path / "config.yaml"; secret.write_text("bot_token: SECRET")
+    with pytest.raises(vault_client.AttachmentSourceForbidden):
+        vc.attach("Fridge", str(secret))
+    assert not (tmp_path / "Topics" / "Fridge").exists()  # nothing copied/promoted
+
+
+def test_attach_source_absolute_outside_forbidden(tmp_path):
+    vc, _cache = _cache_vault(tmp_path)
+    with pytest.raises(vault_client.AttachmentSourceForbidden):
+        vc.attach("Fridge", "/etc/hosts")   # real absolute file, outside the allowlist
+
+
+def test_attach_source_symlink_escape_forbidden(tmp_path):
+    vc, cache = _cache_vault(tmp_path)
+    secret = tmp_path / "secret.txt"; secret.write_text("SECRET")
+    link = cache / "innocent.txt"; link.symlink_to(secret)  # lives in cache, points out
+    with pytest.raises(vault_client.AttachmentSourceForbidden):
+        vc.attach("Fridge", str(link))
+
+
+def test_attach_no_allowed_sources_forbids_everything(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))  # no attach_sources
+    vc.write_topic("Fridge", body="s")
+    src = tmp_path / "x.png"; src.write_bytes(b"1")
+    with pytest.raises(vault_client.AttachmentSourceForbidden):
+        vc.attach("Fridge", str(src))
+
+
+# --- target confinement (traversal / arbitrary overwrite guard) ---
+
+def test_resolve_rejects_parent_traversal(tmp_path):
+    outside = tmp_path.parent / "outside_note.md"; outside.write_text("secret body")
+    vc = vault_client.VaultClient(tmp_path, "V")
+    with pytest.raises(vault_client.NoteNotFound):
+        vc.read_note("../outside_note.md")
+
+
+def test_edit_note_absolute_escape_refuses_and_does_not_write(tmp_path):
+    outside = tmp_path.parent / "victim.md"; outside.write_text("original")
+    vc = vault_client.VaultClient(tmp_path, "V")
+    with pytest.raises(vault_client.NoteNotFound):
+        vc.edit_note(str(outside), body="HACKED")
+    assert outside.read_text() == "original"  # untouched
+
+
+def test_attach_target_traversal_refused(tmp_path):
+    vc, cache = _cache_vault(tmp_path)
+    src = cache / "a.png"; src.write_bytes(b"1")
+    with pytest.raises(vault_client.NoteNotFound):
+        vc.attach("../outside_note.md", str(src))
+
+
+# --- folder-note promotion clobber guard ---
+
+def test_attach_refuses_promotion_clobber(tmp_path):
+    vc, cache = _cache_vault(tmp_path)   # flat Topics/Fridge.md exists
+    _make_folder_note(tmp_path / "Topics", "Fridge", "folder body")  # also Topics/Fridge/Fridge.md
+    src = cache / "a.png"; src.write_bytes(b"1")
+    with pytest.raises(vault_client.NoteConflict):
+        vc.attach("Fridge", str(src))
+    assert (tmp_path / "Topics" / "Fridge" / "Fridge.md").read_text() == "folder body"  # intact
+
+
+# --- path-qualified embed ref ---
+
+def test_attach_ref_is_path_qualified(tmp_path):
+    vc, cache = _cache_vault(tmp_path)
+    src = cache / "img.png"; src.write_bytes(b"1")
+    out = vc.attach("Fridge", str(src))
+    assert out["ref"] == "![[Topics/Fridge/img.png]]"
+
+
+# --- edit_note coverage gaps ---
+
+def test_edit_note_no_frontmatter_append(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    _make_folder_note(tmp_path / "Topics", "Plain", "just a body")  # no frontmatter
+    vc.edit_note("Plain", append="![[x.png]]")
+    body = vc.read_note("Plain")["body"]
+    assert "just a body" in body and "![[x.png]]" in body
+
+
+def test_edit_note_body_and_append_together(tmp_path):
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",))
+    vc.write_topic("T", body="old")
+    vc.edit_note("T", body="fresh", append="more")
+    body = vc.read_note("T")["body"]
+    assert "old" not in body and "fresh" in body and "more" in body
