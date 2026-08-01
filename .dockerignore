@@ -26,6 +26,9 @@ __pycache__/
 # es package local venv — not for the image.
 es/.venv
 
+# Our camofox-browser plugin ships to the image, but its unit tests don't.
+camofox-plugins/**/*.test.js
+
 # Local docs / notes (Dockerfile doesn't read these).
 docs/
 *.md

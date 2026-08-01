@@ -234,6 +234,11 @@ RUN if [ -f /opt/camofox-browser/package.json ]; then \
         echo "[camofox-browser] npm install failed — browser unavailable at runtime"; \
     fi
 
+# EverStone's own camofox-browser plugin(s), added alongside the upstream plugins/ dir
+# (persistence/vnc/youtube) WITHOUT patching upstream source. `fingerprint` pins a stable
+# Camoufox identity for durable authenticated sessions; enabled at boot in camofox-browser-run.
+COPY camofox-plugins/fingerprint /opt/camofox-browser/plugins/fingerprint
+
 COPY scripts /scripts
 COPY services /services
 COPY config /opt/defaults/config

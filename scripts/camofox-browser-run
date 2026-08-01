@@ -13,6 +13,11 @@ export CAMOFOX_PORT=9377
 export CAMOFOX_HOST=127.0.0.1
 export CAMOFOX_PROFILE_DIR=/opt/data/browser/profiles
 mkdir -p "$CAMOFOX_PROFILE_DIR"
+
+# Enable EverStone's fingerprint-pinning plugin (idempotent merge into camofox.config.json).
+# camofox-browser only loads plugins that have an entry here; upstream source stays untouched.
+node -e 'const fs=require("fs"),p="/opt/camofox-browser/camofox.config.json";try{const c=JSON.parse(fs.readFileSync(p,"utf8"));c.plugins=c.plugins||{};c.plugins.fingerprint={...(c.plugins.fingerprint||{}),enabled:true};fs.writeFileSync(p,JSON.stringify(c,null,2));console.log("[camofox-browser] fingerprint plugin enabled")}catch(e){console.error("[camofox-browser] WARN: could not enable fingerprint plugin:",e.message)}'
+
 cd /opt/camofox-browser
 echo "[camofox-browser] starting on 127.0.0.1:9377 (profiles: $CAMOFOX_PROFILE_DIR)"
 exec node server.js
