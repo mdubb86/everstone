@@ -176,3 +176,34 @@ def schedule_window_close(delay_s=600):
     _close_timer = threading.Timer(delay_s, close_window)
     _close_timer.daemon = True
     _close_timer.start()
+
+
+import hashlib
+import json
+
+_PROFILE_DIR = os.environ.get("CAMOFOX_PROFILE_DIR", "/opt/data/browser/profiles")
+
+
+def read_durable_state(profile):
+    """Read a profile's PERSISTED storage_state file (last-known session) WITHOUT needing an
+    active session — camofox-browser keys it by sha256(userId)[:32]. For the warm-keeper's cheap
+    'is there anything worth keeping alive?' pre-gate. Returns {} if absent/unreadable."""
+    h = hashlib.sha256(str(profile).encode()).hexdigest()[:32]
+    try:
+        with open(os.path.join(_PROFILE_DIR, h, "storage-state.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def run_warm_keep(profile, *, read_durable, probe_home, persist):
+    """Keep a durable session warm. Cheap durable-cookie pre-gate: no stored anchors => nothing to
+    keep alive, skip the browse. Otherwise browse google.com (rotates the short-lived *PSIDTS
+    cookies that go stale when idle) and re-persist. Reports whether the session is still live, but
+    NEVER opens a login window — only a real tool use may trigger a re-login (a dead profile is left
+    dead until then)."""
+    if not has_session_cookies(read_durable(profile)):
+        return {"profile": profile, "warmed": False, "reason": "no_session"}
+    signed_in = signed_in_from_home(probe_home(profile))
+    persist(profile)
+    return {"profile": profile, "warmed": True, "signed_in": signed_in}

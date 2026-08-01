@@ -101,7 +101,7 @@ class _Spy:
     def capture(self, p): self.captured = True
     def open_signin(self, p): self.opened = True
     def close_window(self): self.closed = True
-    def run(self, p="maps"):
+    def run(self, p="google"):
         return run_es_login(p, probe_home=self.probe_home, capture=self.capture,
                             open_signin=self.open_signin, close_window=self.close_window,
                             login_url="https://x/web-login/")
@@ -126,3 +126,38 @@ def test_probe_always_runs_no_cheap_pre_gate():
     s.run()
     assert s.probed
 
+
+
+from es.web_login import run_warm_keep
+
+
+class _WarmSpy:
+    def __init__(self, durable, home):
+        self.durable, self.home = durable, home
+        self.probed = self.persisted = False
+    def read_durable(self, p): return self.durable
+    def probe_home(self, p): self.probed = True; return self.home
+    def persist(self, p): self.persisted = True
+    def run(self, p="google"):
+        return run_warm_keep(p, read_durable=self.read_durable, probe_home=self.probe_home,
+                             persist=self.persist)
+
+
+def test_warm_keep_skips_profile_with_no_stored_session():
+    s = _WarmSpy({"cookies": []}, {"acct": True, "signin": False})
+    out = s.run()
+    assert out["warmed"] is False and not s.probed  # cheap durable pre-gate; no browse
+
+
+def test_warm_keep_touches_and_persists_when_session_stored():
+    s = _WarmSpy({"cookies": [{"name": "__Secure-1PSID"}]}, {"acct": True, "signin": False})
+    out = s.run()
+    assert out["warmed"] is True and out["signed_in"] is True and s.probed and s.persisted
+
+
+def test_warm_keep_reports_dead_session_but_never_triggers_login():
+    # stored cookies but the live probe says signed-out (session died server-side):
+    # report it, keep the touch, but do NOT open a login window — only a tool use may do that.
+    s = _WarmSpy({"cookies": [{"name": "__Secure-1PSID"}]}, {"acct": False, "signin": True})
+    out = s.run()
+    assert out["warmed"] is True and out["signed_in"] is False and "login_url" not in out

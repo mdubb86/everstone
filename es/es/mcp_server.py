@@ -460,10 +460,11 @@ def es_maps_distance_matrix(origins: list, destinations: list, mode: str = "DRIV
 
 @mcp.tool()
 @mcp_envelope
-def es_login(profile: str = "maps") -> dict:
-    """Prepare or confirm an interactive web login for an authenticated browser profile
-    (e.g. "maps"). Idempotent: probes liveness (cheap cookie pre-check, then a live google.com
-    browse); if signed in, closes the login window and returns {status:"logged_in"}; if not,
+def es_login(profile: str = "google") -> dict:
+    """Prepare or confirm an interactive web login for an authenticated browser profile. The
+    profile is the AUTH TARGET (e.g. "google"), shared by every consumer of that account
+    (es_maps_* etc.) — not the capability. Idempotent: probes liveness via a live google.com
+    browse; if signed in, closes the login window and returns {status:"logged_in"}; if not,
     opens the noVNC login window and returns {status:"awaiting_login", login_url}. Relay
     login_url to the user so THEY can sign in by hand (incl. 2FA); the agent never drives the
     browser. When the user says they're done, call this again to confirm + capture the session,
