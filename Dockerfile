@@ -173,7 +173,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgtk-3-0t64 libx11-xcb1 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
     libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64 libdbus-glib-1-2 \
     libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libnss3 libnspr4 libxtst6 \
-    libxshmfence1 fonts-liberation && \
+    libxshmfence1 fonts-liberation \
+    xvfb x11vnc novnc python3-websockify net-tools procps \
+    p11-kit-modules && \
     ARCH=$( [ "$TARGETARCH" = "arm64" ] && echo aarch64 || echo x86_64 ) && \
     curl -fsSL "${S6_OVERLAY_BASE_URL}/s6-overlay-${ARCH}.tar.xz" | tar xJ -C / && \
     curl -fsSL "${S6_OVERLAY_BASE_URL}/s6-overlay-noarch.tar.xz" | tar xJ -C / && \
@@ -233,6 +235,18 @@ RUN if [ -f /opt/camofox-browser/package.json ]; then \
         cd /opt/camofox-browser && NODE_OPTIONS=--use-openssl-ca npm install 2>&1 | tail -5 || \
         echo "[camofox-browser] npm install failed — browser unavailable at runtime"; \
     fi
+
+# Make Camoufox honor the SYSTEM CA store (the way Fedora/Debian ship Firefox): point its
+# built-in-roots module at p11-kit-trust. Camoufox ships no libnssckbi.so and its camoufox.cfg
+# already enables enterprise_roots — this just gives it a module to load, so it trusts the
+# system ca-certificates set. Prod: real roots (also more realistic, like distro Firefox).
+# Dev: the same store additionally holds the devm dev-CA (injected at build), so HTTPS works
+# through devm's egress proxy. No dev-only branching, no devm knowledge baked in.
+RUN P11="$(find /usr/lib -name p11-kit-trust.so 2>/dev/null | head -1)"; \
+    CAMOU="$(dirname "$(find /root/.cache/camoufox -name libnss3.so 2>/dev/null | head -1)")"; \
+    if [ -n "$P11" ] && [ "$CAMOU" != "." ]; then \
+        ln -sf "$P11" "$CAMOU/libnssckbi.so" && echo "[camoufox] libnssckbi.so -> $P11"; \
+    else echo "[camoufox] WARN: could not link libnssckbi (P11=$P11 CAMOU=$CAMOU) — HTTPS may fail under devm"; fi
 
 # EverStone's own camofox-browser plugin(s), added alongside the upstream plugins/ dir
 # (persistence/vnc/youtube) WITHOUT patching upstream source. `fingerprint` pins a stable

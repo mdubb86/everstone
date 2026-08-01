@@ -14,9 +14,15 @@ export CAMOFOX_HOST=127.0.0.1
 export CAMOFOX_PROFILE_DIR=/opt/data/browser/profiles
 mkdir -p "$CAMOFOX_PROFILE_DIR"
 
-# Enable EverStone's fingerprint-pinning plugin (idempotent merge into camofox.config.json).
-# camofox-browser only loads plugins that have an entry here; upstream source stays untouched.
-node -e 'const fs=require("fs"),p="/opt/camofox-browser/camofox.config.json";try{const c=JSON.parse(fs.readFileSync(p,"utf8"));c.plugins=c.plugins||{};c.plugins.fingerprint={...(c.plugins.fingerprint||{}),enabled:true};fs.writeFileSync(p,JSON.stringify(c,null,2));console.log("[camofox-browser] fingerprint plugin enabled")}catch(e){console.error("[camofox-browser] WARN: could not enable fingerprint plugin:",e.message)}'
+# Enable EverStone's plugins (idempotent merge into camofox.config.json; camofox-browser only
+# loads plugins with an entry here, and upstream source stays untouched):
+#   fingerprint — pins a stable Camoufox identity for durable authenticated sessions.
+#   vnc         — always-on interactive-login stack (Xvfb+x11vnc+noVNC on 127.0.0.1:6080).
+#                 Access is NOT gated here: websockify binds container-localhost and 6080 is
+#                 never published, so the ONLY ingress is the Caddy /web-login/ route, which is
+#                 added/removed live during a seeding window. Always-on avoids disruptive
+#                 camofox-browser restarts (which would drop the shared browser + active tabs).
+node -e 'const fs=require("fs"),p="/opt/camofox-browser/camofox.config.json";try{const c=JSON.parse(fs.readFileSync(p,"utf8"));c.plugins=c.plugins||{};c.plugins.fingerprint={...(c.plugins.fingerprint||{}),enabled:true};c.plugins.vnc={...(c.plugins.vnc||{}),enabled:true};fs.writeFileSync(p,JSON.stringify(c,null,2));console.log("[camofox-browser] fingerprint + vnc plugins enabled")}catch(e){console.error("[camofox-browser] WARN: could not enable plugins:",e.message)}'
 
 cd /opt/camofox-browser
 echo "[camofox-browser] starting on 127.0.0.1:9377 (profiles: $CAMOFOX_PROFILE_DIR)"
