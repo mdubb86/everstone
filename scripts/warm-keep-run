@@ -1,0 +1,13 @@
+#!/bin/sh
+# Warm-keeper loop: keep authenticated browser sessions alive (~4x/day) so their short-lived
+# Google *PSIDTS cookies keep rotating instead of going stale. In-service loop (s6 longrun), no
+# cron. NEVER triggers a login — see es.web_login.run_warm_keep. Migrate to cron if more scheduled
+# jobs appear.
+set -u
+PY=/usr/local/lib/hermes-agent/.venv/bin/python
+sleep 60   # let camofox-browser + boot config settle first
+echo "[warm-keep] loop starting (every 6h)"
+while true; do
+    "$PY" -m es.warm_keep 2>&1 || echo "[warm-keep] iteration failed"
+    sleep 21600
+done
