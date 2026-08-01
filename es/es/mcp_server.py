@@ -458,5 +458,37 @@ def es_maps_distance_matrix(origins: list, destinations: list, mode: str = "DRIV
     return maps_cap.distance_matrix(origins, destinations, mode=mode)
 
 
+@mcp.tool()
+@mcp_envelope
+def es_login(profile: str = "maps") -> dict:
+    """Prepare or confirm an interactive web login for an authenticated browser profile
+    (e.g. "maps"). Idempotent: probes liveness (cheap cookie pre-check, then a live google.com
+    browse); if signed in, closes the login window and returns {status:"logged_in"}; if not,
+    opens the noVNC login window and returns {status:"awaiting_login", login_url}. Relay
+    login_url to the user so THEY can sign in by hand (incl. 2FA); the agent never drives the
+    browser. When the user says they're done, call this again to confirm + capture the session,
+    then retry the original tool."""
+    from es import web_login as wl
+    cfg = config.load_config()
+    public_url = (cfg.get("public_url") or "").rstrip("/")
+    out = wl.run_es_login(
+        profile,
+        fetch_state=wl.fetch_state,
+        probe_home=wl.probe_home,
+        open_signin=wl.open_signin,
+        close_window=wl.close_window,
+        login_url=wl.build_login_url(public_url),
+    )
+    # No polling: the user completing login → saying "done" → the agent re-calling this tool
+    # (idempotent: it then probes, captures, and closes) IS the success path. We only arm a
+    # fail-safe timer to remove the route if login is never completed, and cancel it once we've
+    # confirmed logged_in (run_es_login already closed the window in that branch).
+    if out.get("status") == "awaiting_login":
+        wl.schedule_window_close()
+    else:
+        wl.cancel_window_close()
+    return out
+
+
 def main() -> None:
     mcp.run()
