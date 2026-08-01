@@ -79,7 +79,6 @@ def run_es_login(profile, *, fetch_state, probe_home, open_signin, close_window,
 
 # --- Real I/O deps (thin; integration-tested in-container, not unit-tested) --------------
 import os
-import time
 import threading
 import subprocess
 import httpx
@@ -88,7 +87,8 @@ _CAMOFOX = os.environ.get("CAMOFOX_URL", "http://localhost:9377")
 _CADDYFILE = "/opt/config/caddy/Caddyfile"
 _HOME_URL = "https://www.google.com"
 _SIGNIN_URL = "https://accounts.google.com"  # all current profiles are Google; per-profile later
-# Read the top-right profile affordance: "Google Account" avatar (signed in) vs ServiceLogin link.
+# The top-right profile affordance: "Google Account" avatar (signed in) vs ServiceLogin link.
+_AFFORDANCE_SELECTOR = '[aria-label*="Account"], a[href*="ServiceLogin"]'
 _PROBE_JS = ('(()=>{const signin=!!document.querySelector(\'a[href*="ServiceLogin"]\');'
              'const acct=!!document.querySelector(\'[aria-label*="Account"]\');'
              'return {acct, signin};})()')
@@ -114,18 +114,19 @@ def _evaluate(profile, tab_id, expression):
 
 
 def probe_home(profile):
-    # Navigate to google.com, then poll the evaluate until the auth affordance actually renders
-    # (google.com finishes loading a beat after navigation returns). Definitive as soon as either
-    # the avatar or the sign-in link is present; gives up after ~4s with the last read.
+    # Navigate to google.com, then WAIT for the definitive top-right affordance to render (avatar
+    # OR sign-in link) before reading it — robust against the header rendering a beat after nav
+    # returns. If neither ever appears (e.g. an interstitial), the wait times out and we evaluate
+    # anyway: {acct:false, signin:false} => treated as signed-out (prompt a login, don't assume).
     tab = _navigate(profile, _HOME_URL)
     tid = tab.get("tabId")
-    sig = {}
-    for _ in range(16):  # up to ~8s — google.com's header can render a beat after nav returns
-        sig = _evaluate(profile, tid, _PROBE_JS)
-        if sig.get("acct") or sig.get("signin"):
-            break
-        time.sleep(0.5)
-    return sig
+    try:
+        httpx.post(f"{_CAMOFOX}/tabs/{tid}/wait",
+                   json={"userId": profile, "selector": _AFFORDANCE_SELECTOR, "timeout": 10000},
+                   timeout=15)
+    except Exception:  # noqa: BLE001 — selector-not-found is fine; the evaluate handles the fallback
+        pass
+    return _evaluate(profile, tid, _PROBE_JS)
 
 
 def _reload_caddy(text):
