@@ -94,35 +94,35 @@ from es.web_login import run_es_login
 
 
 class _Spy:
-    def __init__(self, state, home):
-        self.state, self.home = state, home
-        self.probed = self.opened = self.closed = False
-    def fetch_state(self, p): return self.state
+    def __init__(self, home):
+        self.home = home
+        self.probed = self.captured = self.opened = self.closed = False
     def probe_home(self, p): self.probed = True; return self.home
+    def capture(self, p): self.captured = True
     def open_signin(self, p): self.opened = True
     def close_window(self): self.closed = True
     def run(self, p="maps"):
-        return run_es_login(p, fetch_state=self.fetch_state, probe_home=self.probe_home,
+        return run_es_login(p, probe_home=self.probe_home, capture=self.capture,
                             open_signin=self.open_signin, close_window=self.close_window,
                             login_url="https://x/web-login/")
 
 
-def test_logged_in_closes_window_and_reports():
-    s = _Spy({"cookies": [{"name": "__Secure-1PSID"}]}, {"acct": True, "signin": False})
+def test_signed_in_captures_and_closes_window():
+    s = _Spy({"acct": True, "signin": False})
     out = s.run()
-    assert out["status"] == "logged_in" and s.closed and not s.opened
+    assert out["status"] == "logged_in" and s.captured and s.closed and not s.opened
 
 
-def test_no_cookies_short_circuits_live_probe_and_opens_window():
-    s = _Spy({"cookies": []}, {"acct": True, "signin": False})
+def test_signed_out_opens_window_and_returns_link():
+    s = _Spy({"acct": False, "signin": True})
     out = s.run()
-    assert out["status"] == "awaiting_login"
-    assert s.opened and not s.probed  # cheap pre-gate skipped the expensive browse
+    assert out["status"] == "awaiting_login" and s.opened and not s.captured
     assert out["login_url"] == "https://x/web-login/"
 
 
-def test_cookies_present_but_stale_opens_window():
-    s = _Spy({"cookies": [{"name": "__Secure-1PSID"}]}, {"acct": False, "signin": True})
-    out = s.run()
-    assert out["status"] == "awaiting_login" and s.probed and s.opened
+def test_probe_always_runs_no_cheap_pre_gate():
+    # regression: never short-circuit before the probe — it restores the session after a restart
+    s = _Spy({"acct": True, "signin": False})
+    s.run()
+    assert s.probed
 

@@ -473,8 +473,8 @@ def es_login(profile: str = "maps") -> dict:
     public_url = (cfg.get("public_url") or "").rstrip("/")
     out = wl.run_es_login(
         profile,
-        fetch_state=wl.fetch_state,
         probe_home=wl.probe_home,
+        capture=wl.fetch_state,   # GET storage_state also fires the persistence checkpoint
         open_signin=wl.open_signin,
         close_window=wl.close_window,
         login_url=wl.build_login_url(public_url),

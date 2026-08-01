@@ -57,20 +57,25 @@ def has_session_cookies(storage_state):
     return any(c.get("name") in _SESSION_ANCHORS for c in cookies)
 
 
-def run_es_login(profile, *, fetch_state, probe_home, open_signin, close_window, login_url):
-    """Idempotent login-window orchestration (agent never touches the browser — this is the
-    logic behind the es_login tool):
+def run_es_login(profile, *, probe_home, capture, open_signin, close_window, login_url):
+    """Idempotent login-window orchestration (the logic behind es_login; the agent never touches
+    the browser). The live google.com probe is authoritative AND self-healing: it creates/restores
+    the profile's session (the persistence plugin re-injects the durable login on session create)
+    and reads the result.
 
-      fetch_state(profile) -> stored storage_state (for the cheap cookie pre-gate)
-      probe_home(profile)  -> live {acct, signin} from a google.com browse (only if cookies pass)
+      probe_home(profile)  -> live {acct, signin}
+      capture(profile)     -> persist the confirmed session (fires the storage_state checkpoint)
       open_signin(profile) -> add the Caddy route + park the browser on the sign-in page
       close_window()       -> remove the Caddy route
 
-    Signed in iff the anchor cookies are present AND the live probe confirms it; anything else
-    opens the window and returns the noVNC login link for the operator to complete by hand.
+    Signed in -> capture + close. Signed out -> open the window, return the noVNC login link.
+
+    No cheap cookie pre-gate here: reading stored cookies is unreliable before a session exists
+    (404 right after a restart; stale right after a fresh login), and the probe must run anyway to
+    restore + confirm. The cookie pre-check belongs to the warm-keeper, which reads the durable file.
     """
-    signed_in = has_session_cookies(fetch_state(profile)) and signed_in_from_home(probe_home(profile))
-    if signed_in:
+    if signed_in_from_home(probe_home(profile)):
+        capture(profile)
         close_window()
         return {"status": "logged_in", "profile": profile}
     open_signin(profile)
