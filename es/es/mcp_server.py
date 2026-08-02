@@ -19,6 +19,7 @@ from es.tasks_client import TasksClient
 from es.vault_client import VaultClient
 from es.capabilities import cal as cal_cap
 from es.capabilities import cal_support
+from es.capabilities import maps as maps_cap
 
 mcp = FastMCP("everstone-es")
 
@@ -413,6 +414,14 @@ def es_contacts_search(query: str, max_results: int = 10) -> list:
         query=query, pageSize=max_results, readMask=_CONTACTS_READ_MASK,
     ).execute()
     return [_contact_view(r["person"]) for r in resp.get("results", []) if r.get("person")]
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_geocode(query: str) -> dict:
+    """Geocode an address/place text to {address, lat, lng, place_id}. Building block; returns
+    null-ish if nothing matches. Needs maps.api_key in config."""
+    return maps_cap.geocode(query)
 
 
 def main() -> None:

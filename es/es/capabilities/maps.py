@@ -42,3 +42,20 @@ def render_distance(meters):
     if meters is None:
         return None
     return f"{meters / 1000:.1f} km"
+
+
+def geocode_view(resp):
+    check_status(resp)
+    results = (resp or {}).get("results") or []
+    if not results:
+        return None
+    r = results[0]
+    loc = (r.get("geometry") or {}).get("location") or {}
+    return {"address": r.get("formatted_address"), "lat": loc.get("lat"),
+            "lng": loc.get("lng"), "place_id": r.get("place_id")}
+
+
+def geocode(query):
+    r = httpx.get(_GEOCODE_URL, params={"address": query, "key": api_key()}, timeout=20)
+    r.raise_for_status()
+    return geocode_view(r.json())
