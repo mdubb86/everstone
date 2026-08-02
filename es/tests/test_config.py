@@ -43,3 +43,8 @@ def test_attach_source_dirs_honors_config_override():
 def test_attach_source_dirs_ignores_empty_override():
     assert config.attach_source_dirs({"attachments": {"sources": []}}) == \
         ["/opt/data/hermes/profiles/everstone/cache"]
+
+
+def test_maps_config_defaults_empty():
+    assert config.maps_config({}) == {}
+    assert config.maps_config({"maps": {"api_key": "AIza"}}) == {"api_key": "AIza"}

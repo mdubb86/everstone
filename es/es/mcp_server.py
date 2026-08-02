@@ -19,6 +19,7 @@ from es.tasks_client import TasksClient
 from es.vault_client import VaultClient
 from es.capabilities import cal as cal_cap
 from es.capabilities import cal_support
+from es.capabilities import maps as maps_cap
 
 mcp = FastMCP("everstone-es")
 
@@ -413,6 +414,48 @@ def es_contacts_search(query: str, max_results: int = 10) -> list:
         query=query, pageSize=max_results, readMask=_CONTACTS_READ_MASK,
     ).execute()
     return [_contact_view(r["person"]) for r in resp.get("results", []) if r.get("person")]
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_geocode(query: str) -> dict:
+    """Geocode an address/place text to {address, lat, lng, place_id}. Building block; returns
+    null-ish if nothing matches. Needs maps.api_key in config."""
+    return maps_cap.geocode(query)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_search(query: str, near: Optional[str] = None, open_now: bool = False,
+                   limit: Optional[int] = None, include_rating: bool = False) -> list:
+    """Search places by text. `near` (address/place/'lat,lng') biases results — the agent supplies
+    it (there is no built-in 'near me'). include_rating adds ratings (costs a higher API tier).
+    Returns [{name, address, place_id, rating}]."""
+    return maps_cap.search(query, near=near, open_now=open_now, limit=limit, include_rating=include_rating)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_place(place_id: str) -> dict:
+    """Place details for a place_id (from es_maps_search/geocode): {name, address, phone, hours, url}."""
+    return maps_cap.place(place_id)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_directions(origin: str, destination: str, mode: str = "DRIVE") -> dict:
+    """Travel time + distance for origin->destination. mode: DRIVE|WALK|BICYCLE|TRANSIT.
+    Returns {duration, distance, summary}. origin/destination are plain strings the agent supplies."""
+    return maps_cap.directions(origin, destination, mode=mode)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_distance_matrix(origins: list, destinations: list, mode: str = "DRIVE") -> list:
+    """Travel time/distance for every origin->destination pair in ONE call — the decision tool
+    ('which of these is closest/best'). Returns [{origin, destination, duration, distance, ok}].
+    origins+destinations must be <= 50 (and <= 625 pairs). Agent supplies the location strings."""
+    return maps_cap.distance_matrix(origins, destinations, mode=mode)
 
 
 def main() -> None:
