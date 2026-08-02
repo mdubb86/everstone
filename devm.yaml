@@ -18,6 +18,8 @@ docker: true
 # `just`-driven (build/dev/es/esadmin/e2e); trixie ships `just` in apt.
 packages:
   - just
+  - build-essential     # Orca ADE relay: node-gyp toolchain — its node-pty compiles from
+                        # source on first attach (no linux-arm64 prebuilt)
 
 # Provisioning runs install commands as the unprivileged guest user `devm`
 # (uid 1000, HOME=/home/devm) — NOT root — but `devm` has passwordless sudo.
@@ -76,6 +78,7 @@ network:
     - objects.githubusercontent.com     # legacy GitHub release-asset CDN
     - release-assets.githubusercontent.com  # current GitHub release-asset CDN (xcaddy/s6/deno/camoufox)
     - registry.npmjs.org          # npm install (camofox-browser) + deno npm: deps
+    - nodejs.org                  # Orca ADE relay: node-gyp fetches matching node headers on attach
     - archive.apache.org
     - crates.io
     - static.crates.io
@@ -114,6 +117,16 @@ network:
     - www.startpage.com
     - en.wikipedia.org
     - grokipedia.com
+    # Google web surfaces for the persistent-web-login browser (Camoufox): the sign-in
+    # flow (accounts.google.com) and Maps/other Google apps fan out across many *.google.com
+    # subdomains, with static assets on gstatic, APIs on googleapis, user content on
+    # googleusercontent, and Maps/Photos image tiles on ggpht. Wildcards because Google
+    # rotates subdomains dynamically — enumerating exact hosts breaks the login flow.
+    - "*.google.com"
+    - "*.gstatic.com"
+    - "*.googleapis.com"
+    - "*.googleusercontent.com"
+    - "*.ggpht.com"
 
 # everstone's internal Caddy serves the sync surfaces (/db, /caldav, /git, /health)
 # inside the VM. It MUST NOT publish on VM :80 — devm runs its OWN Caddy on :80 to
