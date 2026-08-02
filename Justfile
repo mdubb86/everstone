@@ -97,6 +97,12 @@ dev: build _check-config
         -v {{CONFIG}}:/opt/config.yaml:ro \
         -v {{DATA_DIR}}:/opt/data \
         {{IMAGE}}
+    # Dev-only: under devm, iron-proxy MITMs egress with the devm CA. httpx (maps)
+    # honors the system trust store, but httplib2 (Google API client → contacts/
+    # calendar) and trafilatura (web tools) hardcode certifi and ignore it. Append
+    # the devm CA to certifi IF present — guarded on /etc/ssl/certs/devm-ca.pem, which
+    # only devm injects, so this is a complete no-op for the prod image.
+    docker exec {{DEV_NAME}} sh -c 'C=$(/usr/local/lib/hermes-agent/.venv/bin/python -c "import certifi;print(certifi.where())"); if [ -f /etc/ssl/certs/devm-ca.pem ] && ! grep -q "devm Local CA" "$C"; then cat /etc/ssl/certs/devm-ca.pem >> "$C"; echo "  ← devm CA appended to certifi (dev MITM trust)"; fi'
     @sleep 3 && echo "" && curl -fsS http://localhost:8080/health && echo "  ← /health reachable"
 
 # Tail dev container logs (Ctrl-C to stop)
