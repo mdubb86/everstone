@@ -153,6 +153,14 @@
         }
       }
     },
+    "maps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_key": { "type": "string" },
+        "save_list": { "type": "string" }
+      }
+    },
     "timezone": {
       "type": "string",
       "description": "Operator home IANA timezone for es cal (e.g. America/Chicago). Per-call --tz overrides."
