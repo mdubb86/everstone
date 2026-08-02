@@ -9,6 +9,7 @@ _MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatri
 
 _STATUS_ERRORS = {"OVER_QUERY_LIMIT": "quota_exceeded", "REQUEST_DENIED": "maps_unauthorized"}
 _SEARCH_MASK = "places.id,places.displayName,places.formattedAddress"
+_DETAILS_MASK = "displayName,formattedAddress,nationalPhoneNumber,regularOpeningHours,googleMapsUri"
 
 
 class MapsError(Exception):
@@ -100,3 +101,22 @@ def search(query, near=None, open_now=False, limit=None, include_rating=False):
             near_latlng = (g["lat"], g["lng"])
     mask = _SEARCH_MASK + (",places.rating" if include_rating else "")
     return search_view(_new_post(_PLACES_SEARCH_URL, search_body(query, near_latlng, open_now, limit), mask))
+
+
+def place_view(resp):
+    r = resp or {}
+    return {"name": (r.get("displayName") or {}).get("text"), "address": r.get("formattedAddress"),
+            "phone": r.get("nationalPhoneNumber"),
+            "hours": (r.get("regularOpeningHours") or {}).get("weekdayDescriptions"),
+            "url": r.get("googleMapsUri")}
+
+
+def place(place_id):
+    r = httpx.get(_PLACE_DETAILS_URL.format(place_id=place_id), timeout=20,
+                  headers={"X-Goog-Api-Key": api_key(), "X-Goog-FieldMask": _DETAILS_MASK})
+    if r.status_code == 429:
+        raise MapsError("quota_exceeded", "Maps API daily quota reached")
+    if r.status_code in (401, 403):
+        raise MapsError("maps_unauthorized", r.text[:200])
+    r.raise_for_status()
+    return place_view(r.json())

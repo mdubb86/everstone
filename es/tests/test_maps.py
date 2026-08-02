@@ -53,3 +53,12 @@ def test_search_body_minimal_and_with_options():
     b = maps.search_body("coffee", near_latlng=(37.7, -122.0), open_now=True, limit=5)
     assert b["textQuery"] == "coffee" and b["openNow"] is True and b["pageSize"] == 5
     assert b["locationBias"]["circle"]["center"] == {"latitude": 37.7, "longitude": -122.0}
+
+def test_place_view_details():
+    resp = {"displayName": {"text": "Googleplex"}, "formattedAddress": "1600 Amphitheatre Pkwy",
+            "nationalPhoneNumber": "(650) 253-0000",
+            "regularOpeningHours": {"weekdayDescriptions": ["Monday: 9 AM – 5 PM"]},
+            "googleMapsUri": "https://maps.google.com/?cid=1"}
+    assert maps.place_view(resp) == {
+        "name": "Googleplex", "address": "1600 Amphitheatre Pkwy", "phone": "(650) 253-0000",
+        "hours": ["Monday: 9 AM – 5 PM"], "url": "https://maps.google.com/?cid=1"}

@@ -434,5 +434,12 @@ def es_maps_search(query: str, near: Optional[str] = None, open_now: bool = Fals
     return maps_cap.search(query, near=near, open_now=open_now, limit=limit, include_rating=include_rating)
 
 
+@mcp.tool()
+@mcp_envelope
+def es_maps_place(place_id: str) -> dict:
+    """Place details for a place_id (from es_maps_search/geocode): {name, address, phone, hours, url}."""
+    return maps_cap.place(place_id)
+
+
 def main() -> None:
     mcp.run()
