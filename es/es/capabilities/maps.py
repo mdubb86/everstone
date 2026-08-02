@@ -8,6 +8,7 @@ _ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 _MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
 
 _STATUS_ERRORS = {"OVER_QUERY_LIMIT": "quota_exceeded", "REQUEST_DENIED": "maps_unauthorized"}
+_SEARCH_MASK = "places.id,places.displayName,places.formattedAddress"
 
 
 class MapsError(Exception):
@@ -59,3 +60,43 @@ def geocode(query):
     r = httpx.get(_GEOCODE_URL, params={"address": query, "key": api_key()}, timeout=20)
     r.raise_for_status()
     return geocode_view(r.json())
+
+
+def search_view(resp):
+    return [{"name": (p.get("displayName") or {}).get("text"),
+             "address": p.get("formattedAddress"), "place_id": p.get("id"),
+             "rating": p.get("rating")} for p in (resp or {}).get("places") or []]
+
+
+def search_body(query, near_latlng=None, open_now=False, limit=None):
+    body = {"textQuery": query}
+    if open_now:
+        body["openNow"] = True
+    if limit:
+        body["pageSize"] = limit
+    if near_latlng:
+        body["locationBias"] = {"circle": {"center": {"latitude": near_latlng[0],
+                                                       "longitude": near_latlng[1]}, "radius": 5000.0}}
+    return body
+
+
+def _new_post(url, body, field_mask):
+    r = httpx.post(url, json=body, timeout=20, headers={
+        "X-Goog-Api-Key": api_key(), "X-Goog-FieldMask": field_mask,
+        "Content-Type": "application/json"})
+    if r.status_code == 429:
+        raise MapsError("quota_exceeded", "Maps API daily quota reached")
+    if r.status_code in (401, 403):
+        raise MapsError("maps_unauthorized", r.text[:200])
+    r.raise_for_status()
+    return r.json()
+
+
+def search(query, near=None, open_now=False, limit=None, include_rating=False):
+    near_latlng = None
+    if near:
+        g = geocode(near)
+        if g:
+            near_latlng = (g["lat"], g["lng"])
+    mask = _SEARCH_MASK + (",places.rating" if include_rating else "")
+    return search_view(_new_post(_PLACES_SEARCH_URL, search_body(query, near_latlng, open_now, limit), mask))

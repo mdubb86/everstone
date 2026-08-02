@@ -424,5 +424,15 @@ def es_maps_geocode(query: str) -> dict:
     return maps_cap.geocode(query)
 
 
+@mcp.tool()
+@mcp_envelope
+def es_maps_search(query: str, near: Optional[str] = None, open_now: bool = False,
+                   limit: Optional[int] = None, include_rating: bool = False) -> list:
+    """Search places by text. `near` (address/place/'lat,lng') biases results — the agent supplies
+    it (there is no built-in 'near me'). include_rating adds ratings (costs a higher API tier).
+    Returns [{name, address, place_id, rating}]."""
+    return maps_cap.search(query, near=near, open_now=open_now, limit=limit, include_rating=include_rating)
+
+
 def main() -> None:
     mcp.run()

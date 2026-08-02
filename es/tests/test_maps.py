@@ -39,3 +39,17 @@ def test_geocode_view_first_result():
 
 def test_geocode_view_zero_results_is_none():
     assert maps.geocode_view({"status": "ZERO_RESULTS", "results": []}) is None
+
+def test_search_view_maps_places():
+    resp = {"places": [
+        {"id": "p1", "displayName": {"text": "Blue Bottle"}, "formattedAddress": "66 Mint St", "rating": 4.5},
+        {"id": "p2", "displayName": {"text": "Sightglass"}, "formattedAddress": "270 7th St"}]}
+    out = maps.search_view(resp)
+    assert out[0] == {"name": "Blue Bottle", "address": "66 Mint St", "place_id": "p1", "rating": 4.5}
+    assert out[1] == {"name": "Sightglass", "address": "270 7th St", "place_id": "p2", "rating": None}
+
+def test_search_body_minimal_and_with_options():
+    assert maps.search_body("coffee") == {"textQuery": "coffee"}
+    b = maps.search_body("coffee", near_latlng=(37.7, -122.0), open_now=True, limit=5)
+    assert b["textQuery"] == "coffee" and b["openNow"] is True and b["pageSize"] == 5
+    assert b["locationBias"]["circle"]["center"] == {"latitude": 37.7, "longitude": -122.0}
