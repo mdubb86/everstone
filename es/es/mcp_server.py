@@ -449,5 +449,14 @@ def es_maps_directions(origin: str, destination: str, mode: str = "DRIVE") -> di
     return maps_cap.directions(origin, destination, mode=mode)
 
 
+@mcp.tool()
+@mcp_envelope
+def es_maps_distance_matrix(origins: list, destinations: list, mode: str = "DRIVE") -> list:
+    """Travel time/distance for every origin->destination pair in ONE call — the decision tool
+    ('which of these is closest/best'). Returns [{origin, destination, duration, distance, ok}].
+    origins+destinations must be <= 50 (and <= 625 pairs). Agent supplies the location strings."""
+    return maps_cap.distance_matrix(origins, destinations, mode=mode)
+
+
 def main() -> None:
     mcp.run()

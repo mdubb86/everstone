@@ -75,3 +75,28 @@ def test_routes_body_drive_adds_traffic_pref_others_dont():
     assert maps.routes_body("A", "B", "DRIVE")["routingPreference"] == "TRAFFIC_AWARE"
     assert "routingPreference" not in maps.routes_body("A", "B", "WALK")
     assert maps.routes_body("A", "B", "DRIVE")["origin"] == {"address": "A"}
+
+def test_matrix_view_reassembles_out_of_order_and_maps_labels():
+    origins = ["Hotel A", "Hotel B"]
+    dests = ["Field 1", "Field 2"]
+    elements = [  # deliberately out of order; one ROUTE_NOT_FOUND
+        {"originIndex": 1, "destinationIndex": 0, "duration": "480s", "distanceMeters": 5000, "condition": "ROUTE_EXISTS", "status": {}},
+        {"originIndex": 0, "destinationIndex": 0, "duration": "660s", "distanceMeters": 7000, "condition": "ROUTE_EXISTS", "status": {}},
+        {"originIndex": 0, "destinationIndex": 1, "condition": "ROUTE_NOT_FOUND", "status": {}},
+    ]
+    out = maps.matrix_view(elements, origins, dests)
+    assert {"origin": "Hotel B", "destination": "Field 1", "duration": "8 min", "distance": "5.0 km", "ok": True} in out
+    nf = [e for e in out if e["origin"] == "Hotel A" and e["destination"] == "Field 1"][0]
+    assert nf["ok"] is True
+    nf2 = [e for e in out if e["origin"] == "Hotel A" and e["destination"] == "Field 2"][0]
+    assert nf2["ok"] is False and nf2["duration"] is None
+
+def test_matrix_body_wraps_waypoints():
+    b = maps.matrix_body(["A"], ["B", "C"], "DRIVE")
+    assert b["origins"] == [{"waypoint": {"address": "A"}}]
+    assert b["destinations"] == [{"waypoint": {"address": "B"}}, {"waypoint": {"address": "C"}}]
+
+def test_matrix_over_address_cap_raises():
+    with pytest.raises(maps.MapsError) as ei:
+        maps.distance_matrix(["a"] * 30, ["b"] * 30)   # 60 addr > 50
+    assert ei.value.es_code == "maps_error"

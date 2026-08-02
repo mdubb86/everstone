@@ -11,6 +11,7 @@ _STATUS_ERRORS = {"OVER_QUERY_LIMIT": "quota_exceeded", "REQUEST_DENIED": "maps_
 _SEARCH_MASK = "places.id,places.displayName,places.formattedAddress"
 _DETAILS_MASK = "displayName,formattedAddress,nationalPhoneNumber,regularOpeningHours,googleMapsUri"
 _ROUTES_MASK = "routes.duration,routes.distanceMeters,routes.description,routes.legs"
+_MATRIX_MASK = "originIndex,destinationIndex,duration,distanceMeters,condition,status"
 
 
 class MapsError(Exception):
@@ -142,3 +143,30 @@ def routes_body(origin, destination, mode):
 
 def directions(origin, destination, mode="DRIVE"):
     return directions_view(_new_post(_ROUTES_URL, routes_body(origin, destination, mode), _ROUTES_MASK))
+
+
+def matrix_view(elements, origins, destinations):
+    out = []
+    for e in elements or []:
+        ok = e.get("condition") == "ROUTE_EXISTS"
+        out.append({"origin": origins[e["originIndex"]], "destination": destinations[e["destinationIndex"]],
+                    "duration": render_duration(e.get("duration")) if ok else None,
+                    "distance": render_distance(e.get("distanceMeters")) if ok else None, "ok": ok})
+    return out
+
+
+def matrix_body(origins, destinations, mode):
+    body = {"origins": [{"waypoint": {"address": o}} for o in origins],
+            "destinations": [{"waypoint": {"address": d}} for d in destinations], "travelMode": mode}
+    if mode in ("DRIVE", "TWO_WHEELER"):
+        body["routingPreference"] = "TRAFFIC_AWARE"
+    return body
+
+
+def distance_matrix(origins, destinations, mode="DRIVE"):
+    if len(origins) + len(destinations) > 50:
+        raise MapsError("maps_error", "too many places: address/place-id origins+destinations must be <= 50")
+    if len(origins) * len(destinations) > 625:
+        raise MapsError("maps_error", "matrix too large: origins x destinations must be <= 625")
+    elements = _new_post(_MATRIX_URL, matrix_body(origins, destinations, mode), _MATRIX_MASK)
+    return matrix_view(elements, origins, destinations)
