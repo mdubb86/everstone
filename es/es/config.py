@@ -41,3 +41,8 @@ def attach_source_dirs(obsidian=None) -> list:
     default. Pass the already-loaded obsidian sub-config."""
     obs = obsidian or {}
     return list(((obs.get("attachments") or {}).get("sources")) or _DEFAULT_ATTACH_SOURCES)
+
+
+def maps_config(cfg=None) -> dict:
+    cfg = cfg if cfg is not None else load_config()
+    return cfg.get("maps") or {}
