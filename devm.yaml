@@ -33,26 +33,39 @@ install:
   # neither holds here — hence installing as `devm` + a sudo relocate.)
   - curl -fsSL https://claude.ai/install.sh | bash && sudo install -m 755 "$HOME/.local/share/claude/versions/"* /usr/local/bin/claude
 
-# Persist Claude Code state (OAuth login + conversation transcripts + memory)
-# across VM recreates. CLAUDE_CONFIG_DIR relocates all of Claude's ~/.claude state
-# to this path. .devm/.claude is gitignored AND rides inside the workspace
-# bind-mount, so it lives on the Mac host and survives `devm teardown` (which
-# deletes the Tart VM, not the repo). devm never prunes it — it only rewrites its
-# own static files + templates/*.sh.
+# Claude Code state (OAuth login + conversation transcripts + memory) persists via
+# the `claude` VOLUME below (devm 0.9), mounted at Claude's DEFAULT ~/.claude
+# (/home/devm/.claude). Volumes live Mac-side under
+# ~/Library/Application Support/devm/volumes/<project>/ and survive `devm teardown`,
+# so the old CLAUDE_CONFIG_DIR redirect into .devm/.claude is no longer needed.
 env:
   # Moved from project.hostname_apex (deprecated in devm 0.3). Exposed to templates
   # as {{.Env.HOSTNAME_APEX}}; not used by Caddy/devm — just a template variable.
   HOSTNAME_APEX: test.everstone.waage.haus
-  # devm expands $WORKSPACE (the repo root) in env values, so these are now
-  # portable host-relative paths and the file is safe to commit. .devm/ is
-  # gitignored, rides inside the workspace bind-mount (so it lives on the Mac
-  # host), and survives `devm teardown` (which deletes the Tart VM, not the
-  # repo). devm never prunes it — it only rewrites its own static files.
-  CLAUDE_CONFIG_DIR: $WORKSPACE/.devm/.claude
   # Kill Sentry error reporting + telemetry (cleaner than allowlisting *.sentry.io).
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
-  # everstone's /opt/data binds from here. Same .devm/ treatment as the claude config.
+  # everstone's /opt/data binds from here. $WORKSPACE expands to the repo root at
+  # load time; .devm/ is gitignored and rides the workspace bind-mount (Mac-side),
+  # surviving `devm teardown`. (Claude state moved to the `claude` volume below.)
   EVERSTONE_DATA_DIR: $WORKSPACE/.devm/.everstone
+  # Maps Platform API key — kept out of the VM entirely. This `!secret` ref makes
+  # devm resolve `google_api_key` from the macOS keychain and hand iron-proxy the
+  # real value; the VM/config only ever see the opaque token
+  # `__DEVM_SECRET_google_api_key__`. es reads the key from config.yaml (not this
+  # env var), where the same token is set; iron-proxy substitutes the real key on
+  # egress to the Maps hosts bound under network.allow below. The env var is the
+  # resolution trigger + a paper trail; nothing in es consumes it.
+  GOOGLE_API_KEY: !secret google_api_key
+
+# Persistent named volumes (devm 0.9): Mac-backed stores mounted into the guest that
+# survive `devm teardown` (unlike the VM disk and unlike masks). Add/retarget is a
+# restart-bucket change (VM stop + ~5s cold start, no data loss).
+volumes:
+  # Claude Code state at its DEFAULT path (~/.claude for the guest `devm` user):
+  # OAuth login (.credentials.json), conversation transcripts (projects/), plugins,
+  # sessions, settings. Replaces the old CLAUDE_CONFIG_DIR redirect. Mac-side dir:
+  # ~/Library/Application Support/devm/volumes/everstone/claude/.
+  claude: /home/devm/.claude
 
 # iron-proxy egress allowlist (per-project; enforced by SNI/Host on the Mac).
 # Gates the RUNNING VM only — install steps above run with unrestricted egress.
@@ -127,6 +140,18 @@ network:
     - "*.googleapis.com"
     - "*.googleusercontent.com"
     - "*.ggpht.com"
+    # Maps Platform (es_maps_* tools): the *.googleapis.com wildcard above already
+    # permits egress, but secret INJECTION requires exact-host {host, secrets}
+    # entries. es sends the `__DEVM_SECRET_google_api_key__` token as the key
+    # (X-Goog-Api-Key header for Places/Routes; ?key= query param for legacy
+    # Geocoding); iron-proxy substitutes the real key only on requests to these
+    # three hosts. Nothing else in the VM carries the token, so nothing else leaks it.
+    - host: maps.googleapis.com          # Geocoding API (legacy GET, ?key=)
+      secrets: [google_api_key]
+    - host: places.googleapis.com        # Places API (New) — search + details
+      secrets: [google_api_key]
+    - host: routes.googleapis.com        # Routes API — directions + matrix
+      secrets: [google_api_key]
 
 # everstone's internal Caddy serves the sync surfaces (/db, /caldav, /git, /health)
 # inside the VM. It MUST NOT publish on VM :80 — devm runs its OWN Caddy on :80 to
