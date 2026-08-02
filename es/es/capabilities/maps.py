@@ -10,6 +10,7 @@ _MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatri
 _STATUS_ERRORS = {"OVER_QUERY_LIMIT": "quota_exceeded", "REQUEST_DENIED": "maps_unauthorized"}
 _SEARCH_MASK = "places.id,places.displayName,places.formattedAddress"
 _DETAILS_MASK = "displayName,formattedAddress,nationalPhoneNumber,regularOpeningHours,googleMapsUri"
+_ROUTES_MASK = "routes.duration,routes.distanceMeters,routes.description,routes.legs"
 
 
 class MapsError(Exception):
@@ -120,3 +121,24 @@ def place(place_id):
         raise MapsError("maps_unauthorized", r.text[:200])
     r.raise_for_status()
     return place_view(r.json())
+
+
+def directions_view(resp):
+    routes = (resp or {}).get("routes") or []
+    if not routes:
+        return None
+    r = routes[0]
+    summary = r.get("description") or None
+    return {"duration": render_duration(r.get("duration")),
+            "distance": render_distance(r.get("distanceMeters")), "summary": summary}
+
+
+def routes_body(origin, destination, mode):
+    body = {"origin": {"address": origin}, "destination": {"address": destination}, "travelMode": mode}
+    if mode in ("DRIVE", "TWO_WHEELER"):
+        body["routingPreference"] = "TRAFFIC_AWARE"
+    return body
+
+
+def directions(origin, destination, mode="DRIVE"):
+    return directions_view(_new_post(_ROUTES_URL, routes_body(origin, destination, mode), _ROUTES_MASK))

@@ -62,3 +62,16 @@ def test_place_view_details():
     assert maps.place_view(resp) == {
         "name": "Googleplex", "address": "1600 Amphitheatre Pkwy", "phone": "(650) 253-0000",
         "hours": ["Monday: 9 AM – 5 PM"], "url": "https://maps.google.com/?cid=1"}
+
+def test_directions_view_renders_duration_and_distance():
+    resp = {"routes": [{"duration": "2700s", "distanceMeters": 50000, "description": "US-101 N",
+                        "legs": [{"duration": "2700s", "distanceMeters": 50000}]}]}
+    assert maps.directions_view(resp) == {"duration": "45 min", "distance": "50.0 km", "summary": "US-101 N"}
+
+def test_directions_view_no_routes_is_none():
+    assert maps.directions_view({"routes": []}) is None
+
+def test_routes_body_drive_adds_traffic_pref_others_dont():
+    assert maps.routes_body("A", "B", "DRIVE")["routingPreference"] == "TRAFFIC_AWARE"
+    assert "routingPreference" not in maps.routes_body("A", "B", "WALK")
+    assert maps.routes_body("A", "B", "DRIVE")["origin"] == {"address": "A"}

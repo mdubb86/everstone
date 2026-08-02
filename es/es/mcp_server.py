@@ -441,5 +441,13 @@ def es_maps_place(place_id: str) -> dict:
     return maps_cap.place(place_id)
 
 
+@mcp.tool()
+@mcp_envelope
+def es_maps_directions(origin: str, destination: str, mode: str = "DRIVE") -> dict:
+    """Travel time + distance for origin->destination. mode: DRIVE|WALK|BICYCLE|TRANSIT.
+    Returns {duration, distance, summary}. origin/destination are plain strings the agent supplies."""
+    return maps_cap.directions(origin, destination, mode=mode)
+
+
 def main() -> None:
     mcp.run()
