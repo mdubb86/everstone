@@ -1,3 +1,4 @@
+import httpx
 import pytest
 from es.capabilities import maps
 
@@ -100,3 +101,28 @@ def test_matrix_over_address_cap_raises():
     with pytest.raises(maps.MapsError) as ei:
         maps.distance_matrix(["a"] * 30, ["b"] * 30)   # 60 addr > 50
     assert ei.value.es_code == "maps_error"
+
+def test_matrix_view_handles_omitted_zero_indices():
+    # proto3 JSON omits default-valued ints: originIndex=0/destinationIndex=0 is dropped
+    origins = ["Hotel A"]
+    dests = ["Field 1"]
+    elements = [{"duration": "300s", "distanceMeters": 3000, "condition": "ROUTE_EXISTS", "status": {}}]
+    out = maps.matrix_view(elements, origins, dests)
+    assert out == [{"origin": "Hotel A", "destination": "Field 1", "duration": "5 min",
+                    "distance": "3.0 km", "ok": True}]
+
+def test_geocode_http_error_is_sanitized(monkeypatch):
+    monkeypatch.setattr(maps, "api_key", lambda: "AIzaSuperSecretKey")
+
+    def fake_get(url, params=None, timeout=None):
+        request = httpx.Request("GET", url, params=params)
+        response = httpx.Response(403, request=request, text="permission denied")
+        raise httpx.HTTPStatusError("bad status", request=request, response=response)
+
+    monkeypatch.setattr(maps.httpx, "get", fake_get)
+    with pytest.raises(maps.MapsError) as ei:
+        maps.geocode("1600 Amphitheatre Pkwy")
+    assert ei.value.es_code == "maps_error"
+    msg = str(ei.value)
+    assert "AIzaSuperSecretKey" not in msg
+    assert "key=" not in msg

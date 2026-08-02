@@ -10,7 +10,7 @@ _MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatri
 _STATUS_ERRORS = {"OVER_QUERY_LIMIT": "quota_exceeded", "REQUEST_DENIED": "maps_unauthorized"}
 _SEARCH_MASK = "places.id,places.displayName,places.formattedAddress"
 _DETAILS_MASK = "displayName,formattedAddress,nationalPhoneNumber,regularOpeningHours,googleMapsUri"
-_ROUTES_MASK = "routes.duration,routes.distanceMeters,routes.description,routes.legs"
+_ROUTES_MASK = "routes.duration,routes.distanceMeters,routes.description"
 _MATRIX_MASK = "originIndex,destinationIndex,duration,distanceMeters,condition,status"
 
 
@@ -21,7 +21,7 @@ class MapsError(Exception):
 
 
 def api_key():
-    key = (config.load_config().get("maps") or {}).get("api_key")
+    key = (config.maps_config() or {}).get("api_key")
     if not key:
         raise MapsError("maps_not_configured", "maps.api_key is not set in config.yaml")
     return key
@@ -60,8 +60,11 @@ def geocode_view(resp):
 
 
 def geocode(query):
-    r = httpx.get(_GEOCODE_URL, params={"address": query, "key": api_key()}, timeout=20)
-    r.raise_for_status()
+    try:
+        r = httpx.get(_GEOCODE_URL, params={"address": query, "key": api_key()}, timeout=20)
+        r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise MapsError("maps_error", f"Geocoding request failed: HTTP {e.response.status_code}")
     return geocode_view(r.json())
 
 
@@ -149,7 +152,7 @@ def matrix_view(elements, origins, destinations):
     out = []
     for e in elements or []:
         ok = e.get("condition") == "ROUTE_EXISTS"
-        out.append({"origin": origins[e["originIndex"]], "destination": destinations[e["destinationIndex"]],
+        out.append({"origin": origins[e.get("originIndex", 0)], "destination": destinations[e.get("destinationIndex", 0)],
                     "duration": render_duration(e.get("duration")) if ok else None,
                     "distance": render_distance(e.get("distanceMeters")) if ok else None, "ok": ok})
     return out
