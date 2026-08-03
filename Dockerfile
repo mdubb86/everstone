@@ -105,7 +105,11 @@ RUN pip install --break-system-packages uv
 RUN git clone --depth 1 --branch main \
         https://github.com/NousResearch/hermes-agent /usr/local/lib/hermes-agent
 WORKDIR /usr/local/lib/hermes-agent
-RUN uv venv && uv pip install -e '.[all]'
+# Pin the venv Python: es requires >=3.12 and hermes-agent requires >=3.11,<3.14,
+# so the venv MUST be 3.12/3.13. `uv venv` unpinned picks the low end (3.11) uv can
+# find, which es then rejects ("No solution found"). 3.13 satisfies both and matches
+# the dev build. (hermes-agent is cloned unpinned above — a separate drift risk.)
+RUN uv venv --python 3.13 && uv pip install -e '.[all]'
 # Telegram adapter (NOT in .[all]) + es package + access_hook plugin go into the
 # venv so Hermes runs one interpreter that can load the plugin (hermes_plugins
 # entry point) and resolve `es`.
