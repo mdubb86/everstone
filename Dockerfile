@@ -128,6 +128,28 @@ RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python "typer>
 RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python ddgs
 RUN rm -rf /usr/local/lib/hermes-agent/.git
 
+# ── camofox-browser build ─────────────────────────────────────────────────────
+# camofox-browser has a NATIVE dep (better-sqlite3) that node-gyp compiles from
+# source, so it needs a C/C++ toolchain — which the slim final stage deliberately
+# omits ("carries NO compilers", below). Build it here WITH the toolchain, then
+# COPY the result into the final stage. `npm install` also runs postinstall, which
+# fetches the ~300MB Camoufox binary into /root/.cache/camoufox. Fail-loud (no
+# `|| echo`): a broken browser build should fail CI, not silently ship dead.
+FROM debian:trixie-slim AS camofox-build
+# devm/iron-proxy CA trust for build-time HTTPS (see caddy stage). No-op on Mac/CI.
+RUN --mount=type=secret,id=devm-ca,dst=/tmp/devm-ca.crt,required=false \
+    if [ -s /tmp/devm-ca.crt ]; then mkdir -p /usr/local/share/ca-certificates && \
+        cp /tmp/devm-ca.crt /usr/local/share/ca-certificates/devm-ca.crt && \
+        { update-ca-certificates 2>/dev/null || cat /tmp/devm-ca.crt >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true; }; \
+    fi
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates nodejs npm python3 make g++ && \
+    rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 https://github.com/jo-inc/camofox-browser /opt/camofox-browser
+# NODE_OPTIONS=--use-openssl-ca: node trusts the system CA store (holds devm's dev-CA
+# under MITM egress) so prebuild/binary downloads validate. Native compile + binary fetch.
+RUN cd /opt/camofox-browser && NODE_OPTIONS=--use-openssl-ca npm install
+
 FROM debian:trixie-slim
 
 # devm/iron-proxy CA trust for build-time HTTPS (see caddy stage). No-op on Mac/CI.
@@ -225,16 +247,12 @@ RUN git clone --depth 1 --branch master \
 
 # camofox-browser: Camoufox (stealth Firefox) wrapped in a Node REST server.
 # Hermes's browser_* tools are an HTTP client to it (CAMOFOX_URL=localhost:9377).
-# `npm install` runs its postinstall (scripts/postinstall.js) which fetches the
-# Camoufox binary (~300MB) from GitHub releases → baked in for offline-tolerant
-# starts. Node + the Firefox system libs are present from the Debian base.
-RUN git clone --depth 1 \
-        https://github.com/jo-inc/camofox-browser /opt/camofox-browser || \
-    echo "[camofox-browser] clone failed — browser unavailable"
-RUN if [ -f /opt/camofox-browser/package.json ]; then \
-        cd /opt/camofox-browser && NODE_OPTIONS=--use-openssl-ca npm install 2>&1 | tail -5 || \
-        echo "[camofox-browser] npm install failed — browser unavailable at runtime"; \
-    fi
+# Built in the camofox-build stage (its native better-sqlite3 dep needs a compiler
+# the slim final image omits); COPY the result + the ~300MB Camoufox binary the
+# postinstall fetched into /root/.cache/camoufox. Firefox system libs are from the
+# apt block above.
+COPY --from=camofox-build /opt/camofox-browser /opt/camofox-browser
+COPY --from=camofox-build /root/.cache/camoufox /root/.cache/camoufox
 
 # Make Camoufox honor the SYSTEM CA store (the way Fedora/Debian ship Firefox): point its
 # built-in-roots module at p11-kit-trust. Camoufox ships no libnssckbi.so and its camoufox.cfg
