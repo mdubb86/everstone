@@ -7,6 +7,11 @@ project:
 # The 32GB default is tight; 64GB gives headroom for the build + cross-run cache.
 disk: "64GB"
 
+# VM RAM (devm 0.10 `memory:` field — restart bucket). The 4G default OOM-kills the
+# in-VM Claude/Orca session when the full everstone container is also running; 8G
+# lets them coexist. Applied on the next VM restart (stop + start).
+memory: "8G"
+
 # Docker as a first-class devm feature (devm 0.7): installs Docker in the VM AND
 # makes container egress trust iron-proxy transparently. everstone builds + runs
 # as a Docker container *inside* the VM (couchdb/caddy/radicale/hermes/engraph).
@@ -54,16 +59,17 @@ scripts:
     - fnm install --lts
     - fnm default lts-latest
 
-  # Persist Claude's ~/.claude.json — it lives in $HOME (OUTSIDE the ~/.claude
-  # volume), so symlink it to a file ON the volume. Kept at the DEFAULT path (NOT
-  # relocated via CLAUDE_CONFIG_DIR — the IDE/Orca ignore that env and would write
-  # hooks/config to the default path anyway → split-brain). Runs in `startup:`
-  # (every boot) since the symlink sits in ephemeral $HOME; config.json on the
-  # volume persists. Fresh volume: the symlink dangles and Claude's first write
-  # creates config.json on the volume through it.
+  # Persist Claude's ~/.claude.json (login/account/project trust) — it lives in
+  # $HOME, OUTSIDE the ~/.claude volume, so symlink it to a file ON the volume,
+  # re-linked every boot. NOT CLAUDE_CONFIG_DIR: the VS Code extension and Orca
+  # ignore that env and read/write the default ~/.claude.json regardless → the
+  # default path must stay canonical. Save-back guard: Claude writes config via
+  # atomic temp+rename, which replaces the symlink with a real file — fold it back
+  # into the volume before re-linking. The oauthAccount grep stops a fresh
+  # onboarding stub from overwriting a real login. (Per `devm recipes get tool/ai/claude`.)
   link-claude-config:
-    - ln -sfn /home/devm/.claude/config.json /home/devm/.claude.json
-    - chown -h devm:devm /home/devm/.claude.json 2>/dev/null || true
+    - if [ -f /home/devm/.claude.json ] && [ ! -L /home/devm/.claude.json ] && grep -q '"oauthAccount"' /home/devm/.claude.json 2>/dev/null; then cp -f /home/devm/.claude.json /home/devm/.claude/.claude.json; fi
+    - ln -sf /home/devm/.claude/.claude.json /home/devm/.claude.json
 
 # Egress is UNRESTRICTED during provisioning; the iron-proxy allowlist below only
 # gates the running VM. `install:` is first-boot-only (marker-gated) and is in the
@@ -167,7 +173,8 @@ network:
     # Claude Code — self-contained allowlist (per `devm recipes get tool/ai/claude`)
     - api.anthropic.com         # Claude API (core)
     - claude.ai                 # OAuth login + install.sh
-    - platform.claude.com       # Console account auth
+    - platform.claude.com       # OAuth token exchange + revoke
+    - console.anthropic.com     # OAuth token REFRESH (claude.ai accts) — omit ⇒ silent logout
     - downloads.claude.ai       # native installer + plugin downloads
     - raw.githubusercontent.com # plugin marketplace + /release-notes
     - deb.debian.org     # VM base (Ubuntu/Debian) apt packages
