@@ -20,6 +20,7 @@ packages:
   - just
   - build-essential     # Orca ADE relay: node-gyp toolchain — its node-pty compiles from
                         # source on first attach (no linux-arm64 prebuilt)
+  - unzip               # fnm install (tool/lang/node) downloads a zipped binary
 
 # Named script library (devm 0.10): reusable multi-command shell snippets,
 # referenced from `install:`/`startup:` by a single `>NAME` entry. Keeps the
@@ -43,11 +44,28 @@ scripts:
     - sudo install -d -o devm -g devm /home/devm/.local/bin
     - sudo ln -sf /usr/local/bin/claude /home/devm/.local/bin/claude
 
+  # Node.js via fnm — per `devm recipes get tool/lang/node`. fnm installs as the
+  # devm user; the binary is copied to /usr/local/bin for system PATH, and the
+  # `path:` entry below puts node/npm/npx on PATH everywhere (incl. non-login SSH —
+  # what Orca's relay needs). --skip-shell: no ~/.bashrc hook (path: replaces it).
+  install-fnm-and-node:
+    - curl -fsSL https://fnm.vercel.app/install | bash -s -- --skip-shell
+    - sudo install -m 755 /home/devm/.local/share/fnm/fnm /usr/local/bin/fnm
+    - fnm install --lts
+    - fnm default lts-latest
+
 # Egress is UNRESTRICTED during provisioning; the iron-proxy allowlist below only
 # gates the running VM. `install:` is first-boot-only (marker-gated) and is in the
 # RECREATE bucket — edits here take effect on the next cold start, not live.
 install:
   - ">install-claude-cli"
+  - ">install-fnm-and-node"
+
+# fnm's `default` alias bin on PATH → node/npm/npx resolve in every shell (login,
+# non-login SSH, services, scripts) with no shell hook — and it tracks the active
+# default node version, so `fnm default <ver>` needs no devm.yaml change.
+path:
+  - /home/devm/.local/share/fnm/aliases/default/bin
 
 # Claude Code state (OAuth login + conversation transcripts + memory) persists via
 # the `claude` VOLUME below (devm 0.9), mounted at Claude's DEFAULT ~/.claude
@@ -102,6 +120,7 @@ network:
     - storage.googleapis.com
     - proxy.golang.org
     - sum.golang.org
+    - fnm.vercel.app              # fnm install script (tool/lang/node)
     - github.com
     - api.github.com              # uv git-dependency resolution (.[all]) + gh metadata
     - objects.githubusercontent.com     # legacy GitHub release-asset CDN
