@@ -54,6 +54,17 @@ scripts:
     - fnm install --lts
     - fnm default lts-latest
 
+  # Persist Claude's ~/.claude.json — it lives in $HOME (OUTSIDE the ~/.claude
+  # volume), so symlink it to a file ON the volume. Kept at the DEFAULT path (NOT
+  # relocated via CLAUDE_CONFIG_DIR — the IDE/Orca ignore that env and would write
+  # hooks/config to the default path anyway → split-brain). Runs in `startup:`
+  # (every boot) since the symlink sits in ephemeral $HOME; config.json on the
+  # volume persists. Fresh volume: the symlink dangles and Claude's first write
+  # creates config.json on the volume through it.
+  link-claude-config:
+    - ln -sfn /home/devm/.claude/config.json /home/devm/.claude.json
+    - chown -h devm:devm /home/devm/.claude.json 2>/dev/null || true
+
 # Egress is UNRESTRICTED during provisioning; the iron-proxy allowlist below only
 # gates the running VM. `install:` is first-boot-only (marker-gated) and is in the
 # RECREATE bucket — edits here take effect on the next cold start, not live.
@@ -66,6 +77,13 @@ install:
 # default node version, so `fnm default <ver>` needs no devm.yaml change.
 path:
   - /home/devm/.local/share/fnm/aliases/default/bin
+
+# Per-boot setup (RESTART bucket; runs every boot in the open-egress window). Re-links
+# Claude's ~/.claude.json symlink — it lives in ephemeral $HOME (the `claude` volume
+# only covers ~/.claude/), so the target on the volume persists but the pointer must
+# be recreated each boot.
+startup:
+  - ">link-claude-config"
 
 # Claude Code state (OAuth login + conversation transcripts + memory) persists via
 # the `claude` VOLUME below (devm 0.9), mounted at Claude's DEFAULT ~/.claude
