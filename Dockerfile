@@ -135,7 +135,16 @@ RUN rm -rf /usr/local/lib/hermes-agent/.git
 # COPY the result into the final stage. `npm install` also runs postinstall, which
 # fetches the ~300MB Camoufox binary into /root/.cache/camoufox. Fail-loud (no
 # `|| echo`): a broken browser build should fail CI, not silently ship dead.
-FROM debian:trixie-slim AS camofox-build
+#
+# NODE MUST BE THE OFFICIAL BUILD, NOT Debian's `nodejs` package. Debian links node
+# against a SHARED libnode.so.115; loading better-sqlite3's N-API addon into it
+# SEGFAULTS inside napi_module_register_by_symbol (both the shipped prebuild and a
+# locally compiled binding), which killed the server ~1.8s after "launching camoufox"
+# and made s6 restart-loop it — leaking an Xvfb per cycle and dumping a ~130MB core
+# each time until the disk filled. camofox-browser also declares engines >=22, which
+# Debian's node 20 does not satisfy. The official build is self-contained (no shared
+# libnode) and loads the same addon fine.
+FROM node:24-trixie-slim AS camofox-build
 # devm/iron-proxy CA trust for build-time HTTPS (see caddy stage). No-op on Mac/CI.
 RUN --mount=type=secret,id=devm-ca,dst=/tmp/devm-ca.crt,required=false \
     if [ -s /tmp/devm-ca.crt ]; then mkdir -p /usr/local/share/ca-certificates && \
@@ -143,7 +152,7 @@ RUN --mount=type=secret,id=devm-ca,dst=/tmp/devm-ca.crt,required=false \
         { update-ca-certificates 2>/dev/null || cat /tmp/devm-ca.crt >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true; }; \
     fi
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates nodejs npm python3 make g++ && \
+        git ca-certificates python3 make g++ && \
     rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 https://github.com/jo-inc/camofox-browser /opt/camofox-browser
 # NODE_OPTIONS=--use-openssl-ca: node trusts the system CA store (holds devm's dev-CA
@@ -187,8 +196,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ripgrep \
     findutils \
     coreutils \
-    nodejs \
-    npm \
     ffmpeg \
     libstdc++6 \
     libffi8 \
@@ -206,6 +213,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     groupadd -g 5984 couchdb && \
     useradd -m -u 5984 -g 5984 -d /home/couchdb couchdb && \
     rm -rf /var/lib/apt/lists/*
+
+# Official Node (same build the camofox-build stage compiled against). NOT Debian's
+# `nodejs` package — see the camofox-build stage for why that one segfaults on
+# better-sqlite3's N-API addon. Runtime needs only the interpreter; npm stays in the
+# builder stage.
+COPY --from=node:24-trixie-slim /usr/local/bin/node /usr/local/bin/node
 
 COPY --from=caddy /out/caddy /opt/bin/caddy
 COPY --from=couchdb /out /opt/bin/couchdb
