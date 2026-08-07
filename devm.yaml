@@ -71,12 +71,29 @@ scripts:
     - if [ -f /home/devm/.claude.json ] && [ ! -L /home/devm/.claude.json ] && grep -q '"oauthAccount"' /home/devm/.claude.json 2>/dev/null; then cp -f /home/devm/.claude.json /home/devm/.claude/.claude.json; fi
     - ln -sf /home/devm/.claude/.claude.json /home/devm/.claude.json
 
+  # uv (Python) — per `devm recipes get tool/lang/uv`. CLAUDE.md mandates uv for
+  # es + e2e. Installed in the install: OPEN window, so astral.sh is reachable at
+  # provisioning and NEVER needs a runtime allowlist entry (installing uv at
+  # runtime 403s — that's the trap). uv's rustls TLS through iron-proxy works via
+  # devm's auto-set UV_SYSTEM_CERTS=1.
+  install-uv:
+    - curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
+    - env UV_INSTALL_DIR=/home/devm/.local/bin INSTALLER_NO_MODIFY_PATH=1 sh /tmp/uv-install.sh
+  # Pre-seed the managed CPython in the startup OPEN window: uv fetches
+  # python-build-standalone from release-assets.githubusercontent.com (a signed
+  # redirect that can't be allowlisted), so downloading it here keeps that host
+  # OUT of the runtime allowlist. Idempotent (fast no-op once cached VM-local).
+  # Reads .python-version (3.12).
+  preseed-python:
+    - /home/devm/.local/bin/uv python install "$(cat "$WORKSPACE/.python-version" 2>/dev/null || echo 3.12)"
+
 # Egress is UNRESTRICTED during provisioning; the iron-proxy allowlist below only
 # gates the running VM. `install:` is first-boot-only (marker-gated) and is in the
 # RECREATE bucket — edits here take effect on the next cold start, not live.
 install:
   - ">install-claude-cli"
   - ">install-fnm-and-node"
+  - ">install-uv"
 
 # fnm's `default` alias bin on PATH → node/npm/npx resolve in every shell (login,
 # non-login SSH, services, scripts) with no shell hook — and it tracks the active
@@ -84,12 +101,22 @@ install:
 path:
   - /home/devm/.local/share/fnm/aliases/default/bin
 
+# Give the project venvs a private guest-local ext4 view (LIVE bucket — applied by
+# `devm reconcile`, no restart). uv/pytest write linux-aarch64 native .so files plus a
+# VM-only python symlink into .venv; on the Mac↔VM bind-mount those break the instant
+# they cross back to macOS (same failure class as node_modules). Base-repo venvs only —
+# per-worktree venvs (es worktrees) would each need their own entry, but none exist now.
+masks:
+  - es/.venv
+  - e2e/.venv
+
 # Per-boot setup (RESTART bucket; runs every boot in the open-egress window). Re-links
 # Claude's ~/.claude.json symlink — it lives in ephemeral $HOME (the `claude` volume
 # only covers ~/.claude/), so the target on the volume persists but the pointer must
 # be recreated each boot.
 startup:
   - ">link-claude-config"
+  - ">preseed-python"
 
 # Claude Code state (OAuth login + conversation transcripts + memory) persists via
 # the `claude` VOLUME below (devm 0.9), mounted at Claude's DEFAULT ~/.claude
@@ -102,6 +129,11 @@ env:
   HOSTNAME_APEX: test.everstone.waage.haus
   # Kill Sentry error reporting + telemetry (cleaner than allowlisting *.sentry.io).
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+  # Never let uv auto-fetch a CPython at runtime — the download host is an
+  # un-allowlistable signed redirect (see preseed-python). `manual` makes uv use
+  # only the interpreter pre-seeded in the boot window; a miss fails loudly rather
+  # than hanging on a blocked fetch.
+  UV_PYTHON_DOWNLOADS: manual
   # everstone's /opt/data binds from here. $WORKSPACE expands to the repo root at
   # load time; .devm/ is gitignored and rides the workspace bind-mount (Mac-side),
   # surviving `devm teardown`. (Claude state moved to the `claude` volume below.)
