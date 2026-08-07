@@ -44,6 +44,10 @@ scripts:
   # whichever HOME it ran with. State (OAuth, transcripts, memory) is NOT here —
   # it lives in the `claude` volume below.
   install-claude-cli:
+    # Symlink FIRST: the installer runs claude, which would otherwise write a
+    # fresh stub at $HOME root that startup's save-back copies over the good
+    # volume config (deterministic clobber, since install: precedes startup:).
+    - ln -sf /home/devm/.claude/.claude.json /home/devm/.claude.json
     - curl -fsSL https://claude.ai/install.sh | bash
     - sudo install -m 755 "$HOME/.local/share/claude/versions/"* /usr/local/bin/claude
     - sudo install -d -o devm -g devm /home/devm/.local/bin
@@ -68,7 +72,11 @@ scripts:
   # into the volume before re-linking. The oauthAccount grep stops a fresh
   # onboarding stub from overwriting a real login. (Per `devm recipes get tool/ai/claude`.)
   link-claude-config:
-    - if [ -f /home/devm/.claude.json ] && [ ! -L /home/devm/.claude.json ] && grep -q '"oauthAccount"' /home/devm/.claude.json 2>/dev/null; then cp -f /home/devm/.claude.json /home/devm/.claude/.claude.json; fi
+    # Restore-only: fold a real ~/.claude.json back to the volume ONLY if it's
+    # genuinely onboarded (a mid-session clobber) or the volume has none yet
+    # (first seed). A fresh stub (no hasCompletedOnboarding) is discarded, never
+    # copied over good persisted state.
+    - if [ -f /home/devm/.claude.json ] && [ ! -L /home/devm/.claude.json ]; then if grep -qE '"hasCompletedOnboarding"[[:space:]]*:[[:space:]]*true' /home/devm/.claude.json 2>/dev/null || [ ! -f /home/devm/.claude/.claude.json ]; then cp -f /home/devm/.claude.json /home/devm/.claude/.claude.json; fi; fi
     - ln -sf /home/devm/.claude/.claude.json /home/devm/.claude.json
 
   # uv (Python) — per `devm recipes get tool/lang/uv`. CLAUDE.md mandates uv for
