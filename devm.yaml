@@ -95,11 +95,17 @@ install:
   - ">install-fnm-and-node"
   - ">install-uv"
 
-# fnm's `default` alias bin on PATH → node/npm/npx resolve in every shell (login,
-# non-login SSH, services, scripts) with no shell hook — and it tracks the active
-# default node version, so `fnm default <ver>` needs no devm.yaml change.
+# PATH additions for every shell — login, non-login SSH (Orca relay, `just`),
+# services, scripts — with no shell hook:
+#   - fnm's `default` alias bin → node/npm/npx (tracks the active default node
+#     version, so `fnm default <ver>` needs no devm.yaml change).
+#   - ~/.local/bin → uv. uv's installer lands it here and only wires ~/.profile
+#     (login shells); without this entry `just`/Orca (non-login) can't find uv.
+#     Also exposes the pre-seeded python3.12 symlink, though `uv run`/`uv venv`
+#     resolve the managed interpreter without needing it on PATH.
 path:
   - /home/devm/.local/share/fnm/aliases/default/bin
+  - /home/devm/.local/bin
 
 # Give the project venvs a private guest-local ext4 view (LIVE bucket — applied by
 # `devm reconcile`, no restart). uv/pytest write linux-aarch64 native .so files plus a
