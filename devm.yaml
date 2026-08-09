@@ -8,9 +8,10 @@ project:
 disk: "64GB"
 
 # VM RAM (devm 0.10 `memory:` field — restart bucket). The 4G default OOM-kills the
-# in-VM Claude/Orca session when the full everstone container is also running; 8G
-# lets them coexist. Applied on the next VM restart (stop + start).
-memory: "8G"
+# in-VM Claude/Orca session when the full everstone container is also running. 6G
+# physical + devm's auto-swap (50% → 3G) gives a 9G virtual ceiling for spikes while
+# reserving less Mac RAM than a flat 8G. Applied on the next VM restart (stop + start).
+memory: "6G"
 
 # Docker as a first-class devm feature (devm 0.7): installs Docker in the VM AND
 # makes container egress trust iron-proxy transparently. everstone builds + runs
