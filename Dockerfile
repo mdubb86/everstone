@@ -258,14 +258,27 @@ RUN git clone --depth 1 --branch master \
         https://github.com/nesquena/hermes-webui /opt/hermes-webui || \
     echo "[hermes-webui] clone failed — /opt/hermes-webui absent; web UI unavailable"
 
-# camofox-browser: Camoufox (stealth Firefox) wrapped in a Node REST server.
-# Hermes's browser_* tools are an HTTP client to it (CAMOFOX_URL=localhost:9377).
+# camofox-browser: Camoufox (stealth Firefox) wrapped in a Node REST server. Run as
+# TWO isolated instances (see the camofox-flex root below): camofox-flex on :9377 for
+# Hermes's flexible browser_* tools (CAMOFOX_URL), and camofox-auth on :9378 for es's
+# strict tools (CAMOFOX_AUTH_URL), which is the only one holding a logged-in session.
 # Built in the camofox-build stage (its native better-sqlite3 dep needs a compiler
 # the slim final image omits); COPY the result + the ~300MB Camoufox binary the
 # postinstall fetched into /root/.cache/camoufox. Firefox system libs are from the
 # apt block above.
 COPY --from=camofox-build /opt/camofox-browser /opt/camofox-browser
 COPY --from=camofox-build /root/.cache/camoufox /root/.cache/camoufox
+
+# Second install root for the LOGIN-LESS instance (camofox-flex, :9377). camofox
+# resolves camofox.config.json from its own install ROOT_DIR (lib/config.js:
+# ROOT_DIR = join(__dirname,'..')) — not from cwd, not from an env var — so separate
+# roots are the only way to run one instance with plugins and one without. This copy
+# gets a config with NO plugins: random fingerprint per launch, no vnc, no profile
+# persistence. Derived from the real config so non-plugin settings (version,
+# newPageTimeoutMs, …) stay in sync. The ~300MB Camoufox binary is NOT duplicated —
+# both roots resolve it from $HOME/.cache/camoufox.
+RUN cp -r /opt/camofox-browser /opt/camofox-flex && \
+    node -e 'const fs=require("fs"),p="/opt/camofox-flex/camofox.config.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));c.id="camofox-flex";c.name="Camofox Flex (login-less)";c.plugins={};fs.writeFileSync(p,JSON.stringify(c,null,2))'
 
 # Make Camoufox honor the SYSTEM CA store (the way Fedora/Debian ship Firefox): point its
 # built-in-roots module at p11-kit-trust. Camoufox ships no libnssckbi.so and its camoufox.cfg
@@ -309,10 +322,15 @@ ENV PATH="${PATH}:/command:/scripts:/opt/bin:/usr/local/bin"
 # run files for clarity but the container-level ENV is what makes ad-hoc
 # operator commands work without -e flags.
 ENV HERMES_HOME=/opt/data/hermes
-# Point Hermes's browser_* tools at the in-container camofox-browser server
+# Point Hermes's browser_* tools at the LOGIN-LESS camofox-flex instance
 # (localhost:9377). Setting CAMOFOX_URL is what makes Hermes's is_camofox_mode()
 # active, so the browser toolset drives Camoufox instead of a Chromium engine.
 ENV CAMOFOX_URL=http://localhost:9377
+# es's strict tools (es_login, maps M2, the warm-keeper) drive the OTHER instance:
+# camofox-auth on :9378, which holds the authenticated session. Kept a separate env
+# var (and a separate port) so a flexible browser_* call can never land on the
+# logged-in profile.
+ENV CAMOFOX_AUTH_URL=http://localhost:9378
 # Release identity, baked at build time: CI passes the v* tag + short sha; local
 # `just build` passes `git describe`/`rev-parse`. Served at /version via Caddy's
 # {env.EVERSTONE_VERSION} / {env.EVERSTONE_COMMIT} placeholders. Defaults make a

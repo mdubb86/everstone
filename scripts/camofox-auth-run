@@ -1,0 +1,70 @@
+#!/bin/sh
+# camofox-auth — the PINNED, PERSISTENT Camoufox instance (127.0.0.1:9378).
+#
+# This is the instance that holds the AUTHENTICATED session (Google et al). It is
+# driven ONLY by es's strict tools (es_login, maps M2, the warm-keeper) via
+# CAMOFOX_AUTH_URL. Hermes's flexible browser_* tools never reach it — they get
+# camofox-flex on :9377, which is login-less and plugin-free. That split is the
+# whole point: flexible browsing must not be able to touch (or endanger) the
+# logged-in profile.
+#
+# Per-userId profiles (cookies/localStorage) persist under /opt/data so logins
+# survive restarts, and the fingerprint plugin pins a stable identity so the
+# session isn't re-challenged.
+#
+# Localhost-only; NEVER exposed via Caddy, except the noVNC /web-login/ route that
+# is added/removed live during a seeding window.
+#
+# If the clone/install failed at build, stay up but idle so s6 doesn't restart-loop
+# a disabled longrun (mirrors hermes-webui-run).
+set -u
+if [ ! -f /opt/camofox-browser/server.js ]; then
+    echo "[camofox-auth] /opt/camofox-browser not present (clone/install failed) — idle"
+    exec tail -f /dev/null
+fi
+export CAMOFOX_PORT=9378
+# CAMOFOX_BIND_HOST is the name lib/config.js actually reads (config.bindHost).
+# The old script exported CAMOFOX_HOST, which is silently ignored — the server
+# logged host ":: " and listened on EVERY interface. Ports are never published, so
+# nothing leaked, but "localhost-only" was aspirational rather than enforced.
+export CAMOFOX_BIND_HOST=127.0.0.1
+export CAMOFOX_PROFILE_DIR=/opt/data/browser/profiles
+mkdir -p "$CAMOFOX_PROFILE_DIR"
+
+# Enable EverStone's plugins (idempotent merge into camofox.config.json; camofox-browser only
+# loads plugins with an entry here, and upstream source stays untouched):
+#   fingerprint — pins a stable Camoufox identity for durable authenticated sessions.
+#   vnc         — always-on interactive-login stack (Xvfb+x11vnc+noVNC on 127.0.0.1:6080).
+#                 Access is NOT gated here: websockify binds container-localhost and 6080 is
+#                 never published, so the ONLY ingress is the Caddy /web-login/ route, which is
+#                 added/removed live during a seeding window. Always-on avoids disruptive
+#                 restarts (which would drop the shared browser + active tabs).
+#
+# Written ATOMICALLY (tmp + rename). The previous in-place rewrite left a ZERO-BYTE
+# config when the disk filled, and both readers swallow that: this script logged only
+# a WARN and carried on, and camofox's readCamofoxConfig() catches and returns {}. The
+# instance then came up with NO pinned fingerprint and NO vnc and nobody noticed — and
+# because the file lives in the container's WRITABLE LAYER, `docker restart` did not
+# heal it, only a recreate did. So: fail LOUD and refuse to start, because an auth
+# instance running unpinned is worse than an auth instance that is plainly down.
+if ! node -e '
+const fs = require("fs");
+const p = "/opt/camofox-browser/camofox.config.json", t = p + ".tmp";
+const c = JSON.parse(fs.readFileSync(p, "utf8"));
+c.plugins = c.plugins || {};
+c.plugins.fingerprint = { ...(c.plugins.fingerprint || {}), enabled: true };
+c.plugins.vnc = { ...(c.plugins.vnc || {}), enabled: true };
+fs.writeFileSync(t, JSON.stringify(c, null, 2));
+fs.renameSync(t, p);
+console.log("[camofox-auth] fingerprint + vnc plugins enabled");
+'; then
+    echo "[camofox-auth] FATAL: camofox.config.json is missing/invalid — cannot enable the"
+    echo "[camofox-auth] fingerprint + vnc plugins. Refusing to start: running the AUTH"
+    echo "[camofox-auth] instance unpinned would expose the authenticated profile under an"
+    echo "[camofox-auth] unstable identity. Restore the file (recreate the container) — idle."
+    exec tail -f /dev/null
+fi
+
+cd /opt/camofox-browser
+echo "[camofox-auth] starting on 127.0.0.1:9378 (profiles: $CAMOFOX_PROFILE_DIR)"
+exec node server.js

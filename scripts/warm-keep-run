@@ -5,7 +5,7 @@
 # jobs appear.
 set -u
 PY=/usr/local/lib/hermes-agent/.venv/bin/python
-sleep 60   # let camofox-browser + boot config settle first
+sleep 60   # let camofox-auth + boot config settle first
 echo "[warm-keep] loop starting (every 6h)"
 while true; do
     "$PY" -m es.warm_keep 2>&1 || echo "[warm-keep] iteration failed"
