@@ -161,3 +161,26 @@ def test_warm_keep_reports_dead_session_but_never_triggers_login():
     s = _WarmSpy({"cookies": [{"name": "__Secure-1PSID"}]}, {"acct": False, "signin": True})
     out = s.run()
     assert out["warmed"] is True and out["signed_in"] is False and "login_url" not in out
+
+
+# --- Instance routing: es tools MUST drive camofox-auth, never the login-less flex ---------
+# The two Camoufox instances are deliberately split (flex :9377 = Hermes browser_*,
+# login-less; auth :9378 = the authenticated session). es owns the authenticated one, so it
+# reads CAMOFOX_AUTH_URL. Reading CAMOFOX_URL here would point es at the flex instance, where
+# no login exists — silently breaking es_login and the warm-keeper.
+def test_web_login_uses_auth_url(monkeypatch):
+    import importlib
+    monkeypatch.setenv("CAMOFOX_AUTH_URL", "http://localhost:9378")
+    monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+    import es.web_login as wl
+    importlib.reload(wl)
+    assert wl._CAMOFOX == "http://localhost:9378"
+
+
+def test_web_login_defaults_to_9378_not_flex(monkeypatch):
+    import importlib
+    monkeypatch.delenv("CAMOFOX_AUTH_URL", raising=False)
+    monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+    import es.web_login as wl
+    importlib.reload(wl)
+    assert wl._CAMOFOX == "http://localhost:9378"

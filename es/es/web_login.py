@@ -88,7 +88,10 @@ import threading
 import subprocess
 import httpx
 
-_CAMOFOX = os.environ.get("CAMOFOX_URL", "http://localhost:9377")
+# camofox-auth (:9378), NOT camofox-flex (:9377). es owns the AUTHENTICATED browser
+# instance; flex is login-less and its profiles are wiped at every start, so pointing
+# es here at CAMOFOX_URL would silently break es_login and the warm-keeper.
+_CAMOFOX = os.environ.get("CAMOFOX_AUTH_URL", "http://localhost:9378")
 _CADDYFILE = "/opt/config/caddy/Caddyfile"
 _HOME_URL = "https://www.google.com"
 _SIGNIN_URL = "https://accounts.google.com"  # all current profiles are Google; per-profile later
