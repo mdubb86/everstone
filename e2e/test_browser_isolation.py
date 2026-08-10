@@ -129,6 +129,14 @@ def test_flex_cannot_see_the_pinned_fingerprint(everstone):
     flex_cfg = _node_json(c, 'require("/opt/camofox-flex/camofox.config.json")')
     assert "fingerprint" not in json.dumps(flex_cfg).lower() or flex_cfg.get("plugins") == {}
 
+    # Defense in depth: flex must not even HAVE the pinning plugin on disk. This holds only
+    # because the Dockerfile copies the flex root BEFORE `COPY camofox-plugins/fingerprint`
+    # — load-bearing ordering that nothing else protects, hence this assertion.
+    assert _exec(c, "test", "-d", "/opt/camofox-browser/plugins/fingerprint").returncode == 0, \
+        "auth should have the fingerprint plugin installed"
+    assert _exec(c, "test", "-e", "/opt/camofox-flex/plugins/fingerprint").returncode != 0, \
+        "flex must not carry the fingerprint-pinning plugin at all"
+
 
 def test_flex_profiles_are_ephemeral_and_never_on_opt_data(everstone):
     """flex's profile dir is wiped at every start and lives outside the data volume."""

@@ -277,6 +277,12 @@ COPY --from=camofox-build /root/.cache/camoufox /root/.cache/camoufox
 # persistence. Derived from the real config so non-plugin settings (version,
 # newPageTimeoutMs, …) stay in sync. The ~300MB Camoufox binary is NOT duplicated —
 # both roots resolve it from $HOME/.cache/camoufox.
+# ORDERING IS LOAD-BEARING: this runs BEFORE `COPY camofox-plugins/fingerprint` below, so
+# the flex root never even receives the fingerprint plugin — defense in depth on top of its
+# empty plugin config. Moving that COPY above this line (e.g. while grouping the browser
+# COPYs together) would silently hand flex the pinning plugin. e2e/test_browser_isolation.py
+# asserts flex has no fingerprint plugin dir, so that regression fails a test rather than
+# quietly weakening the split.
 RUN cp -r /opt/camofox-browser /opt/camofox-flex && \
     node -e 'const fs=require("fs"),p="/opt/camofox-flex/camofox.config.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));c.id="camofox-flex";c.name="Camofox Flex (login-less)";c.plugins={};fs.writeFileSync(p,JSON.stringify(c,null,2))'
 
