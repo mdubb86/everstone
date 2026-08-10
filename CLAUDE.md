@@ -27,14 +27,19 @@ A dev `config.yaml` is required (`cp config.example.yaml config.yaml`); it holds
 ## Tests
 
 ```bash
-pytest es/tests -q                       # es unit tests  (CI: pip install -e ./es first)
-pytest es/tests/test_mcp_server.py::test_es_notes_journal_ok -q   # single test
-PYTHONPATH=scripts pytest scripts/tests -q   # boot-script unit tests (configure.py, esadmin, …)
+cd es && uv run pytest tests -q           # es unit tests (the `tests` path is required —
+                                          # a bare `uv run pytest` collects nothing)
+cd es && uv run pytest tests/test_mcp_server.py::test_es_notes_journal_ok -q   # single test
+# boot-script unit tests (configure.py, esadmin, …). scripts/ is not a package with its
+# own deps, so name them explicitly — a bare `pytest scripts/tests` fails on imports:
+PYTHONPATH=scripts uv run --python 3.12 \
+    --with pytest --with pyyaml --with jsonschema --with typer \
+    pytest scripts/tests -q
 just e2e                                 # full e2e: builds + boots a throwaway container
 cd e2e && uv run pytest test_routing.py -v   # single e2e module
 ```
 
-- **Use `uv` / Python 3.12 locally** — `es` and `e2e` target 3.12; the bare VM's system Python is 3.14, do not install project deps there.
+- **Use `uv` / Python 3.12 locally** — `es` and `e2e` target 3.12; the bare VM's system Python is a different minor (3.13 on the current devm image), do not install project deps there.
 - CI: `.github/workflows/ci.yml` runs the es + scripts unit tests on every push to `main` and on PRs (fast gate). `.github/workflows/build.yml` builds and publishes the GHCR image **only on `v*` tags** — so a release is one build, and pushing to `main` never builds an image. `:latest` always tracks the newest release.
 
 ## Architecture (the big picture)
