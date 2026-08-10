@@ -40,6 +40,11 @@ export async function register(app, ctx, pluginConfig = {}) {
         audio: crypto.randomInt(1, 2 ** 31),
         fonts: crypto.randomInt(1, 2 ** 31),
       }),
+      // Corrupt pin → regenerate rather than launch unpinned (see pin-store.js). Loud,
+      // because the identity DID change: the authenticated session may be re-verified once.
+      onCorrupt: (err) => log('error', 'fingerprint plugin: pin unreadable — REGENERATING a new '
+        + 'pinned identity; the authenticated session may need re-verification once',
+        { pinPath, error: err.message }),
     });
     overlay = buildOverlay(pin, { fromBrowserforge, ffVersion });
     log('info', 'fingerprint plugin: pinned identity loaded', { pinPath, os, ffVersion });

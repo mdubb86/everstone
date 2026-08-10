@@ -23,6 +23,49 @@ test('first call generates a pin, persists it, and returns it', () => {
   assert.ok(fs.existsSync(file), 'pin file should be written');
 });
 
+test('a CORRUPT pin regenerates instead of throwing (never launch unpinned)', () => {
+  const file = tmpFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '{ this is not json');
+  let corruptErr = null;
+  const pin = loadOrCreatePin(file, {
+    makeFingerprint: () => ({ ua: 'regenerated' }),
+    makeSeeds: () => ({ canvas: 4, audio: 5, fonts: 6 }),
+    onCorrupt: (e) => { corruptErr = e; },
+  });
+  assert.ok(corruptErr, 'caller must be told the pin was corrupt');
+  assert.deepEqual(pin.fingerprint, { ua: 'regenerated' });
+  // and the healed pin must be PERSISTED, or every launch regenerates = the drift we avoid
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), pin);
+});
+
+test('a structurally invalid pin (parses, but no fingerprint/seeds) also regenerates', () => {
+  const file = tmpFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '{"unexpected": true}');
+  let told = false;
+  const pin = loadOrCreatePin(file, {
+    makeFingerprint: () => ({ ua: 'fresh' }),
+    makeSeeds: () => ({ canvas: 1, audio: 2, fonts: 3 }),
+    onCorrupt: () => { told = true; },
+  });
+  assert.ok(told);
+  assert.deepEqual(pin, { fingerprint: { ua: 'fresh' }, seeds: { canvas: 1, audio: 2, fonts: 3 } });
+});
+
+test('an unwritable pin location still THROWS (not recoverable — caller must fail closed)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pinstore-ro-'));
+  fs.chmodSync(dir, 0o500);  // r-x: cannot create the pin file
+  try {
+    assert.throws(() => loadOrCreatePin(path.join(dir, 'fingerprint.json'), {
+      makeFingerprint: () => ({ ua: 'X' }),
+      makeSeeds: () => ({ canvas: 1, audio: 2, fonts: 3 }),
+    }));
+  } finally {
+    fs.chmodSync(dir, 0o700);
+  }
+});
+
 test('second call returns the persisted pin WITHOUT regenerating', () => {
   const file = tmpFile();
   const deps = {

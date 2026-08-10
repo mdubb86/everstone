@@ -65,6 +65,21 @@ console.log("[camofox-auth] fingerprint + vnc plugins enabled");
     exec tail -f /dev/null
 fi
 
+# Preflight the fingerprint pin's HOME. A corrupt pin file self-heals inside the plugin
+# (pin-store.js regenerates it), but an unwritable pin directory does not: the plugin fails
+# open, so the auth instance would launch UNPINNED — a fresh random device on every launch,
+# which is what makes Google re-verify a session that was working. camofox catches plugin
+# register() errors and carries on, so the plugin itself cannot refuse to start; this is the
+# only place that can. Idle rather than exit, so s6 doesn't restart-loop.
+PIN_DIR=$(dirname "$CAMOFOX_PROFILE_DIR")   # /opt/data/browser — where fingerprint.json lives
+if ! (mkdir -p "$PIN_DIR" && touch "$PIN_DIR/.pin-writable" && rm -f "$PIN_DIR/.pin-writable") 2>/dev/null; then
+    echo "[camofox-auth] FATAL: $PIN_DIR is not writable, so the pinned fingerprint cannot be"
+    echo "[camofox-auth] stored. Launching would give this AUTHENTICATED instance a new device"
+    echo "[camofox-auth] identity on every start and get the session repeatedly re-verified."
+    echo "[camofox-auth] Fix the data-volume permissions and restart — idle."
+    exec tail -f /dev/null
+fi
+
 cd /opt/camofox-browser
 echo "[camofox-auth] starting on 127.0.0.1:9378 (profiles: $CAMOFOX_PROFILE_DIR)"
 exec node server.js
