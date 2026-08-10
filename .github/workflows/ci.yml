@@ -35,3 +35,14 @@ jobs:
 
       - name: scripts tests
         run: PYTHONPATH=scripts pytest scripts/tests -q
+
+      # camofox-plugins/fingerprint ships INTO the image (it pins the device identity that
+      # keeps authenticated sessions from being re-verified), and it has node:test unit
+      # tests. Nothing ran them before this step, so they were decorative. Pure Node, no
+      # container, no deps — unlike e2e/, which needs a built image and is deliberately
+      # left out of this fast gate.
+      # Glob the test files, NOT the directory: `node --test <dir>` treats every .js in it
+      # as a test, including index.js — which imports camoufox-js and so only resolves
+      # inside the image. The *.test.js files import only the pure modules.
+      - name: camofox plugin tests
+        run: node --test camofox-plugins/fingerprint/*.test.js

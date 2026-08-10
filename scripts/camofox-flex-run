@@ -1,0 +1,39 @@
+#!/bin/sh
+# camofox-flex — the LOGIN-LESS Camoufox instance (127.0.0.1:9377).
+#
+# Serves Hermes's flexible browser_* tools (CAMOFOX_URL). Random per-launch
+# fingerprint, no vnc, nothing durable, no auth. Isolated from camofox-auth
+# (:9378), which holds the authenticated session — flexible browsing must not be
+# able to reach it.
+#
+# NOTE (out of scope, flagged in the spec): this instance is still an exfiltration
+# channel — the agent could POST held data outbound through it. An egress policy for
+# flex is a separate effort.
+set -u
+if [ ! -f /opt/camofox-flex/server.js ]; then
+    echo "[camofox-flex] /opt/camofox-flex not present (build failed) — idle"
+    exec tail -f /dev/null
+fi
+export CAMOFOX_PORT=9377
+# See camofox-auth-run: CAMOFOX_BIND_HOST is the name lib/config.js reads;
+# CAMOFOX_HOST is silently ignored and leaves the server on every interface.
+export CAMOFOX_BIND_HOST=127.0.0.1
+
+# Ephemeral profiles, NEVER under /opt/data. Note /run is NOT a tmpfs in this image
+# (it is the container's overlay writable layer), so emptying it here is what makes
+# the instance genuinely stateless — otherwise profiles would survive `docker
+# restart`. Wiping on every start is the intended behavior for a login-less browser.
+export CAMOFOX_PROFILE_DIR=/run/camofox-flex
+rm -rf "$CAMOFOX_PROFILE_DIR"
+mkdir -p "$CAMOFOX_PROFILE_DIR"
+
+# Plugins OFF. camofox-browser resolves camofox.config.json from its own install
+# ROOT_DIR (lib/config.js: ROOT_DIR = join(__dirname, "..")) — NOT from cwd and NOT
+# from an env var. A second install root is therefore the only way to give the two
+# instances different plugin sets; /opt/camofox-flex is that root and its config
+# lists no plugins (baked in the Dockerfile). Result: random fingerprint per launch,
+# no vnc, no profile persistence. The ~300MB Camoufox binary is NOT duplicated —
+# both roots resolve it from $HOME/.cache/camoufox.
+cd /opt/camofox-flex
+echo "[camofox-flex] starting on 127.0.0.1:9377 (ephemeral profiles: $CAMOFOX_PROFILE_DIR)"
+exec node server.js

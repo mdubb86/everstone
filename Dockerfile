@@ -128,6 +128,37 @@ RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python "typer>
 RUN uv pip install --python /usr/local/lib/hermes-agent/.venv/bin/python ddgs
 RUN rm -rf /usr/local/lib/hermes-agent/.git
 
+# ── camofox-browser build ─────────────────────────────────────────────────────
+# camofox-browser has a NATIVE dep (better-sqlite3) that node-gyp compiles from
+# source, so it needs a C/C++ toolchain — which the slim final stage deliberately
+# omits ("carries NO compilers", below). Build it here WITH the toolchain, then
+# COPY the result into the final stage. `npm install` also runs postinstall, which
+# fetches the ~300MB Camoufox binary into /root/.cache/camoufox. Fail-loud (no
+# `|| echo`): a broken browser build should fail CI, not silently ship dead.
+#
+# NODE MUST BE THE OFFICIAL BUILD, NOT Debian's `nodejs` package. Debian links node
+# against a SHARED libnode.so.115; loading better-sqlite3's N-API addon into it
+# SEGFAULTS inside napi_module_register_by_symbol (both the shipped prebuild and a
+# locally compiled binding), which killed the server ~1.8s after "launching camoufox"
+# and made s6 restart-loop it — leaking an Xvfb per cycle and dumping a ~130MB core
+# each time until the disk filled. camofox-browser also declares engines >=22, which
+# Debian's node 20 does not satisfy. The official build is self-contained (no shared
+# libnode) and loads the same addon fine.
+FROM node:24-trixie-slim AS camofox-build
+# devm/iron-proxy CA trust for build-time HTTPS (see caddy stage). No-op on Mac/CI.
+RUN --mount=type=secret,id=devm-ca,dst=/tmp/devm-ca.crt,required=false \
+    if [ -s /tmp/devm-ca.crt ]; then mkdir -p /usr/local/share/ca-certificates && \
+        cp /tmp/devm-ca.crt /usr/local/share/ca-certificates/devm-ca.crt && \
+        { update-ca-certificates 2>/dev/null || cat /tmp/devm-ca.crt >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true; }; \
+    fi
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates python3 make g++ && \
+    rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 https://github.com/jo-inc/camofox-browser /opt/camofox-browser
+# NODE_OPTIONS=--use-openssl-ca: node trusts the system CA store (holds devm's dev-CA
+# under MITM egress) so prebuild/binary downloads validate. Native compile + binary fetch.
+RUN cd /opt/camofox-browser && NODE_OPTIONS=--use-openssl-ca npm install
+
 FROM debian:trixie-slim
 
 # devm/iron-proxy CA trust for build-time HTTPS (see caddy stage). No-op on Mac/CI.
@@ -165,15 +196,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ripgrep \
     findutils \
     coreutils \
-    nodejs \
-    npm \
     ffmpeg \
     libstdc++6 \
     libffi8 \
     libgtk-3-0t64 libx11-xcb1 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
     libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64 libdbus-glib-1-2 \
     libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libnss3 libnspr4 libxtst6 \
-    libxshmfence1 fonts-liberation && \
+    libxshmfence1 fonts-liberation \
+    xvfb x11vnc novnc python3-websockify net-tools procps \
+    p11-kit-modules && \
     ARCH=$( [ "$TARGETARCH" = "arm64" ] && echo aarch64 || echo x86_64 ) && \
     curl -fsSL "${S6_OVERLAY_BASE_URL}/s6-overlay-${ARCH}.tar.xz" | tar xJ -C / && \
     curl -fsSL "${S6_OVERLAY_BASE_URL}/s6-overlay-noarch.tar.xz" | tar xJ -C / && \
@@ -182,6 +213,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     groupadd -g 5984 couchdb && \
     useradd -m -u 5984 -g 5984 -d /home/couchdb couchdb && \
     rm -rf /var/lib/apt/lists/*
+
+# Official Node (same build the camofox-build stage compiled against). NOT Debian's
+# `nodejs` package — see the camofox-build stage for why that one segfaults on
+# better-sqlite3's N-API addon. Runtime needs only the interpreter; npm stays in the
+# builder stage.
+COPY --from=node:24-trixie-slim /usr/local/bin/node /usr/local/bin/node
 
 COPY --from=caddy /out/caddy /opt/bin/caddy
 COPY --from=couchdb /out /opt/bin/couchdb
@@ -221,18 +258,50 @@ RUN git clone --depth 1 --branch master \
         https://github.com/nesquena/hermes-webui /opt/hermes-webui || \
     echo "[hermes-webui] clone failed — /opt/hermes-webui absent; web UI unavailable"
 
-# camofox-browser: Camoufox (stealth Firefox) wrapped in a Node REST server.
-# Hermes's browser_* tools are an HTTP client to it (CAMOFOX_URL=localhost:9377).
-# `npm install` runs its postinstall (scripts/postinstall.js) which fetches the
-# Camoufox binary (~300MB) from GitHub releases → baked in for offline-tolerant
-# starts. Node + the Firefox system libs are present from the Debian base.
-RUN git clone --depth 1 \
-        https://github.com/jo-inc/camofox-browser /opt/camofox-browser || \
-    echo "[camofox-browser] clone failed — browser unavailable"
-RUN if [ -f /opt/camofox-browser/package.json ]; then \
-        cd /opt/camofox-browser && NODE_OPTIONS=--use-openssl-ca npm install 2>&1 | tail -5 || \
-        echo "[camofox-browser] npm install failed — browser unavailable at runtime"; \
-    fi
+# camofox-browser: Camoufox (stealth Firefox) wrapped in a Node REST server. Run as
+# TWO isolated instances (see the camofox-flex root below): camofox-flex on :9377 for
+# Hermes's flexible browser_* tools (CAMOFOX_URL), and camofox-auth on :9378 for es's
+# strict tools (CAMOFOX_AUTH_URL), which is the only one holding a logged-in session.
+# Built in the camofox-build stage (its native better-sqlite3 dep needs a compiler
+# the slim final image omits); COPY the result + the ~300MB Camoufox binary the
+# postinstall fetched into /root/.cache/camoufox. Firefox system libs are from the
+# apt block above.
+COPY --from=camofox-build /opt/camofox-browser /opt/camofox-browser
+COPY --from=camofox-build /root/.cache/camoufox /root/.cache/camoufox
+
+# Second install root for the LOGIN-LESS instance (camofox-flex, :9377). camofox
+# resolves camofox.config.json from its own install ROOT_DIR (lib/config.js:
+# ROOT_DIR = join(__dirname,'..')) — not from cwd, not from an env var — so separate
+# roots are the only way to run one instance with plugins and one without. This copy
+# gets a config with NO plugins: random fingerprint per launch, no vnc, no profile
+# persistence. Derived from the real config so non-plugin settings (version,
+# newPageTimeoutMs, …) stay in sync. The ~300MB Camoufox binary is NOT duplicated —
+# both roots resolve it from $HOME/.cache/camoufox.
+# ORDERING IS LOAD-BEARING: this runs BEFORE `COPY camofox-plugins/fingerprint` below, so
+# the flex root never even receives the fingerprint plugin — defense in depth on top of its
+# empty plugin config. Moving that COPY above this line (e.g. while grouping the browser
+# COPYs together) would silently hand flex the pinning plugin. e2e/test_browser_isolation.py
+# asserts flex has no fingerprint plugin dir, so that regression fails a test rather than
+# quietly weakening the split.
+RUN cp -r /opt/camofox-browser /opt/camofox-flex && \
+    node -e 'const fs=require("fs"),p="/opt/camofox-flex/camofox.config.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));c.id="camofox-flex";c.name="Camofox Flex (login-less)";c.plugins={};fs.writeFileSync(p,JSON.stringify(c,null,2))'
+
+# Make Camoufox honor the SYSTEM CA store (the way Fedora/Debian ship Firefox): point its
+# built-in-roots module at p11-kit-trust. Camoufox ships no libnssckbi.so and its camoufox.cfg
+# already enables enterprise_roots — this just gives it a module to load, so it trusts the
+# system ca-certificates set. Prod: real roots (also more realistic, like distro Firefox).
+# Dev: the same store additionally holds the devm dev-CA (injected at build), so HTTPS works
+# through devm's egress proxy. No dev-only branching, no devm knowledge baked in.
+RUN P11="$(find /usr/lib -name p11-kit-trust.so 2>/dev/null | head -1)"; \
+    CAMOU="$(dirname "$(find /root/.cache/camoufox -name libnss3.so 2>/dev/null | head -1)")"; \
+    if [ -n "$P11" ] && [ "$CAMOU" != "." ]; then \
+        ln -sf "$P11" "$CAMOU/libnssckbi.so" && echo "[camoufox] libnssckbi.so -> $P11"; \
+    else echo "[camoufox] WARN: could not link libnssckbi (P11=$P11 CAMOU=$CAMOU) — HTTPS may fail under devm"; fi
+
+# EverStone's own camofox-browser plugin(s), added alongside the upstream plugins/ dir
+# (persistence/vnc/youtube) WITHOUT patching upstream source. `fingerprint` pins a stable
+# Camoufox identity for durable authenticated sessions; enabled at boot in camofox-browser-run.
+COPY camofox-plugins/fingerprint /opt/camofox-browser/plugins/fingerprint
 
 COPY scripts /scripts
 COPY services /services
@@ -259,10 +328,15 @@ ENV PATH="${PATH}:/command:/scripts:/opt/bin:/usr/local/bin"
 # run files for clarity but the container-level ENV is what makes ad-hoc
 # operator commands work without -e flags.
 ENV HERMES_HOME=/opt/data/hermes
-# Point Hermes's browser_* tools at the in-container camofox-browser server
+# Point Hermes's browser_* tools at the LOGIN-LESS camofox-flex instance
 # (localhost:9377). Setting CAMOFOX_URL is what makes Hermes's is_camofox_mode()
 # active, so the browser toolset drives Camoufox instead of a Chromium engine.
 ENV CAMOFOX_URL=http://localhost:9377
+# es's strict tools (es_login, maps M2, the warm-keeper) drive the OTHER instance:
+# camofox-auth on :9378, which holds the authenticated session. Kept a separate env
+# var (and a separate port) so a flexible browser_* call can never land on the
+# logged-in profile.
+ENV CAMOFOX_AUTH_URL=http://localhost:9378
 # Release identity, baked at build time: CI passes the v* tag + short sha; local
 # `just build` passes `git describe`/`rev-parse`. Served at /version via Caddy's
 # {env.EVERSTONE_VERSION} / {env.EVERSTONE_COMMIT} placeholders. Defaults make a

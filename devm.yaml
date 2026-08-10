@@ -7,6 +7,12 @@ project:
 # The 32GB default is tight; 64GB gives headroom for the build + cross-run cache.
 disk: "64GB"
 
+# VM RAM (devm 0.10 `memory:` field — restart bucket). The 4G default OOM-kills the
+# in-VM Claude/Orca session when the full everstone container is also running. 6G
+# physical + devm's auto-swap (50% → 3G) gives a 9G virtual ceiling for spikes while
+# reserving less Mac RAM than a flat 8G. Applied on the next VM restart (stop + start).
+memory: "6G"
+
 # Docker as a first-class devm feature (devm 0.7): installs Docker in the VM AND
 # makes container egress trust iron-proxy transparently. everstone builds + runs
 # as a Docker container *inside* the VM (couchdb/caddy/radicale/hermes/engraph).
@@ -20,18 +26,112 @@ packages:
   - just
   - build-essential     # Orca ADE relay: node-gyp toolchain — its node-pty compiles from
                         # source on first attach (no linux-arm64 prebuilt)
+  - unzip               # fnm install (tool/lang/node) downloads a zipped binary
 
-# Provisioning runs install commands as the unprivileged guest user `devm`
-# (uid 1000, HOME=/home/devm) — NOT root — but `devm` has passwordless sudo.
+# Named script library (devm 0.10): reusable multi-command shell snippets,
+# referenced from `install:`/`startup:` by a single `>NAME` entry. Keeps the
+# install list readable and matches the shape `devm recipes` publishes.
+scripts:
+  # Claude Code — per `devm recipes get tool/ai/claude`, adapted for this VM.
+  # Two paths matter and the recipe creates both:
+  #   /usr/local/bin/claude        the real binary, on the default system PATH
+  #                                (survives login-shell PATH resets).
+  #   ~devm/.local/bin/claude      the canonical path Claude self-checks for; it
+  #                                warns/refuses some operations without it.
+  # `sudo` on the privileged steps rather than the recipe's bare form: it is a
+  # no-op when provisioning runs as root and required when it runs as `devm`
+  # (which has passwordless sudo), so this works either way. Likewise `$HOME`
+  # instead of a hardcoded /root — the installer drops the versioned binary under
+  # whichever HOME it ran with. State (OAuth, transcripts, memory) is NOT here —
+  # it lives in the `claude` volume below.
+  install-claude-cli:
+    # Symlink FIRST: the installer runs claude, which would otherwise write a
+    # fresh stub at $HOME root that startup's save-back copies over the good
+    # volume config (deterministic clobber, since install: precedes startup:).
+    - ln -sf /home/devm/.claude/.claude.json /home/devm/.claude.json
+    - curl -fsSL https://claude.ai/install.sh | bash
+    - sudo install -m 755 "$HOME/.local/share/claude/versions/"* /usr/local/bin/claude
+    - sudo install -d -o devm -g devm /home/devm/.local/bin
+    - sudo ln -sf /usr/local/bin/claude /home/devm/.local/bin/claude
+
+  # Node.js via fnm — per `devm recipes get tool/lang/node`. fnm installs as the
+  # devm user; the binary is copied to /usr/local/bin for system PATH, and the
+  # `path:` entry below puts node/npm/npx on PATH everywhere (incl. non-login SSH —
+  # what Orca's relay needs). --skip-shell: no ~/.bashrc hook (path: replaces it).
+  install-fnm-and-node:
+    - curl -fsSL https://fnm.vercel.app/install | bash -s -- --skip-shell
+    - sudo install -m 755 /home/devm/.local/share/fnm/fnm /usr/local/bin/fnm
+    - fnm install --lts
+    - fnm default lts-latest
+
+  # Persist Claude's ~/.claude.json (login/account/project trust) — it lives in
+  # $HOME, OUTSIDE the ~/.claude volume, so symlink it to a file ON the volume,
+  # re-linked every boot. NOT CLAUDE_CONFIG_DIR: the VS Code extension and Orca
+  # ignore that env and read/write the default ~/.claude.json regardless → the
+  # default path must stay canonical. Save-back guard: Claude writes config via
+  # atomic temp+rename, which replaces the symlink with a real file — fold it back
+  # into the volume before re-linking. The oauthAccount grep stops a fresh
+  # onboarding stub from overwriting a real login. (Per `devm recipes get tool/ai/claude`.)
+  link-claude-config:
+    # Restore-only: fold a real ~/.claude.json back to the volume ONLY if it's
+    # genuinely onboarded (a mid-session clobber) or the volume has none yet
+    # (first seed). A fresh stub (no hasCompletedOnboarding) is discarded, never
+    # copied over good persisted state.
+    - if [ -f /home/devm/.claude.json ] && [ ! -L /home/devm/.claude.json ]; then if grep -qE '"hasCompletedOnboarding"[[:space:]]*:[[:space:]]*true' /home/devm/.claude.json 2>/dev/null || [ ! -f /home/devm/.claude/.claude.json ]; then cp -f /home/devm/.claude.json /home/devm/.claude/.claude.json; fi; fi
+    - ln -sf /home/devm/.claude/.claude.json /home/devm/.claude.json
+
+  # uv (Python) — per `devm recipes get tool/lang/uv`. CLAUDE.md mandates uv for
+  # es + e2e. Installed in the install: OPEN window, so astral.sh is reachable at
+  # provisioning and NEVER needs a runtime allowlist entry (installing uv at
+  # runtime 403s — that's the trap). uv's rustls TLS through iron-proxy works via
+  # devm's auto-set UV_SYSTEM_CERTS=1.
+  install-uv:
+    - curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
+    - env UV_INSTALL_DIR=/home/devm/.local/bin INSTALLER_NO_MODIFY_PATH=1 sh /tmp/uv-install.sh
+  # Pre-seed the managed CPython in the startup OPEN window: uv fetches
+  # python-build-standalone from release-assets.githubusercontent.com (a signed
+  # redirect that can't be allowlisted), so downloading it here keeps that host
+  # OUT of the runtime allowlist. Idempotent (fast no-op once cached VM-local).
+  # Reads .python-version (3.12).
+  preseed-python:
+    - /home/devm/.local/bin/uv python install "$(cat "$WORKSPACE/.python-version" 2>/dev/null || echo 3.12)"
+
 # Egress is UNRESTRICTED during provisioning; the iron-proxy allowlist below only
-# gates the running VM.
+# gates the running VM. `install:` is first-boot-only (marker-gated) and is in the
+# RECREATE bucket — edits here take effect on the next cold start, not live.
 install:
-  # Claude Code (native installer). It installs as `devm` into ~/.local/bin/claude
-  # (the canonical path Claude self-checks for). Relocate the versioned binary to
-  # /usr/local/bin so it's on the default system PATH regardless of login-shell
-  # PATH resets. (The old recipe assumed install ran as root under an `agent` user;
-  # neither holds here — hence installing as `devm` + a sudo relocate.)
-  - curl -fsSL https://claude.ai/install.sh | bash && sudo install -m 755 "$HOME/.local/share/claude/versions/"* /usr/local/bin/claude
+  - ">install-claude-cli"
+  - ">install-fnm-and-node"
+  - ">install-uv"
+
+# PATH additions for every shell — login, non-login SSH (Orca relay, `just`),
+# services, scripts — with no shell hook:
+#   - fnm's `default` alias bin → node/npm/npx (tracks the active default node
+#     version, so `fnm default <ver>` needs no devm.yaml change).
+#   - ~/.local/bin → uv. uv's installer lands it here and only wires ~/.profile
+#     (login shells); without this entry `just`/Orca (non-login) can't find uv.
+#     Also exposes the pre-seeded python3.12 symlink, though `uv run`/`uv venv`
+#     resolve the managed interpreter without needing it on PATH.
+path:
+  - /home/devm/.local/share/fnm/aliases/default/bin
+  - /home/devm/.local/bin
+
+# Give the project venvs a private guest-local ext4 view (LIVE bucket — applied by
+# `devm reconcile`, no restart). uv/pytest write linux-aarch64 native .so files plus a
+# VM-only python symlink into .venv; on the Mac↔VM bind-mount those break the instant
+# they cross back to macOS (same failure class as node_modules). Base-repo venvs only —
+# per-worktree venvs (es worktrees) would each need their own entry, but none exist now.
+masks:
+  - es/.venv
+  - e2e/.venv
+
+# Per-boot setup (RESTART bucket; runs every boot in the open-egress window). Re-links
+# Claude's ~/.claude.json symlink — it lives in ephemeral $HOME (the `claude` volume
+# only covers ~/.claude/), so the target on the volume persists but the pointer must
+# be recreated each boot.
+startup:
+  - ">link-claude-config"
+  - ">preseed-python"
 
 # Claude Code state (OAuth login + conversation transcripts + memory) persists via
 # the `claude` VOLUME below (devm 0.9), mounted at Claude's DEFAULT ~/.claude
@@ -44,6 +144,11 @@ env:
   HOSTNAME_APEX: test.everstone.waage.haus
   # Kill Sentry error reporting + telemetry (cleaner than allowlisting *.sentry.io).
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+  # Never let uv auto-fetch a CPython at runtime — the download host is an
+  # un-allowlistable signed redirect (see preseed-python). `manual` makes uv use
+  # only the interpreter pre-seeded in the boot window; a miss fails loudly rather
+  # than hanging on a blocked fetch.
+  UV_PYTHON_DOWNLOADS: manual
   # everstone's /opt/data binds from here. $WORKSPACE expands to the repo root at
   # load time; .devm/ is gitignored and rides the workspace bind-mount (Mac-side),
   # surviving `devm teardown`. (Claude state moved to the `claude` volume below.)
@@ -86,6 +191,7 @@ network:
     - storage.googleapis.com
     - proxy.golang.org
     - sum.golang.org
+    - fnm.vercel.app              # fnm install script (tool/lang/node)
     - github.com
     - api.github.com              # uv git-dependency resolution (.[all]) + gh metadata
     - objects.githubusercontent.com     # legacy GitHub release-asset CDN
@@ -114,7 +220,8 @@ network:
     # Claude Code — self-contained allowlist (per `devm recipes get tool/ai/claude`)
     - api.anthropic.com         # Claude API (core)
     - claude.ai                 # OAuth login + install.sh
-    - platform.claude.com       # Console account auth
+    - platform.claude.com       # OAuth token exchange + revoke
+    - console.anthropic.com     # OAuth token REFRESH (claude.ai accts) — omit ⇒ silent logout
     - downloads.claude.ai       # native installer + plugin downloads
     - raw.githubusercontent.com # plugin marketplace + /release-notes
     - deb.debian.org     # VM base (Ubuntu/Debian) apt packages

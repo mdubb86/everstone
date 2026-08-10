@@ -20,8 +20,27 @@ default:
 # ── Lifecycle (only useful WITH the source repo) ──────────────────────────
 
 # Build the image
+#
+# The `--secret id=devm-ca` feeds the Dockerfile's per-stage CA blocks
+# (`--mount=type=secret,id=devm-ca,required=false`). Inside a devm VM, iron-proxy
+# MITMs build-time HTTPS, so stages need its CA. devm's buildkitd already bind-mounts
+# the CA bundle into every RUN step, but any stage that installs/refreshes
+# `ca-certificates` triggers `update-ca-certificates`, which REGENERATES
+# /etc/ssl/certs/ca-certificates.crt and drops it — after which the next HTTPS call in
+# that same RUN dies (curl exit 60). Passing the secret puts devm.crt in the SOURCE dir
+# (/usr/local/share/ca-certificates/), so regeneration keeps re-including it.
+# Guarded on the file: outside a devm VM (Mac, CI) it expands to nothing and, with
+# `required=false`, the Dockerfile blocks stay the documented no-op.
+#
+# `--load` is required under devm 0.10+: its docker-shim rewrites `docker build` to
+# `docker buildx build --builder devm`, and that builder uses the REMOTE driver, which
+# (unlike the default docker driver) leaves the result in the build cache instead of
+# loading it into the daemon — the build "succeeds" but `docker images` stays empty.
+# Harmless elsewhere: with the docker driver `--load` is the default behavior. CI does
+# not use this recipe (build.yml uses docker/build-push-action with push: true).
 build:
-    docker build -t {{IMAGE}} \
+    docker build -t {{IMAGE}} --load \
+        $(test -f /opt/devm/ca/devm.crt && echo "--secret id=devm-ca,src=/opt/devm/ca/devm.crt") \
         --build-arg EVERSTONE_VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)" \
         --build-arg EVERSTONE_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
         .

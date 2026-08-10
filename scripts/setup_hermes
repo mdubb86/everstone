@@ -33,11 +33,13 @@ d = (yaml.safe_load(cfg.read_text()) if cfg.exists() else {}) or {}
 d.setdefault("platform_toolsets", {})["telegram"] = [
     "skills", "vision", "clarify", "web", "memory", "browser",
 ]
-# Browser = the camofox-browser (Camoufox) stealth browser, reached via the
-# CAMOFOX_URL env (set at the container level). DM-only: the access_hook blocks
-# browser_* in group chats. managed_persistence sends a stable per-profile
-# userId so cookies/logins persist under CAMOFOX_PROFILE_DIR on /opt/data.
-d.setdefault("browser", {}).setdefault("camofox", {})["managed_persistence"] = True
+# Browser = the camofox-flex (Camoufox) stealth browser, reached via the CAMOFOX_URL
+# env (set at the container level). DM-only: the access_hook blocks browser_* in group
+# chats. managed_persistence is FALSE: flex is deliberately login-less and ephemeral
+# (profiles wiped at every start), so a stable per-profile userId would only imply a
+# durability it does not have. The authenticated session lives on camofox-auth (:9378),
+# which es drives via CAMOFOX_AUTH_URL — browser_* must not reach it.
+d.setdefault("browser", {}).setdefault("camofox", {})["managed_persistence"] = False
 cfg.write_text(yaml.safe_dump(d, sort_keys=False))
 owner = str(((yaml.safe_load(open("/opt/config.yaml")) or {}).get("telegram") or {})
             .get("owner_user_id", "")).strip()
