@@ -240,8 +240,13 @@ def es_cal_conflicts(start: str, end: str, calendar: str, tz: Optional[str] = No
 def es_cal_add(summary: str, calendar: str, when: str, duration: int = 60,
                where: Optional[str] = None, description: Optional[str] = None,
                tz: Optional[str] = None) -> dict:
-    """Create an event. when is 'YYYY-MM-DD HH:MM' (local); duration in minutes.
-    Refused on read-only calendars."""
+    """Create an event. `when` is 'YYYY-MM-DD HH:MM' — WALL-CLOCK TIME AT THE EVENT'S LOCATION,
+    not the operator's. duration in minutes. Refused on read-only calendars.
+
+    SET `tz` (IANA, e.g. 'America/Los_Angeles') WHENEVER THE EVENT IS NOT IN THE OPERATOR'S HOME
+    TIMEZONE — infer it from `where`. Without it the event silently lands in the home zone: a 3pm
+    San Francisco meeting becomes 3pm Central, i.e. 1pm Pacific, two hours wrong. If unsure of a
+    location's zone, es_maps_geocode(query, include_timezone=True) returns it."""
     cal_cap._require_writable(calendar)
     tzname = tz or cal_support.home_tz()
     svc = calendar_service()
@@ -442,10 +447,13 @@ def es_contacts_search(query: str, max_results: int = 10) -> list:
 
 @mcp.tool()
 @mcp_envelope
-def es_maps_geocode(query: str) -> dict:
+def es_maps_geocode(query: str, include_timezone: bool = False) -> dict:
     """Geocode an address/place text to {address, lat, lng, place_id}. Building block; returns
-    null-ish if nothing matches. Needs maps.api_key in config."""
-    return maps_cap.geocode(query)
+    null-ish if nothing matches. Needs maps.api_key in config.
+
+    include_timezone=true adds the location's IANA `timezone` — use it when creating a calendar
+    event somewhere you're unsure of the zone, then pass that as es_cal_add's `tz`."""
+    return maps_cap.geocode(query, include_timezone=include_timezone)
 
 
 @mcp.tool()

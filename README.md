@@ -34,7 +34,7 @@ gitignored.
 
 | Path | What |
 |---|---|
-| `es/` | the `es` MCP server (FastMCP) — exposes the agent's `es_tasks_*` / `es_cal_*` / `es_notes_*` / contacts tools |
+| `es/` | the `es` MCP server (FastMCP) — exposes the agent's `es_tasks_*` / `es_cal_*` / `es_notes_*` / `es_weather` / maps / contacts tools |
 | `access_hook/` | the fail-closed `pre_tool_call` hook that gates tools by chat type |
 | `scripts/` | setup / configure / admin (`esadmin`) + the Google OAuth helper |
 | `services/` | s6 service definitions (Hermes gateway, CouchDB, Radicale, Caddy, …) |

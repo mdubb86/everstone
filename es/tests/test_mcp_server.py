@@ -358,14 +358,42 @@ def test_es_notes_edit_ok(fake_vault):
         "Journal/2026-07-04/E/E.md", body=None, append="![[p.jpg]]")
 
 
-def test_es_cal_agenda_localizes_times(fake_svc):
+def test_es_cal_agenda_reports_event_local_time_with_a_home_echo(fake_svc):
+    """Events are reported in their OWN zone; home time is a secondary field.
+
+    Replaces an earlier test that asserted the opposite (everything collapsed to
+    home tz). That behaviour reported a 3pm San Francisco meeting as "5pm" to a
+    Chicago operator — right as an instant, wrong for anyone standing in SF.
+    """
     ev = {"id": "e1", "summary": "Coffee",
           "start": {"dateTime": "2026-06-08T14:00:00Z"},
           "end": {"dateTime": "2026-06-08T15:00:00Z"}}
     fake_svc.events.return_value.list.return_value.execute.return_value = _events([ev])
     out = mcp_server.es_cal_agenda("2026-06-08", "2026-06-09", "Family")
-    # 14:00Z == 10:00 America/New_York (EDT)
-    assert out["data"][0]["start"].startswith("2026-06-08T10:00:00")
+    row = out["data"][0]
+    assert row["start"] == "2026-06-08T14:00:00+00:00"          # event's own zone, intact
+    assert row["start_home"].startswith("2026-06-08T10:00:00")  # 14:00Z == 10:00 EDT
+    assert row["end_home"].startswith("2026-06-08T11:00:00")
+
+
+def test_es_cal_agenda_omits_home_echo_when_zones_match(fake_svc):
+    """No redundant second time for an event already in the home zone — the echo
+    exists to disambiguate, not to double every row."""
+    ev = {"id": "e1", "summary": "Standup",
+          "start": {"dateTime": "2026-06-08T09:00:00-04:00"},
+          "end": {"dateTime": "2026-06-08T09:30:00-04:00"}}
+    fake_svc.events.return_value.list.return_value.execute.return_value = _events([ev])
+    row = mcp_server.es_cal_agenda("2026-06-08", "2026-06-09", "Family")["data"][0]
+    assert row["start"] == "2026-06-08T09:00:00-04:00"
+    assert "start_home" not in row and "end_home" not in row
+
+
+def test_es_cal_agenda_passes_all_day_events_through(fake_svc):
+    ev = {"id": "e1", "summary": "Holiday",
+          "start": {"date": "2026-06-08"}, "end": {"date": "2026-06-09"}}
+    fake_svc.events.return_value.list.return_value.execute.return_value = _events([ev])
+    row = mcp_server.es_cal_agenda("2026-06-08", "2026-06-09", "Family")["data"][0]
+    assert row["start"] == "2026-06-08" and "start_home" not in row
 
 
 def test_es_cal_conflicts_empty_when_disjoint(fake_svc):

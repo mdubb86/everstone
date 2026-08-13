@@ -60,9 +60,25 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
     via `es.vault_client.VaultClient` (see "Notes vault & LiveSync" below).
   - **Contacts / web** — `es_contacts_search` (read-only Google contacts) and a
     web-fetch tool (`trafilatura`).
+  - **Weather** — a single `es_weather(location, start, end)` → Google Maps Platform
+    **Weather API**, reusing `maps.api_key`. Hourly endpoint **only**: its 240h horizon
+    equals daily's, and daily can't share a shape with hourly observations (its
+    day-parts carry no temperature), so one endpoint yields one uniform `Period`
+    shape with no optional fields. `location` is required — there is no configured
+    home. All times are local to the *forecast location*, never `timezone`.
 - Every tool returns a **JSON envelope** (`{"ok": true, "data": …}` /
   `{"ok": false, "error": {code,message}}`). The server **reads `/opt/config.yaml`
-  directly** (no envdir).
+  directly** (no envdir). `es_weather` additionally annotates `-> Envelope[T]`, which
+  makes FastMCP publish a typed MCP **`outputSchema`** — the annotation must describe
+  the *envelope*, not the payload, because `mcp_envelope` wraps the return and FastMCP
+  validates the actual value against the published schema. This is the retrofit path
+  for the other tools, which today publish no output schema at all.
+- **Calendar times are event-local.** `_event_view` reports an event in its own zone
+  and adds `start_home`/`end_home` only when that differs from `timezone` — so a 3pm
+  San Francisco meeting reads "3pm", not "5pm". `es_cal_add` takes wall-clock time at
+  the *event's* location and its `tz` must be set for out-of-area events;
+  `es_maps_geocode(query, include_timezone=True)` resolves a zone offline via
+  `timezonefinder` (no second Google SKU, no extra call).
 - **`es_tasks_*` is a full CalDAV task model** — flat lists with optional **one-level
   subtasks** (`RELATED-TO;RELTYPE=PARENT`: `add(parent=…)` files a child in the
   parent's list, `edit(parent=…)` re-parents/detaches, `delete` refuses a parent

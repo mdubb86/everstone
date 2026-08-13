@@ -126,3 +126,31 @@ def test_geocode_http_error_is_sanitized(monkeypatch):
     msg = str(ei.value)
     assert "AIzaSuperSecretKey" not in msg
     assert "key=" not in msg
+
+
+def test_geocode_omits_timezone_by_default(monkeypatch):
+    """Opt-in: the common geocode (including es_weather's) keeps a stable shape
+    and never loads the timezone polygon data."""
+    monkeypatch.setattr(maps, "geocode_view", lambda r: {"address": "A", "lat": 37.77, "lng": -122.41})
+    monkeypatch.setattr(maps, "api_key", lambda: "k")
+    monkeypatch.setattr(maps.httpx, "get", lambda *a, **k: _Resp({}))
+    assert "timezone" not in maps.geocode("SF")
+
+
+def test_geocode_include_timezone_resolves_the_locations_zone(monkeypatch):
+    monkeypatch.setattr(maps, "geocode_view", lambda r: {"address": "A", "lat": 37.7749, "lng": -122.4194})
+    monkeypatch.setattr(maps, "api_key", lambda: "k")
+    monkeypatch.setattr(maps.httpx, "get", lambda *a, **k: _Resp({}))
+    assert maps.geocode("SF", include_timezone=True)["timezone"] == "America/Los_Angeles"
+
+
+def test_timezone_at_handles_a_no_dst_zone():
+    # Phoenix is the classic trap: America/Phoenix, not America/Denver.
+    assert maps.timezone_at(33.4484, -112.0740) == "America/Phoenix"
+
+
+class _Resp:
+    def __init__(self, payload):
+        self._p = payload
+    def raise_for_status(self): pass
+    def json(self): return self._p
