@@ -44,12 +44,20 @@ def _event_view(e: dict, tz: str) -> dict:
     event's own time sidesteps that entirely, because 3pm Pacific is true
     wherever you are.
 
+    THE EVENT'S ZONE IS `start.timeZone`, NOT the offset in `dateTime`. Verified
+    against the live API: events().list() RENDERS every event in the zone you ask
+    for, defaulting to the calendar's, so the same event returns -05:00 with no
+    timeZone param and -07:00 with timeZone=America/Los_Angeles. On a
+    Chicago-default calendar every event therefore arrives looking like Chicago,
+    and trusting that offset makes this function a no-op.
+
     Callers wanting a single-zone agenda still pass `tz` explicitly.
     """
     s = e.get("start", {})
     en = e.get("end", {})
     s_raw = s.get("dateTime") or s.get("date", "")
     e_raw = en.get("dateTime") or en.get("date", "")
+    ev_tz = s.get("timeZone")
     out = {
         "id": e.get("id"),
         "summary": e.get("summary", ""),
@@ -57,7 +65,14 @@ def _event_view(e: dict, tz: str) -> dict:
         "end": _event_local(e_raw),
         "location": e.get("location"),
     }
-    if _offset_differs(s_raw, tz):
+    if "T" not in s_raw or not ev_tz:
+        # All-day, or no zone recorded on the event: the rendering zone is the
+        # only thing we have, so leave it as-is rather than inventing one.
+        return out
+    out["start"] = _localize(s_raw, ev_tz)
+    out["end"] = _localize(e_raw, ev_tz)
+    out["tz"] = ev_tz
+    if _offset_differs(out["start"], tz):
         out["start_home"] = _localize(s_raw, tz)
         out["end_home"] = _localize(e_raw, tz)
     return out

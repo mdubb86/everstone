@@ -358,34 +358,47 @@ def test_es_notes_edit_ok(fake_vault):
         "Journal/2026-07-04/E/E.md", body=None, append="![[p.jpg]]")
 
 
-def test_es_cal_agenda_reports_event_local_time_with_a_home_echo(fake_svc):
-    """Events are reported in their OWN zone; home time is a secondary field.
+def test_es_cal_agenda_uses_start_timezone_not_the_rendered_offset(fake_svc):
+    """The California bug, end to end.
 
-    Replaces an earlier test that asserted the opposite (everything collapsed to
-    home tz). That behaviour reported a 3pm San Francisco meeting as "5pm" to a
-    Chicago operator — right as an instant, wrong for anyone standing in SF.
+    Google RENDERS events in the calendar's zone, so an LA event on a New York
+    calendar arrives with a -04:00 offset. Reading that offset makes the view a
+    no-op — the event's true zone is `start.timeZone`. Verified against the live
+    API: the same event returns -05:00 or -07:00 depending purely on the
+    timeZone param.
     """
-    ev = {"id": "e1", "summary": "Coffee",
-          "start": {"dateTime": "2026-06-08T14:00:00Z"},
-          "end": {"dateTime": "2026-06-08T15:00:00Z"}}
+    ev = {"id": "e1", "summary": "Design review",
+          "start": {"dateTime": "2026-06-08T18:00:00-04:00", "timeZone": "America/Los_Angeles"},
+          "end": {"dateTime": "2026-06-08T19:00:00-04:00", "timeZone": "America/Los_Angeles"}}
     fake_svc.events.return_value.list.return_value.execute.return_value = _events([ev])
-    out = mcp_server.es_cal_agenda("2026-06-08", "2026-06-09", "Family")
-    row = out["data"][0]
-    assert row["start"] == "2026-06-08T14:00:00+00:00"          # event's own zone, intact
-    assert row["start_home"].startswith("2026-06-08T10:00:00")  # 14:00Z == 10:00 EDT
-    assert row["end_home"].startswith("2026-06-08T11:00:00")
+    row = mcp_server.es_cal_agenda("2026-06-08", "2026-06-09", "Family")["data"][0]
+    assert row["start"] == "2026-06-08T15:00:00-07:00"          # 3pm Pacific, as experienced
+    assert row["tz"] == "America/Los_Angeles"
+    assert row["start_home"].startswith("2026-06-08T18:00:00")  # 6pm for a NY operator
 
 
 def test_es_cal_agenda_omits_home_echo_when_zones_match(fake_svc):
     """No redundant second time for an event already in the home zone — the echo
     exists to disambiguate, not to double every row."""
     ev = {"id": "e1", "summary": "Standup",
-          "start": {"dateTime": "2026-06-08T09:00:00-04:00"},
-          "end": {"dateTime": "2026-06-08T09:30:00-04:00"}}
+          "start": {"dateTime": "2026-06-08T09:00:00-04:00", "timeZone": "America/New_York"},
+          "end": {"dateTime": "2026-06-08T09:30:00-04:00", "timeZone": "America/New_York"}}
     fake_svc.events.return_value.list.return_value.execute.return_value = _events([ev])
     row = mcp_server.es_cal_agenda("2026-06-08", "2026-06-09", "Family")["data"][0]
     assert row["start"] == "2026-06-08T09:00:00-04:00"
     assert "start_home" not in row and "end_home" not in row
+
+
+def test_es_cal_agenda_leaves_times_alone_when_no_zone_is_recorded(fake_svc):
+    """start.timeZone is optional for single events. With nothing recorded the
+    rendering zone is all we have — don't invent one."""
+    ev = {"id": "e1", "summary": "Coffee",
+          "start": {"dateTime": "2026-06-08T14:00:00Z"},
+          "end": {"dateTime": "2026-06-08T15:00:00Z"}}
+    fake_svc.events.return_value.list.return_value.execute.return_value = _events([ev])
+    row = mcp_server.es_cal_agenda("2026-06-08", "2026-06-09", "Family")["data"][0]
+    assert row["start"] == "2026-06-08T14:00:00+00:00"
+    assert "tz" not in row and "start_home" not in row
 
 
 def test_es_cal_agenda_passes_all_day_events_through(fake_svc):

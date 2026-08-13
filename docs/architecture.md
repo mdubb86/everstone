@@ -73,7 +73,7 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   the *envelope*, not the payload, because `mcp_envelope` wraps the return and FastMCP
   validates the actual value against the published schema. This is the retrofit path
   for the other tools, which today publish no output schema at all.
-- **Calendar times are event-local.** `_event_view` reports an event in its own zone
+- **Calendar times are event-local.** `_event_view` reports an event in its own zone (from `start.timeZone` — NOT the offset in `dateTime`, which Google renders in the calendar's zone)
   and adds `start_home`/`end_home` only when that differs from `timezone` — so a 3pm
   San Francisco meeting reads "3pm", not "5pm". `es_cal_add` takes wall-clock time at
   the *event's* location and its `tz` must be set for out-of-area events;
