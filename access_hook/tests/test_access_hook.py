@@ -36,7 +36,13 @@ def test_dm_allows_any_tool():
         assert run_policy(tool, "agent:main:telegram:dm:111") is None, tool
 
 
-# --- Group: only es_tasks_* and es_cal_* allowed ---
+# --- Group: only es_tasks_*, es_cal_* and es_weather allowed ---
+def test_group_allows_es_weather():
+    # Weather is group-safe: it reveals nothing private and is useful in shared
+    # chats. NB the prefix has no trailing underscore — it's a single es_weather.
+    assert run_policy("es_weather", "agent:main:telegram:group:-100") is None
+
+
 def test_group_allows_es_tasks_tools():
     for tool in ("es_tasks_list", "es_tasks_add", "es_tasks_clear"):
         assert run_policy(tool, "agent:main:telegram:group:-100") is None, tool

@@ -1,0 +1,2217 @@
+{
+ "forecastHours": [
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1016.63
+   },
+   "cloudCover": 18,
+   "dewPoint": {
+    "degrees": 77,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 13,
+    "hours": 12,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 107.8,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 107.8,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-13T18:00:00Z",
+    "startTime": "2026-08-13T17:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 15,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0.0016,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 59,
+   "temperature": {
+    "degrees": 93.3,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 70,
+   "uvIndex": 8,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Sunny"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/sunny",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 80.8,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH",
+     "degrees": 190
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 19
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 10
+    }
+   },
+   "windChill": {
+    "degrees": 93.3,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1016.34
+   },
+   "cloudCover": 19,
+   "dewPoint": {
+    "degrees": 76.5,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 13,
+    "hours": 13,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 109.7,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 109.7,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-13T19:00:00Z",
+    "startTime": "2026-08-13T18:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 15,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0.0016,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 55,
+   "temperature": {
+    "degrees": 95,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 70,
+   "uvIndex": 9,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Sunny"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/sunny",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 80.9,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH",
+     "degrees": 187
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 19
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 10
+    }
+   },
+   "windChill": {
+    "degrees": 95,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1015.73
+   },
+   "cloudCover": 19,
+   "dewPoint": {
+    "degrees": 76.2,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 13,
+    "hours": 14,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 111.5,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 111.5,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-13T20:00:00Z",
+    "startTime": "2026-08-13T19:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 15,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0.0016,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 52,
+   "temperature": {
+    "degrees": 96.5,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 70,
+   "uvIndex": 9,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Sunny"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/sunny",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 81,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH",
+     "degrees": 181
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 20
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 10
+    }
+   },
+   "windChill": {
+    "degrees": 96.5,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1015.27
+   },
+   "cloudCover": 16,
+   "dewPoint": {
+    "degrees": 75.9,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 13,
+    "hours": 15,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 111.8,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 111.8,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-13T21:00:00Z",
+    "startTime": "2026-08-13T20:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 15,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0.0016,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 51,
+   "temperature": {
+    "degrees": 97,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 70,
+   "uvIndex": 8,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Sunny"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/sunny",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 80.9,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH",
+     "degrees": 175
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 20
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 10
+    }
+   },
+   "windChill": {
+    "degrees": 97,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1014.83
+   },
+   "cloudCover": 9,
+   "dewPoint": {
+    "degrees": 76.1,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 13,
+    "hours": 16,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 111.3,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 111.3,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-13T22:00:00Z",
+    "startTime": "2026-08-13T21:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 0,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 52,
+   "temperature": {
+    "degrees": 96.5,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 5,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Sunny"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/sunny",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 80.9,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH",
+     "degrees": 170
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 21
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 11
+    }
+   },
+   "windChill": {
+    "degrees": 96.5,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1014.52
+   },
+   "cloudCover": 14,
+   "dewPoint": {
+    "degrees": 76.5,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 13,
+    "hours": 17,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 110.2,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 110.2,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-13T23:00:00Z",
+    "startTime": "2026-08-13T22:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 15,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0.0016,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 54,
+   "temperature": {
+    "degrees": 95.4,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 70,
+   "uvIndex": 3,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Sunny"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/sunny",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 80.9,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH_SOUTHEAST",
+     "degrees": 165
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 22
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 12
+    }
+   },
+   "windChill": {
+    "degrees": 95.4,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1014.36
+   },
+   "cloudCover": 16,
+   "dewPoint": {
+    "degrees": 76.9,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 13,
+    "hours": 18,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 108.3,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 108.3,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T00:00:00Z",
+    "startTime": "2026-08-13T23:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 15,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0.0016,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 58,
+   "temperature": {
+    "degrees": 93.7,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 70,
+   "uvIndex": 1,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Sunny"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/sunny",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 80.8,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH_SOUTHEAST",
+     "degrees": 159
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 23
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 12
+    }
+   },
+   "windChill": {
+    "degrees": 93.7,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1014.56
+   },
+   "cloudCover": 36,
+   "dewPoint": {
+    "degrees": 77.1,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 13,
+    "hours": 19,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 104.9,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 104.9,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T01:00:00Z",
+    "startTime": "2026-08-14T00:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 0,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 63,
+   "temperature": {
+    "degrees": 91.3,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Partly sunny"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/partly_cloudy",
+    "type": "PARTLY_CLOUDY"
+   },
+   "wetBulbTemperature": {
+    "degrees": 80.4,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH_SOUTHEAST",
+     "degrees": 159
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 22
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 12
+    }
+   },
+   "windChill": {
+    "degrees": 91.3,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1014.67
+   },
+   "cloudCover": 55,
+   "dewPoint": {
+    "degrees": 77.2,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 13,
+    "hours": 20,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 101,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 101,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T02:00:00Z",
+    "startTime": "2026-08-14T01:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 5,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 69,
+   "temperature": {
+    "degrees": 88.6,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Partly sunny"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/partly_cloudy",
+    "type": "PARTLY_CLOUDY"
+   },
+   "wetBulbTemperature": {
+    "degrees": 79.9,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH_SOUTHEAST",
+     "degrees": 161
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 19
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 10
+    }
+   },
+   "windChill": {
+    "degrees": 88.6,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1015.19
+   },
+   "cloudCover": 86,
+   "dewPoint": {
+    "degrees": 77.6,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 13,
+    "hours": 21,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 99,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 99,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T03:00:00Z",
+    "startTime": "2026-08-14T02:00:00Z"
+   },
+   "isDaytime": false,
+   "precipitation": {
+    "probability": {
+     "percent": 10,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 73,
+   "temperature": {
+    "degrees": 87,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Mostly cloudy"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/mostly_cloudy_night",
+    "type": "MOSTLY_CLOUDY"
+   },
+   "wetBulbTemperature": {
+    "degrees": 79.8,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH_SOUTHEAST",
+     "degrees": 164
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 17
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 9
+    }
+   },
+   "windChill": {
+    "degrees": 87,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1015.83
+   },
+   "cloudCover": 63,
+   "dewPoint": {
+    "degrees": 78,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 13,
+    "hours": 22,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 97.7,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 97.7,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T04:00:00Z",
+    "startTime": "2026-08-14T03:00:00Z"
+   },
+   "isDaytime": false,
+   "precipitation": {
+    "probability": {
+     "percent": 5,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 77,
+   "temperature": {
+    "degrees": 85.9,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Partly cloudy"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/partly_clear",
+    "type": "PARTLY_CLOUDY"
+   },
+   "wetBulbTemperature": {
+    "degrees": 79.9,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH_SOUTHEAST",
+     "degrees": 165
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 17
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 8
+    }
+   },
+   "windChill": {
+    "degrees": 85.9,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1016.35
+   },
+   "cloudCover": 36,
+   "dewPoint": {
+    "degrees": 78.1,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 13,
+    "hours": 23,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 96.3,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 96.3,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T05:00:00Z",
+    "startTime": "2026-08-14T04:00:00Z"
+   },
+   "isDaytime": false,
+   "precipitation": {
+    "probability": {
+     "percent": 0,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 79,
+   "temperature": {
+    "degrees": 85,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Partly cloudy"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/partly_clear",
+    "type": "PARTLY_CLOUDY"
+   },
+   "wetBulbTemperature": {
+    "degrees": 79.7,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH_SOUTHEAST",
+     "degrees": 168
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 14
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 8
+    }
+   },
+   "windChill": {
+    "degrees": 85,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1016.71
+   },
+   "cloudCover": 42,
+   "dewPoint": {
+    "degrees": 77.8,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 14,
+    "hours": 0,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 94.9,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 94.9,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T06:00:00Z",
+    "startTime": "2026-08-14T05:00:00Z"
+   },
+   "isDaytime": false,
+   "precipitation": {
+    "probability": {
+     "percent": 5,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 80,
+   "temperature": {
+    "degrees": 84.3,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Partly cloudy"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/partly_clear",
+    "type": "PARTLY_CLOUDY"
+   },
+   "wetBulbTemperature": {
+    "degrees": 79.3,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH",
+     "degrees": 175
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 12
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 7
+    }
+   },
+   "windChill": {
+    "degrees": 84.3,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1017.04
+   },
+   "cloudCover": 36,
+   "dewPoint": {
+    "degrees": 77.7,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 14,
+    "hours": 1,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 93.9,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 93.9,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T07:00:00Z",
+    "startTime": "2026-08-14T06:00:00Z"
+   },
+   "isDaytime": false,
+   "precipitation": {
+    "probability": {
+     "percent": 0,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 82,
+   "temperature": {
+    "degrees": 83.7,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Partly cloudy"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/partly_clear",
+    "type": "PARTLY_CLOUDY"
+   },
+   "wetBulbTemperature": {
+    "degrees": 79.1,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH",
+     "degrees": 175
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 12
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 6
+    }
+   },
+   "windChill": {
+    "degrees": 83.7,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1017.04
+   },
+   "cloudCover": 16,
+   "dewPoint": {
+    "degrees": 77.5,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 14,
+    "hours": 2,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 92.8,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 92.8,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T08:00:00Z",
+    "startTime": "2026-08-14T07:00:00Z"
+   },
+   "isDaytime": false,
+   "precipitation": {
+    "probability": {
+     "percent": 0,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 83,
+   "temperature": {
+    "degrees": 83.1,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Clear"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/clear",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 78.8,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH",
+     "degrees": 178
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 10
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 5
+    }
+   },
+   "windChill": {
+    "degrees": 83.1,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1017.06
+   },
+   "cloudCover": 19,
+   "dewPoint": {
+    "degrees": 77.3,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 14,
+    "hours": 3,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 92,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 92,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T09:00:00Z",
+    "startTime": "2026-08-14T08:00:00Z"
+   },
+   "isDaytime": false,
+   "precipitation": {
+    "probability": {
+     "percent": 0,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 83,
+   "temperature": {
+    "degrees": 82.7,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Clear"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/clear",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 78.6,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH",
+     "degrees": 178
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 9
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 5
+    }
+   },
+   "windChill": {
+    "degrees": 82.7,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1016.98
+   },
+   "cloudCover": 7,
+   "dewPoint": {
+    "degrees": 77.3,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 14,
+    "hours": 4,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 91.5,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 91.5,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T10:00:00Z",
+    "startTime": "2026-08-14T09:00:00Z"
+   },
+   "isDaytime": false,
+   "precipitation": {
+    "probability": {
+     "percent": 0,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 84,
+   "temperature": {
+    "degrees": 82.4,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Clear"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/clear",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 78.5,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH",
+     "degrees": 169
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 7
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 4
+    }
+   },
+   "windChill": {
+    "degrees": 82.4,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1017.1
+   },
+   "cloudCover": 2,
+   "dewPoint": {
+    "degrees": 77.2,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 14,
+    "hours": 5,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 90.9,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 90.9,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T11:00:00Z",
+    "startTime": "2026-08-14T10:00:00Z"
+   },
+   "isDaytime": false,
+   "precipitation": {
+    "probability": {
+     "percent": 0,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 85,
+   "temperature": {
+    "degrees": 82,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Clear"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/clear",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 78.3,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH_SOUTHEAST",
+     "degrees": 151
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 7
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 3
+    }
+   },
+   "windChill": {
+    "degrees": 82,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1017.49
+   },
+   "cloudCover": 1,
+   "dewPoint": {
+    "degrees": 77,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 14,
+    "hours": 6,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 90,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 90,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T12:00:00Z",
+    "startTime": "2026-08-14T11:00:00Z"
+   },
+   "isDaytime": false,
+   "precipitation": {
+    "probability": {
+     "percent": 0,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 86,
+   "temperature": {
+    "degrees": 81.6,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Clear"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/clear",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 78.2,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTHEAST",
+     "degrees": 143
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 5
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 3
+    }
+   },
+   "windChill": {
+    "degrees": 81.6,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1017.94
+   },
+   "cloudCover": 1,
+   "dewPoint": {
+    "degrees": 77.2,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 14,
+    "hours": 7,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 90.1,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 90.1,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T13:00:00Z",
+    "startTime": "2026-08-14T12:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 0,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 86,
+   "temperature": {
+    "degrees": 81.5,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Sunny"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/sunny",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 78.3,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTHEAST",
+     "degrees": 132
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 6
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 4
+    }
+   },
+   "windChill": {
+    "degrees": 81.5,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1018.67
+   },
+   "cloudCover": 14,
+   "dewPoint": {
+    "degrees": 78.2,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 14,
+    "hours": 8,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 93.9,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 93.9,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T14:00:00Z",
+    "startTime": "2026-08-14T13:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 0,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 84,
+   "temperature": {
+    "degrees": 83.4,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 0,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Sunny"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/sunny",
+    "type": "CLEAR"
+   },
+   "wetBulbTemperature": {
+    "degrees": 79.4,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH_SOUTHEAST",
+     "degrees": 148
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 6
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 3
+    }
+   },
+   "windChill": {
+    "degrees": 83.4,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1019.28
+   },
+   "cloudCover": 51,
+   "dewPoint": {
+    "degrees": 78.6,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 14,
+    "hours": 9,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 98.3,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 98.3,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T15:00:00Z",
+    "startTime": "2026-08-14T14:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 5,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 78,
+   "temperature": {
+    "degrees": 85.9,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 1,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Partly sunny"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/partly_cloudy",
+    "type": "PARTLY_CLOUDY"
+   },
+   "wetBulbTemperature": {
+    "degrees": 80.3,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH",
+     "degrees": 175
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 11
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 6
+    }
+   },
+   "windChill": {
+    "degrees": 85.9,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1019.56
+   },
+   "cloudCover": 85,
+   "dewPoint": {
+    "degrees": 78.3,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 14,
+    "hours": 10,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 101.3,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 101.3,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T16:00:00Z",
+    "startTime": "2026-08-14T15:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 10,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 73,
+   "temperature": {
+    "degrees": 88,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 1,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Mostly cloudy"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/mostly_cloudy",
+    "type": "MOSTLY_CLOUDY"
+   },
+   "wetBulbTemperature": {
+    "degrees": 80.6,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH_SOUTHEAST",
+     "degrees": 166
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 14
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 7
+    }
+   },
+   "windChill": {
+    "degrees": 88,
+    "unit": "FAHRENHEIT"
+   }
+  },
+  {
+   "airPressure": {
+    "meanSeaLevelMillibars": 1019.68
+   },
+   "cloudCover": 97,
+   "dewPoint": {
+    "degrees": 77.8,
+    "unit": "FAHRENHEIT"
+   },
+   "displayDateTime": {
+    "day": 14,
+    "hours": 11,
+    "minutes": 0,
+    "month": 8,
+    "nanos": 0,
+    "seconds": 0,
+    "utcOffset": "-18000s",
+    "year": 2026
+   },
+   "feelsLikeTemperature": {
+    "degrees": 103.5,
+    "unit": "FAHRENHEIT"
+   },
+   "heatIndex": {
+    "degrees": 103.5,
+    "unit": "FAHRENHEIT"
+   },
+   "iceThickness": {
+    "thickness": 0,
+    "unit": "INCHES"
+   },
+   "interval": {
+    "endTime": "2026-08-14T17:00:00Z",
+    "startTime": "2026-08-14T16:00:00Z"
+   },
+   "isDaytime": true,
+   "precipitation": {
+    "probability": {
+     "percent": 10,
+     "type": "RAIN"
+    },
+    "qpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    },
+    "snowQpf": {
+     "quantity": 0,
+     "unit": "INCHES"
+    }
+   },
+   "relativeHumidity": 67,
+   "temperature": {
+    "degrees": 89.8,
+    "unit": "FAHRENHEIT"
+   },
+   "thunderstormProbability": 0,
+   "uvIndex": 2,
+   "visibility": {
+    "distance": 10,
+    "unit": "MILES"
+   },
+   "weatherCondition": {
+    "description": {
+     "languageCode": "en",
+     "text": "Cloudy"
+    },
+    "iconBaseUri": "https://maps.gstatic.com/weather/v1/cloudy",
+    "type": "CLOUDY"
+   },
+   "wetBulbTemperature": {
+    "degrees": 80.6,
+    "unit": "FAHRENHEIT"
+   },
+   "wind": {
+    "direction": {
+     "cardinal": "SOUTH",
+     "degrees": 169
+    },
+    "gust": {
+     "unit": "MILES_PER_HOUR",
+     "value": 15
+    },
+    "speed": {
+     "unit": "MILES_PER_HOUR",
+     "value": 7
+    }
+   },
+   "windChill": {
+    "degrees": 89.8,
+    "unit": "FAHRENHEIT"
+   }
+  }
+ ],
+ "nextPageToken": "",
+ "timeZone": {
+  "id": "America/Chicago",
+  "version": ""
+ }
+}

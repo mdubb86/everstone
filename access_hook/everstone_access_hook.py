@@ -6,7 +6,8 @@ Entry point: hermes_plugins = everstone_access_hook:HermesPlugin
 Policy (MCP-only era):
 - DM (owner's private chat) — no restriction; persona/AGENTS shape behavior.
 - Groups / supergroups / channels / unknown — fail closed EXCEPT the group-safe
-  es tools: the task tools (`es_tasks_*`) and calendar tools (`es_cal_*`).
+  es tools: the task tools (`es_tasks_*`), calendar tools (`es_cal_*`) and
+  weather (`es_weather*`).
   Notes (`es_notes_*`) and every non-es tool are blocked.
 - Empty / unparseable chat key — fail closed.
 
@@ -20,9 +21,11 @@ from typing import Any, Optional
 
 _BLOCK = {"action": "block", "message": "Tool not permitted outside a private DM."}
 
-# Group-safe MCP tools: tasks + calendar. Notes (es_notes_*) are intentionally
-# excluded — they don't belong in shared chats.
-_GROUP_ALLOWED_PREFIXES = ("es_tasks_", "es_cal_")
+# Group-safe MCP tools: tasks, calendar, weather. Notes (es_notes_*) are
+# intentionally excluded — they don't belong in shared chats.
+# NB: "es_weather" has no trailing underscore — the tool is a single es_weather,
+# not an es_weather_* family.
+_GROUP_ALLOWED_PREFIXES = ("es_tasks_", "es_cal_", "es_weather")
 
 
 def _chat_type() -> Optional[str]:
