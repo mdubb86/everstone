@@ -7,7 +7,7 @@ Policy (MCP-only era):
 - DM (owner's private chat) — no restriction; persona/AGENTS shape behavior.
 - Groups / supergroups / channels / unknown — fail closed EXCEPT the group-safe
   es tools: the task tools (`es_tasks_*`), calendar tools (`es_cal_*`) and
-  weather (`es_weather*`).
+  weather (`es_weather`) and the clock (`es_time`).
   Notes (`es_notes_*`) and every non-es tool are blocked.
 - Empty / unparseable chat key — fail closed.
 
@@ -25,7 +25,7 @@ _BLOCK = {"action": "block", "message": "Tool not permitted outside a private DM
 # intentionally excluded — they don't belong in shared chats.
 # NB: "es_weather" has no trailing underscore — the tool is a single es_weather,
 # not an es_weather_* family.
-_GROUP_ALLOWED_PREFIXES = ("es_tasks_", "es_cal_", "es_weather")
+_GROUP_ALLOWED_PREFIXES = ("es_tasks_", "es_cal_", "es_weather", "es_time")
 
 
 def _chat_type() -> Optional[str]:

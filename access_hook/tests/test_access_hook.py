@@ -88,3 +88,9 @@ def test_hook_never_raises(monkeypatch):
     # tool_input shape is irrelevant now (no command parsing); must not raise.
     assert mod.HermesPlugin().pre_tool_call("es_notes_journal", tool_input=12345)["action"] == "block"
     assert mod.HermesPlugin().pre_tool_call("es_tasks_add", tool_input=12345) is None
+
+
+def test_group_allows_es_time():
+    # Time is group-safe and load-bearing: without it the agent can't resolve
+    # "this weekend" in a group chat either.
+    assert run_policy("es_time", "agent:main:telegram:group:-100") is None

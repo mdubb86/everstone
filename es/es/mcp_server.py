@@ -20,6 +20,7 @@ from es.tasks_client import TasksClient
 from es.vault_client import VaultClient
 from es.capabilities import cal as cal_cap
 from es.capabilities import cal_support
+from es.capabilities import clock as clock_cap
 from es.capabilities import maps as maps_cap
 from es.capabilities import weather as weather_cap
 
@@ -454,6 +455,21 @@ def es_maps_geocode(query: str, include_timezone: bool = False) -> dict:
     include_timezone=true adds the location's IANA `timezone` — use it when creating a calendar
     event somewhere you're unsure of the zone, then pass that as es_cal_add's `tz`."""
     return maps_cap.geocode(query, include_timezone=include_timezone)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_time(timezone: Optional[str] = None) -> Envelope[clock_cap.CurrentTime]:
+    """The current date and time. CALL THIS FIRST for anything relative — "today", "tonight",
+    "this weekend", "tomorrow", "in two hours" — and before writing any dated event.
+
+    Do NOT infer the date from the system prompt. That line is labelled `Conversation started:`
+    and is exactly that: the date this conversation BEGAN, which may be weeks ago. It is also
+    date-only by design. This tool is the only authoritative source of now.
+
+    Returns {iso, date, time, weekday, timezone, utc_offset, utc} in the operator's configured
+    timezone; pass `timezone` (IANA) for another location's local time."""
+    return clock_cap.now(timezone)
 
 
 @mcp.tool()
