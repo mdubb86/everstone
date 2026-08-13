@@ -252,12 +252,14 @@ network:
     # entries. es sends the `__DEVM_SECRET_google_api_key__` token as the key
     # (X-Goog-Api-Key header for Places/Routes; ?key= query param for legacy
     # Geocoding); iron-proxy substitutes the real key only on requests to these
-    # three hosts. Nothing else in the VM carries the token, so nothing else leaks it.
+    # hosts. Nothing else in the VM carries the token, so nothing else leaks it.
     - host: maps.googleapis.com          # Geocoding API (legacy GET, ?key=)
       secrets: [google_api_key]
     - host: places.googleapis.com        # Places API (New) — search + details
       secrets: [google_api_key]
     - host: routes.googleapis.com        # Routes API — directions + matrix
+      secrets: [google_api_key]
+    - host: weather.googleapis.com       # Weather API — es_weather
       secrets: [google_api_key]
 
 # everstone's internal Caddy serves the sync surfaces (/db, /caldav, /git, /health)
