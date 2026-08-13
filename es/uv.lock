@@ -340,6 +340,7 @@ dependencies = [
     { name = "httpx" },
     { name = "icalendar" },
     { name = "mcp" },
+    { name = "pydantic" },
     { name = "pyyaml" },
     { name = "trafilatura" },
 ]
@@ -360,6 +361,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "icalendar", specifier = ">=5.0" },
     { name = "mcp", specifier = ">=1.0,<2" },
+    { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "trafilatura", specifier = ">=1.8" },
 ]

@@ -5,10 +5,11 @@ Wraps the same in-process clients the CLI uses; returns the same
 AGENT only ever sees these tools.
 """
 import functools
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Generic, Optional, TypeVar
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel
 import httpx
 import trafilatura
 
@@ -20,8 +21,31 @@ from es.vault_client import VaultClient
 from es.capabilities import cal as cal_cap
 from es.capabilities import cal_support
 from es.capabilities import maps as maps_cap
+from es.capabilities import weather as weather_cap
 
 mcp = FastMCP("everstone-es")
+
+T = TypeVar("T")
+
+
+class ErrorDetail(BaseModel):
+    code: str
+    message: str
+
+
+class Envelope(BaseModel, Generic[T]):
+    """Typed form of the {ok,data}/{ok,error} envelope.
+
+    Annotating a tool `-> Envelope[Model]` makes FastMCP publish a full MCP
+    outputSchema (with $defs for nested models) instead of the untyped JSON an
+    unannotated `-> dict` produces. Note the annotation MUST describe the
+    envelope, not the payload: mcp_envelope wraps the return, and FastMCP
+    validates the actual value against the published schema — so `-> Model`
+    raises ToolError at call time.
+    """
+    ok: bool
+    data: Optional[T] = None
+    error: Optional[ErrorDetail] = None
 
 
 def mcp_envelope(fn):
@@ -422,6 +446,62 @@ def es_maps_geocode(query: str) -> dict:
     """Geocode an address/place text to {address, lat, lng, place_id}. Building block; returns
     null-ish if nothing matches. Needs maps.api_key in config."""
     return maps_cap.geocode(query)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_weather(location: str, start: Optional[str] = None,
+               end: Optional[str] = None) -> Envelope[weather_cap.WeatherReport]:
+    """Weather for a location. `location` is any place text (geocoded internally) and is REQUIRED.
+
+    No start/end means right now. Otherwise both are wall-clock times AT THE LOCATION —
+    "2026-08-15T09:00" (naive, resolved in the location's timezone), or "2026-08-15" for a
+    whole local day. Ranges are inclusive of the end date, so start=Sat end=Sun is the weekend.
+
+    Returns periods[] — a window up to 24h yields one period per hour; longer windows merge
+    adjacent similar hours (splitting where weather turns), so `start`/`end` tell you how much
+    precision you actually have. Forecasts run 10 days out.
+
+    IMPORTANT: `condition` describes the sky and can read "Sunny" on an hour with a 70%
+    `thunderstorm_prob` — Google models them independently. For outdoor activities
+    `thunderstorm_prob` is authoritative for lightning risk, never `condition` alone.
+    """
+    api_key = maps_cap.api_key()
+    unit_system = weather_cap.units()
+    geo = maps_cap.geocode(location)
+    if not geo or geo.get("lat") is None:
+        raise weather_cap.WeatherError("weather_location_not_found",
+                                       f"Could not find a location for {location!r}.")
+
+    now = datetime.now(timezone.utc)
+    # Page 1 is fetched before the window can be resolved: the location's zone is only known
+    # from the response, and it is needed to turn a naive local time into an absolute one.
+    probe, tzname = weather_cap.fetch_hours(geo["lat"], geo["lng"], 1, api_key, unit_system)
+    if not probe:
+        raise weather_cap.WeatherError("weather_error", "No forecast returned for that location.")
+
+    if start is None:
+        hours, window = probe, 1.0
+    else:
+        s = weather_cap.parse_input_time(start, tzname)
+        e = (weather_cap.parse_input_time(end, tzname, end_of_day=True)
+             if end else s + timedelta(hours=1))
+        want = weather_cap.hours_needed(e, now)
+        fetched, _ = weather_cap.fetch_hours(geo["lat"], geo["lng"], want, api_key, unit_system)
+        hours = [h for h in fetched
+                 if datetime.fromisoformat(h.interval.endTime.replace("Z", "+00:00")) > s
+                 and datetime.fromisoformat(h.interval.startTime.replace("Z", "+00:00")) < e]
+        if not hours:
+            raise weather_cap.WeatherError("weather_no_hours",
+                                           "No forecast hours fall inside that window.")
+        window = (e - s).total_seconds() / 3600.0
+
+    return weather_cap.WeatherReport(
+        location=weather_cap.Location(address=geo["address"], lat=geo["lat"],
+                                      lng=geo["lng"], timezone=tzname),
+        units=unit_system,
+        periods=weather_cap.build_periods(hours, tzname, window),
+    )
 
 
 @mcp.tool()

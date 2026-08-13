@@ -46,3 +46,8 @@ def attach_source_dirs(obsidian=None) -> list:
 def maps_config(cfg=None) -> dict:
     cfg = cfg if cfg is not None else load_config()
     return cfg.get("maps") or {}
+
+
+def weather_config(cfg=None) -> dict:
+    cfg = cfg if cfg is not None else load_config()
+    return cfg.get("weather") or {}
