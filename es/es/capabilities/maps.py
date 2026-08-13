@@ -48,6 +48,25 @@ def render_distance(meters):
     return f"{meters / 1000:.1f} km"
 
 
+_TF = None
+
+
+def timezone_at(lat, lng):
+    """lat/lng -> IANA zone, offline via timezonefinder.
+
+    Chosen over Google's Time Zone API: that would be a second Maps SKU needing
+    its own console enablement AND its own iron-proxy secret binding — the exact
+    two-step that blocked this work. lat/lng -> zone is a stable lookup where
+    Google's authority buys little. Lazy-loaded: the polygon data is tens of MB
+    and most geocodes never ask for a zone.
+    """
+    global _TF
+    if _TF is None:
+        from timezonefinder import TimezoneFinder
+        _TF = TimezoneFinder()
+    return _TF.timezone_at(lat=lat, lng=lng)
+
+
 def geocode_view(resp):
     check_status(resp)
     results = (resp or {}).get("results") or []
@@ -59,13 +78,18 @@ def geocode_view(resp):
             "lng": loc.get("lng"), "place_id": r.get("place_id")}
 
 
-def geocode(query):
+def geocode(query, include_timezone=False):
     try:
         r = httpx.get(_GEOCODE_URL, params={"address": query, "key": api_key()}, timeout=20)
         r.raise_for_status()
     except httpx.HTTPStatusError as e:
         raise MapsError("maps_error", f"Geocoding request failed: HTTP {e.response.status_code}")
-    return geocode_view(r.json())
+    view = geocode_view(r.json())
+    # Opt-in so the common geocode (including the one es_weather makes) keeps a
+    # stable return shape and skips loading the timezone polygon data.
+    if view and include_timezone and view.get("lat") is not None:
+        view["timezone"] = timezone_at(view["lat"], view["lng"])
+    return view
 
 
 def search_view(resp):

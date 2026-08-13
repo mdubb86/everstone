@@ -18,16 +18,49 @@ def _localize(dt_str: str, tz: str) -> str:
     return dt.astimezone(ZoneInfo(tz)).isoformat()
 
 
+def _event_local(dt_str: str) -> str:
+    """The event's OWN local time, offset intact. Only normalises 'Z' to
+    '+00:00' so every value is uniformly parseable."""
+    if "T" not in dt_str:           # all-day event ('date')
+        return dt_str
+    return datetime.fromisoformat(dt_str.replace("Z", "+00:00")).isoformat()
+
+
+def _offset_differs(dt_str: str, tz: str) -> bool:
+    if "T" not in dt_str:
+        return False
+    dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+    return dt.utcoffset() != dt.astimezone(ZoneInfo(tz)).utcoffset()
+
+
 def _event_view(e: dict, tz: str) -> dict:
+    """Report the event in its OWN timezone, adding home time only when they
+    differ.
+
+    Previously every event was collapsed into a single zone, so a 3pm meeting in
+    San Francisco was reported to a Chicago operator as "5pm" — correct as an
+    instant, useless if you are standing in San Francisco. Which zone is right
+    depends on where the operator is, which `es` cannot know; reporting the
+    event's own time sidesteps that entirely, because 3pm Pacific is true
+    wherever you are.
+
+    Callers wanting a single-zone agenda still pass `tz` explicitly.
+    """
     s = e.get("start", {})
     en = e.get("end", {})
-    return {
+    s_raw = s.get("dateTime") or s.get("date", "")
+    e_raw = en.get("dateTime") or en.get("date", "")
+    out = {
         "id": e.get("id"),
         "summary": e.get("summary", ""),
-        "start": _localize(s.get("dateTime") or s.get("date", ""), tz),
-        "end": _localize(en.get("dateTime") or en.get("date", ""), tz),
+        "start": _event_local(s_raw),
+        "end": _event_local(e_raw),
         "location": e.get("location"),
     }
+    if _offset_differs(s_raw, tz):
+        out["start_home"] = _localize(s_raw, tz)
+        out["end_home"] = _localize(e_raw, tz)
+    return out
 
 
 def _day_bounds(start: str, end: str, tz: str):
