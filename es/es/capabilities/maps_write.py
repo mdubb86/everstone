@@ -177,12 +177,45 @@ def _open_picker(tab_id, *, evaluate, sleep, probe_signed_in=None):
 
 
 def set_saved(place_id, target_list, *, want_saved, navigate, evaluate, sleep,
-              probe_signed_in, persist):
+              probe_signed_in, persist, attempts=3):
     """Star (want_saved=True) or unstar (False) `place_id` in `target_list`.
 
     Idempotent: if the list is already in the wanted state nothing is clicked and
-    `changed` is False, so a retry after a transient failure cannot double-apply.
+    `changed` is False — which is what makes the retry below safe.
+
+    RETRIES THE WHOLE OPERATION on a fresh page. Driving a heavy SPA fails
+    intermittently for reasons outside our control: an await can time out because
+    the picker never rendered, and camofox itself sometimes blocks past the HTTP
+    timeout. Both are "the browser was busy", both clear on a fresh navigation,
+    and neither can double-apply because the first thing a retry does is re-read
+    the current state. Retrying inside the flow (rather than leaving it to the
+    agent) also avoids burning a full 25s await timeout on the agent's clock.
     """
+    last = None
+    for attempt in range(attempts):
+        try:
+            return _set_saved_once(place_id, target_list, want_saved=want_saved,
+                                   navigate=navigate, evaluate=evaluate, sleep=sleep,
+                                   probe_signed_in=probe_signed_in, persist=persist)
+        except MapsAutomationError as e:
+            if e.es_code == "authentication_required":
+                raise                      # a retry cannot fix a signed-out session
+            last = e
+        except Exception as e:             # noqa: BLE001
+            # httpx.ReadTimeout and friends: camofox intermittently blocks past
+            # the HTTP timeout. Catching only MapsAutomationError let these kill
+            # the call unretried, which is how a transient browser stall reached
+            # the agent as an untyped failure with no es_code at all.
+            last = MapsAutomationError(
+                "maps_automation_stale",
+                f"Browser automation failed ({type(e).__name__}): {str(e)[:120]}")
+        if attempt + 1 < attempts:
+            sleep(2.0)
+    raise last
+
+
+def _set_saved_once(place_id, target_list, *, want_saved, navigate, evaluate, sleep,
+                    probe_signed_in, persist):
     tab_id = navigate(_PLACE_URL.format(pid=place_id))
     items = _open_picker(tab_id, evaluate=evaluate, sleep=sleep,
                          probe_signed_in=probe_signed_in)
@@ -206,6 +239,7 @@ def set_saved(place_id, target_list, *, want_saved, navigate, evaluate, sleep,
     wanted_label = _SAVED_BTN if want_saved else _SAVE_BTN
     for _ in range(10):
         if evaluate(tab_id, _JS_BUTTON_LABEL) == wanted_label:
+            evaluate(tab_id, _JS_ESCAPE)   # leave no dialog open for the next call
             persist()
             return {"place_id": place_id, "list": target["name"],
                     "saved": want_saved, "changed": True}
@@ -216,13 +250,31 @@ def set_saved(place_id, target_list, *, want_saved, navigate, evaluate, sleep,
         "could not confirm the write.")
 
 
-def read_lists(place_id, *, navigate, evaluate, sleep, probe_signed_in):
+def read_lists(place_id, *, navigate, evaluate, sleep, probe_signed_in, attempts=3):
     """The account's Google Maps save lists, and whether this place is in each."""
-    tab_id = navigate(_PLACE_URL.format(pid=place_id))
-    items = _open_picker(tab_id, evaluate=evaluate, sleep=sleep,
-                         probe_signed_in=probe_signed_in)
-    evaluate(tab_id, _JS_ESCAPE)
-    return [{"name": i["name"], "saved": i["checked"]} for i in items]
+    last = None
+    for attempt in range(attempts):
+        try:
+            tab_id = navigate(_PLACE_URL.format(pid=place_id))
+            items = _open_picker(tab_id, evaluate=evaluate, sleep=sleep,
+                                 probe_signed_in=probe_signed_in)
+            evaluate(tab_id, _JS_ESCAPE)
+            return [{"name": i["name"], "saved": i["checked"]} for i in items]
+        except MapsAutomationError as e:
+            if e.es_code == "authentication_required":
+                raise                      # a retry cannot fix a signed-out session
+            last = e
+        except Exception as e:             # noqa: BLE001
+            # httpx.ReadTimeout and friends: camofox intermittently blocks past
+            # the HTTP timeout. Catching only MapsAutomationError let these kill
+            # the call unretried, which is how a transient browser stall reached
+            # the agent as an untyped failure with no es_code at all.
+            last = MapsAutomationError(
+                "maps_automation_stale",
+                f"Browser automation failed ({type(e).__name__}): {str(e)[:120]}")
+        if attempt + 1 < attempts:
+            sleep(2.0)
+    raise last
 
 
 def live_driver():
@@ -240,13 +292,13 @@ def live_driver():
 
     def navigate(url):
         r = httpx.post(f"{base}/tabs",
-                       json={"userId": _PROFILE, "sessionKey": "default", "url": url}, timeout=30)
+                       json={"userId": _PROFILE, "sessionKey": "default", "url": url}, timeout=60)
         r.raise_for_status()
         return r.json().get("tabId")
 
     def evaluate(tab_id, expression):
         r = httpx.post(f"{base}/tabs/{tab_id}/evaluate",
-                       json={"userId": _PROFILE, "expression": expression}, timeout=20)
+                       json={"userId": _PROFILE, "expression": expression}, timeout=45)
         r.raise_for_status()
         return (r.json() or {}).get("result")
 
