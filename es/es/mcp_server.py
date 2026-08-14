@@ -22,6 +22,7 @@ from es.capabilities import cal as cal_cap
 from es.capabilities import cal_support
 from es.capabilities import clock as clock_cap
 from es.capabilities import maps as maps_cap
+from es.capabilities import maps_write
 from es.capabilities import weather as weather_cap
 
 mcp = FastMCP("everstone-es")
@@ -526,6 +527,60 @@ def es_weather(location: str, start: Optional[str] = None,
         units=unit_system,
         periods=weather_cap.build_periods(hours, tzname, window),
     )
+
+
+def _resolve_place(query: Optional[str], place_id: Optional[str]) -> str:
+    """place_id wins; otherwise resolve via Places search, NOT geocoding.
+
+    Geocoding is weak on business names — "Torchy's Tacos Austin TX" geocodes to
+    "Austin, TX". Places search resolves the actual POI.
+    """
+    if place_id:
+        return place_id
+    if not query:
+        raise maps_write.MapsAutomationError(
+            "maps_no_place", "Pass either query or place_id.")
+    hits = maps_cap.search(query, limit=1)
+    if not hits or not hits[0].get("place_id"):
+        raise maps_write.MapsAutomationError(
+            "maps_place_not_found", f"No place found for {query!r}.")
+    return hits[0]["place_id"]
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_star(query: Optional[str] = None, place_id: Optional[str] = None,
+                 list: Optional[str] = None) -> dict:
+    """Save (star) a place to a Google Maps list — this is what makes it appear in Android Auto /
+    Google Automotive. Pass a `query` ("Torchy's Tacos Austin") or an exact `place_id`.
+
+    `list` defaults to maps.save_list in config ("Starred", which matches Google's "Starred
+    places"). Idempotent: already-saved returns changed=false rather than double-applying.
+    Drives the logged-in browser, so it can raise authentication_required — run es_login then
+    retry. On maps_automation_stale, fall back to sending the Maps deep link."""
+    pid = _resolve_place(query, place_id)
+    return maps_write.set_saved(pid, list or maps_write.save_list_default(),
+                                want_saved=True, **maps_write.live_driver())
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_unstar(query: Optional[str] = None, place_id: Optional[str] = None,
+                   list: Optional[str] = None) -> dict:
+    """Remove a place from a Google Maps saved list. Same arguments as es_maps_star; idempotent."""
+    pid = _resolve_place(query, place_id)
+    return maps_write.set_saved(pid, list or maps_write.save_list_default(),
+                                want_saved=False, **maps_write.live_driver())
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_lists(query: Optional[str] = None, place_id: Optional[str] = None) -> list:
+    """The account's Google Maps saved lists, and whether this place is in each:
+    [{name, saved}]. Use it to discover list names before es_maps_star."""
+    pid = _resolve_place(query, place_id)
+    return maps_write.read_lists(pid, **{k: v for k, v in maps_write.live_driver().items()
+                                         if k != "persist"})
 
 
 @mcp.tool()
