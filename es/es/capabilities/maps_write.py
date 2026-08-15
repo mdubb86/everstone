@@ -161,11 +161,26 @@ def await_selector(tab_id, selector, *, evaluate, sleep, timeout_s=25.0, interva
         waited += interval
 
 
+# Google Maps needs a beat AFTER the Save button appears before it will act on a
+# click. Measured: the button is byte-identical from t+1s (same attrs, same
+# jsaction, stable bounding box, not disabled) but clicks land dead until
+# ~3.5s after navigation. Awaiting the selector alone returns at ~1s and clicks
+# into that window:
+#
+#   poll -> click at 3.1-3.4s   radios=0   (dead)
+#   sleep -> click at 3.8-3.9s  radios=6   (works)
+#
+# There is nothing in the DOM to await for this, so it is a bounded settle after
+# the selector gate — not instead of it.
+_POST_LOAD_SETTLE_S = 2.5
+
+
 def _open_picker(tab_id, *, evaluate, sleep, probe_signed_in=None):
     if not await_selector(tab_id, _SAVE_SELECTOR, evaluate=evaluate, sleep=sleep):
         _raise_stale_or_auth(
             "Could not find the Save button on the Maps place page — the UI has likely changed.",
             probe_signed_in)
+    sleep(_POST_LOAD_SETTLE_S)
     if not evaluate(tab_id, _JS_CLICK_SAVE):
         _raise_stale_or_auth(
             "The Save button vanished before it could be clicked.", probe_signed_in)
@@ -177,7 +192,7 @@ def _open_picker(tab_id, *, evaluate, sleep, probe_signed_in=None):
 
 
 def set_saved(place_id, target_list, *, want_saved, navigate, evaluate, sleep,
-              probe_signed_in, persist, attempts=3):
+              probe_signed_in, persist, close_tab=None, attempts=3):
     """Star (want_saved=True) or unstar (False) `place_id` in `target_list`.
 
     Idempotent: if the list is already in the wanted state nothing is clicked and
@@ -196,7 +211,8 @@ def set_saved(place_id, target_list, *, want_saved, navigate, evaluate, sleep,
         try:
             return _set_saved_once(place_id, target_list, want_saved=want_saved,
                                    navigate=navigate, evaluate=evaluate, sleep=sleep,
-                                   probe_signed_in=probe_signed_in, persist=persist)
+                                   probe_signed_in=probe_signed_in, persist=persist,
+                                   close_tab=close_tab)
         except MapsAutomationError as e:
             if e.es_code == "authentication_required":
                 raise                      # a retry cannot fix a signed-out session
@@ -215,51 +231,59 @@ def set_saved(place_id, target_list, *, want_saved, navigate, evaluate, sleep,
 
 
 def _set_saved_once(place_id, target_list, *, want_saved, navigate, evaluate, sleep,
-                    probe_signed_in, persist):
+                    probe_signed_in, persist, close_tab=None):
     tab_id = navigate(_PLACE_URL.format(pid=place_id))
-    items = _open_picker(tab_id, evaluate=evaluate, sleep=sleep,
-                         probe_signed_in=probe_signed_in)
-    target = choose_list(items, target_list)
+    try:
+        items = _open_picker(tab_id, evaluate=evaluate, sleep=sleep,
+                             probe_signed_in=probe_signed_in)
+        target = choose_list(items, target_list)
 
-    if target["checked"] == want_saved:
-        evaluate(tab_id, _JS_ESCAPE)
-        return {"place_id": place_id, "list": target["name"],
-                "saved": want_saved, "changed": False}
+        if target["checked"] == want_saved:
+            evaluate(tab_id, _JS_ESCAPE)
+            return {"place_id": place_id, "list": target["name"],
+                    "saved": want_saved, "changed": False}
 
-    # Indices are only valid for the read that produced them — the picker
-    # reorders, floating the checked list to position 0 — so this must click
-    # within the same picker session that was just read.
-    if not evaluate(tab_id, _JS_CLICK_ITEM % (target["index"], target["index"])):
+        # Indices are only valid for the read that produced them — the picker
+        # reorders, floating the checked list to position 0 — so this must click
+        # within the same picker session that was just read.
+        if not evaluate(tab_id, _JS_CLICK_ITEM % (target["index"], target["index"])):
+            raise MapsAutomationError(
+                "maps_automation_stale",
+                f"Could not click the {target['name']!r} list entry — the UI has likely changed.")
+
+        # Verify against the DOM rather than trusting the click: a silent no-op here
+        # would report success while nothing was saved.
+        wanted_label = _SAVED_BTN if want_saved else _SAVE_BTN
+        for _ in range(10):
+            if evaluate(tab_id, _JS_BUTTON_LABEL) == wanted_label:
+                evaluate(tab_id, _JS_ESCAPE)   # leave no dialog open for the next call
+                persist()
+                return {"place_id": place_id, "list": target["name"],
+                        "saved": want_saved, "changed": True}
+            sleep(1.0)
         raise MapsAutomationError(
             "maps_automation_stale",
-            f"Could not click the {target['name']!r} list entry — the UI has likely changed.")
-
-    # Verify against the DOM rather than trusting the click: a silent no-op here
-    # would report success while nothing was saved.
-    wanted_label = _SAVED_BTN if want_saved else _SAVE_BTN
-    for _ in range(10):
-        if evaluate(tab_id, _JS_BUTTON_LABEL) == wanted_label:
-            evaluate(tab_id, _JS_ESCAPE)   # leave no dialog open for the next call
-            persist()
-            return {"place_id": place_id, "list": target["name"],
-                    "saved": want_saved, "changed": True}
-        sleep(1.0)
-    raise MapsAutomationError(
-        "maps_automation_stale",
-        f"Clicked {target['name']!r} but the button never became {wanted_label!r} — "
-        "could not confirm the write.")
+            f"Clicked {target['name']!r} but the button never became {wanted_label!r} — "
+            "could not confirm the write.")
+    finally:
+        if close_tab:
+            close_tab(tab_id)
 
 
-def read_lists(place_id, *, navigate, evaluate, sleep, probe_signed_in, attempts=3):
+def read_lists(place_id, *, navigate, evaluate, sleep, probe_signed_in, close_tab=None, attempts=3):
     """The account's Google Maps save lists, and whether this place is in each."""
     last = None
     for attempt in range(attempts):
         try:
             tab_id = navigate(_PLACE_URL.format(pid=place_id))
-            items = _open_picker(tab_id, evaluate=evaluate, sleep=sleep,
-                                 probe_signed_in=probe_signed_in)
-            evaluate(tab_id, _JS_ESCAPE)
-            return [{"name": i["name"], "saved": i["checked"]} for i in items]
+            try:
+                items = _open_picker(tab_id, evaluate=evaluate, sleep=sleep,
+                                     probe_signed_in=probe_signed_in)
+                evaluate(tab_id, _JS_ESCAPE)
+                return [{"name": i["name"], "saved": i["checked"]} for i in items]
+            finally:
+                if close_tab:
+                    close_tab(tab_id)
         except MapsAutomationError as e:
             if e.es_code == "authentication_required":
                 raise                      # a retry cannot fix a signed-out session
@@ -296,6 +320,21 @@ def live_driver():
         r.raise_for_status()
         return r.json().get("tabId")
 
+    def close_tab(tab_id):
+        """Every navigate opens a tab and camofox never reaps an active one.
+
+        Left unclosed they accumulate silently: GET /tabs reports [] without a
+        userId, so the leak is invisible, while /pressure/cleanup showed 8 live
+        tabs holding 2.0GB. That starved the VM (159MB free), and a memory-
+        starved browser is exactly when pages load slowly and clicks land in
+        dead windows — the whole intermittent-failure pattern. Closing them
+        returned camoufox 2013MB -> 1092MB and the VM 4362MB -> 1959MB.
+        """
+        try:
+            httpx.delete(f"{base}/tabs/{tab_id}", params={"userId": _PROFILE}, timeout=20)
+        except Exception:  # noqa: BLE001 — best-effort cleanup must never mask the real result
+            pass
+
     def evaluate(tab_id, expression):
         r = httpx.post(f"{base}/tabs/{tab_id}/evaluate",
                        json={"userId": _PROFILE, "expression": expression}, timeout=45)
@@ -305,6 +344,7 @@ def live_driver():
     return {
         "navigate": navigate,
         "evaluate": evaluate,
+        "close_tab": close_tab,
         "sleep": time.sleep,
         "probe_signed_in": lambda: bool(wl.signed_in_from_home(wl.probe_home(_PROFILE))),
         "persist": lambda: wl.fetch_state(_PROFILE),
