@@ -30,7 +30,7 @@ def test_missing_signal_is_not_signed_in():
     assert signed_in_from_home(None) is False
 
 
-from es.web_login import build_login_url, add_route_block, close_route_block
+from es.web_login import build_login_url, add_route_block, close_route_block, prepping_route_block
 
 CADDY = "\thandle /oauth {\n\t\treverse_proxy localhost:8081\n\t}\n\n\thandle /* {\n\t\tredir * /hermes/ 302\n\t}\n"
 
@@ -88,6 +88,35 @@ def test_add_route_block_swaps_static_to_armed():
     assert "reverse_proxy 127.0.0.1:6080" in armed
     assert "Login window isn't active" not in armed
     assert armed.index("/web-login/") < armed.index("handle /*")
+
+
+def test_prepping_route_block_swaps_to_self_refreshing_page():
+    out = prepping_route_block(CADDY)
+    assert "handle_path /web-login/*" in out
+    assert "http-equiv=refresh" in out              # advances client-side on its own
+    assert "Preparing your login" in out
+    assert "reverse_proxy 127.0.0.1:6080" not in out
+    assert out.index("/web-login/") < out.index("handle /*")
+
+
+def test_static_pages_are_brace_free():
+    # Caddy `respond` treats {...} as placeholders, so the preparing/closed pages must be
+    # brace-free (meta-refresh, not JS/CSS keyframes) or Caddy would mangle them.
+    from es.web_login import _PREPPING_PAGE, _CLOSED_PAGE
+    for page in (_PREPPING_PAGE, _CLOSED_PAGE):
+        assert "{" not in page and "}" not in page
+
+
+def test_prepping_then_arm_swaps_to_novnc():
+    armed = add_route_block(prepping_route_block(CADDY))
+    assert "reverse_proxy 127.0.0.1:6080" in armed
+    assert "Preparing your login" not in armed
+
+
+def test_prepping_then_close_swaps_to_closed_page():
+    closed = close_route_block(prepping_route_block(CADDY))
+    assert "Login window isn't active" in closed
+    assert "Preparing your login" not in closed
 
 
 from es.web_login import has_session_cookies

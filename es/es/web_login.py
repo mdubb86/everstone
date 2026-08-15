@@ -78,6 +78,34 @@ def close_route_block(caddyfile_text):
     return _set_route_block(caddyfile_text, _CLOSED_BLOCK)
 
 
+# The "preparing" page: shown the instant es_login is called, before the browser + display +
+# x11vnc have spun up (they start on demand, a few seconds). It META-REFRESHES itself — NOT
+# JS/CSS — because Caddy's `respond` body treats `{...}` as placeholders, so braces would be
+# mangled; meta-refresh needs none. Each reload re-serves this page while preparing; the moment
+# the background arm swaps the route to the live noVNC, the next reload lands on vnc.html (query
+# params intact) and autoconnects. So an early click gets a friendly self-advancing page instead
+# of noVNC's "failed to connect".
+_PREPPING_PAGE = ("<!doctype html><meta charset=utf-8>"
+                  "<meta name=viewport content='width=device-width,initial-scale=1'>"
+                  "<meta http-equiv=refresh content=2>"
+                  "<title>Preparing login</title>"
+                  "<body style='font-family:system-ui,sans-serif;max-width:34rem;margin:14vh auto;"
+                  "padding:0 1.5rem;text-align:center;color:#1c1c1e'>"
+                  "<h1 style='font-size:1.35rem;margin-bottom:.4rem'>Preparing your login…</h1>"
+                  "<p style='color:#555;line-height:1.55'>Starting the secure browser. This page "
+                  "refreshes on its own and will open the sign-in screen in a few seconds.</p></body>")
+_PREPPING_BLOCK = ("\thandle_path /web-login/* {\n"
+                   "\t\theader Content-Type \"text/html; charset=utf-8\"\n"
+                   "\t\trespond `" + _PREPPING_PAGE + "` 200\n"
+                   "\t}\n")
+
+
+def prepping_route_block(caddyfile_text):
+    """Preparing: swap /web-login/ to the static, self-refreshing "preparing login" page shown
+    while the browser + VNC server spin up. The background arm flips it to the live noVNC."""
+    return _set_route_block(caddyfile_text, _PREPPING_BLOCK)
+
+
 # The durable Google session-anchor cookies. Their PRESENCE is a cheap NECESSARY condition
 # for being signed in (not sufficient — Google may have invalidated them server-side). Absent
 # => definitely signed out: skip the live probe and don't warm-keep. Present => confirm live.
@@ -117,7 +145,9 @@ def run_es_login(profile, *, probe_home, capture, open_signin, close_window, log
 
 # --- Real I/O deps (thin; integration-tested in-container, not unit-tested) --------------
 import os
+import socket
 import threading
+import time
 import subprocess
 import httpx
 
@@ -200,15 +230,73 @@ def _reload_caddy(text):
                    check=True, capture_output=True)
 
 
+def _swap_route(to_block_fn):
+    """Read the Caddyfile, apply a route-block transform, and reload. Serialized so the
+    background arm and a concurrent close can't interleave a read/write."""
+    with _route_lock:
+        with open(_CADDYFILE) as f:
+            _reload_caddy(to_block_fn(f.read()))
+
+
+# x11vnc listens here once the browser's display is up (the vnc plugin starts it on demand).
+_VNC_HOST, _VNC_PORT = "127.0.0.1", 5900
+_route_lock = threading.Lock()
+# Generation guard: each open_signin/close bumps this so a stale background arm can't flip the
+# route back open after a newer call has moved on.
+_arm_generation = 0
+
+
+def _vnc_ready():
+    """True once x11vnc is actually serving on :5900 — accepts a connection AND sends the RFB
+    banner. A bare TCP accept isn't enough (a half-up server can accept then hang)."""
+    try:
+        with socket.create_connection((_VNC_HOST, _VNC_PORT), timeout=1) as s:
+            s.settimeout(1)
+            return s.recv(3) == b"RFB"
+    except OSError:
+        return False
+
+
+def _arm_when_ready(timeout=30.0, interval=0.5):
+    """Background: once the VNC server is up, swap /web-login/ from the "preparing" page to the
+    live noVNC (the self-refreshing page then lands on it on its next reload). If the browser
+    never comes up within `timeout`, drop to the "closed" page so it can't refresh forever.
+    Generation-guarded so a newer open_signin/close supersedes a stale run."""
+    global _arm_generation
+    _arm_generation += 1
+    gen = _arm_generation
+
+    def worker():
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if _arm_generation != gen:
+                return  # superseded
+            if _vnc_ready():
+                if _arm_generation == gen:
+                    _swap_route(add_route_block)
+                return
+            time.sleep(interval)
+        if _arm_generation == gen:  # never came up — stop the preparing page's refresh loop
+            _swap_route(close_route_block)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def open_signin(profile):
-    with open(_CADDYFILE) as f:
-        _reload_caddy(add_route_block(f.read()))
-    _navigate(profile, _SIGNIN_URL)  # park the browser on the sign-in page for the noVNC login
+    # 1. Show the self-refreshing "preparing" page immediately, so an early click gets a friendly
+    #    self-advancing page instead of a dead noVNC while the browser + x11vnc spin up.
+    _swap_route(prepping_route_block)
+    # 2. Launch the browser onto its display (the vnc plugin brings up Xvfb + x11vnc).
+    _navigate(profile, _SIGNIN_URL)
+    # 3. Flip to the live noVNC as soon as :5900 accepts — in the background, so es_login returns
+    #    the (preparing) link immediately.
+    _arm_when_ready()
 
 
 def close_window():
-    with open(_CADDYFILE) as f:
-        _reload_caddy(close_route_block(f.read()))
+    global _arm_generation
+    _arm_generation += 1  # invalidate any pending arm so it can't re-open after we close
+    _swap_route(close_route_block)
 
 
 # No polling: login completion is handled by the human ("done" → agent re-calls es_login, which
