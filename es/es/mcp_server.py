@@ -562,11 +562,49 @@ def es_maps_unstar(place_id: str, list: Optional[str] = None) -> dict:
 
 @mcp.tool()
 @mcp_envelope
-def es_maps_lists(place_id: str) -> list:
-    """The account's Google Maps saved lists, and whether THIS place is in each: [{name, saved}].
-    `place_id` is REQUIRED. Use it to discover list names before es_maps_star."""
-    return maps_write.read_lists(place_id, **{k: v for k, v in maps_write.live_driver().items()
-                                              if k != "persist"})
+def es_maps_lists() -> list:
+    """The account's Google Maps saved lists with place counts: [{list, count}].
+
+    Use this to discover exact list names — es_maps_star/unstar match them EXACTLY."""
+    d = maps_write.live_driver()
+    return maps_write.all_lists(**{k: v for k, v in d.items() if k != "persist"})
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_list_places(list: str) -> list:
+    """Clean place NAMES in a saved list, in display order: ["Torchy's Tacos", "Uchi"].
+
+    Names only — Google's saved-list view carries no place ids. Duplicates are returned as
+    duplicates (two starred branches of a chain look identical here). Turn a name into a
+    place_id with es_maps_resolve; act with es_maps_star/unstar."""
+    d = maps_write.live_driver()
+    return maps_write.list_places(list, **{k: v for k, v in d.items() if k != "persist"})
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_place_lists(place_id: str) -> list:
+    """Which of the account's lists contain THIS place: [{list, in_list}].
+
+    The only EXACT way to ask whether a place is saved — es_maps_list_places answers by name,
+    which cannot distinguish two branches of a chain. Do not test with es_maps_star: calling it
+    on an unsaved place SAVES it."""
+    d = maps_write.live_driver()
+    return maps_write.read_lists(place_id, **{k: v for k, v in d.items() if k != "persist"})
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_resolve(list: str, name: str) -> list:
+    """A place name in a list -> [{place_id, address}]. ALWAYS an array.
+
+    Slower than the other reads (it opens the place to identify it). A name is not a key, so a
+    chain with two starred branches returns two entries — pick using the addresses. Feed the
+    place_id to es_maps_unstar."""
+    d = maps_write.live_driver()
+    return maps_write.resolve_name(list, name, search=maps_cap.search,
+                                   **{k: v for k, v in d.items() if k != "persist"})
 
 
 @mcp.tool()

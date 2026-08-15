@@ -24,6 +24,10 @@ from es import config
 
 _PROFILE = "google"
 _PLACE_URL = "https://www.google.com/maps/place/?q=place_id:{pid}"
+# The saved-lists panel. Reached in the UI by the "Saved" rail item; the data=
+# suffix is what that click produces. Coordinates are irrelevant (the panel is
+# account-scoped) but the URL requires some centre.
+_SAVED_URL = "https://www.google.com/maps/@30.45,-97.82,12z/data=!4m2!10m1!1e1"
 _SAVE_BTN = "Save"
 _SAVED_BTN = "Saved"
 _ITEM_SELECTOR = "[role=menuitemradio]"
@@ -31,7 +35,7 @@ _ITEM_SELECTOR = "[role=menuitemradio]"
 # Matching the first two exactly meant a place in 2+ lists became invisible and
 # EVERY operation failed with save=0. Prefix-match instead.
 _SAVE_SELECTOR = 'button[aria-label^="Save"]'
-_DEFAULT_LIST = "Starred"          # prefix-matches Google's "Starred places"
+_DEFAULT_LIST = "Starred places"   # Google's actual list name — see choose_list
 
 
 class MapsAutomationError(Exception):
@@ -71,23 +75,21 @@ def parse_items(raw) -> list:
 
 
 def choose_list(items: list, target: str) -> dict:
-    """Exact match first, then case-insensitive prefix — so the shipped default
-    `Starred` selects Google's "Starred places" without hardcoding their wording.
+    """EXACT match, case-insensitive. No prefix matching.
+
+    Prefix matching existed only to paper over a shipped default of "Starred"
+    when Google's list is "Starred places" — a self-inflicted problem that
+    dragged in an ambiguity error ("Sa" matching both "Saved places" and
+    "Starred places"). Lists are a closed, enumerable set; es_maps_lists returns
+    them. Fixing the default removes the need to guess.
     """
     t = (target or "").strip().lower()
     for it in items:
         if it["name"].lower() == t:
             return it
-    hits = [it for it in items if it["name"].lower().startswith(t)]
-    if len(hits) == 1:
-        return hits[0]
-    if len(hits) > 1:
-        raise MapsAutomationError(
-            "maps_list_ambiguous",
-            f"{target!r} matches several lists: {', '.join(h['name'] for h in hits)}.")
     raise MapsAutomationError(
         "maps_list_not_found",
-        f"No saved list matching {target!r}. Available: {', '.join(i['name'] for i in items)}.")
+        f"No saved list named {target!r}. Available: {', '.join(i['name'] for i in items)}.")
 
 
 def save_list_default() -> str:
@@ -126,6 +128,67 @@ _JS_CLICK_ITEM = """(() => {
 })()""" % _ITEM_SELECTOR
 
 _JS_COUNT = "(() => document.querySelectorAll(%r).length)()"
+
+# Saved-list entries carry NO identifier — no href, no data-*, no ChIJ, no hex
+# feature id, and the jslog payload is a search-context token. Verified by
+# sweeping self + 3 ancestors + every descendant attribute. So the panel yields
+# names only; ids require clicking through (see resolve_name).
+_JS_LIST_ENTRIES = r"""(() => {
+  const clean = t => (t||'').replace(/[-]/g, '').split('Private')[0].trim();
+  return [...document.querySelectorAll('button,[role=button],a')]
+    .map(x => ({ full: (x.textContent||'').trim(), name: clean(x.textContent) }))
+    .filter(o => o.name && /Private/.test(o.full))
+    .map(o => ({ name: o.name, count: (o.full.match(/(\d+)\s*place/)||[])[1] || "0" }));
+})()"""
+
+_JS_OPEN_LIST = r"""(() => {
+  const clean = t => (t||'').replace(/[-]/g, '').split('Private')[0].trim();
+  const el = [...document.querySelectorAll('button,[role=button],a')]
+    .find(x => clean(x.textContent) === %s);
+  if (!el) return false;
+  el.click(); return true;
+})()"""
+
+# Places inside an opened list. The row element concatenates name + rating +
+# reviews + price ("Torchy's Tacos4.4(2,792)$10-20"); a CHILD div holds the
+# clean name, so take the SHORTEST descendant text that the row's text starts
+# with. Pinning Google's generated class (fontHeadlineSm) would be brittle.
+_JS_LIST_PLACES = r"""(() => {
+  const out = [];
+  for (const el of document.querySelectorAll('button,[role=button]')) {
+    // Results-pane rows carry jsaction="pane.*". The navigation rail uses
+    // "click:navigationrail.*" and otherwise looks identical to this heuristic,
+    // which is how the "10Austin & Cedar Park" chip leaked in as a place named
+    // "10".
+    if (!/^pane\./.test(el.getAttribute('jsaction')||'')) continue;
+    const full = (el.textContent||'').trim();
+    if (!full || full.length > 140 || /Private/.test(full)) continue;
+    let best = null;
+    for (const k of el.querySelectorAll('div')) {
+      const t = (k.textContent||'').trim();
+      if (t && t.length > 1 && full.startsWith(t) && t.length < full.length
+          && (!best || t.length < best.length)) best = t;
+    }
+    if (best) out.push(best);
+  }
+  return out;
+})()"""
+
+_JS_CLICK_PLACE = r"""(() => {
+  const want = %s;
+  for (const el of document.querySelectorAll('button,[role=button]')) {
+    if (!/^pane\./.test(el.getAttribute('jsaction')||'')) continue;
+    const full = (el.textContent||'').trim();
+    if (full.startsWith(want) && !/Private/.test(full)) { el.click(); return true; }
+  }
+  return false;
+})()"""
+
+_JS_ADDRESS = r"""(() => {
+  const b = [...document.querySelectorAll('button,[role=button]')]
+    .find(x => /^Address:/.test(x.getAttribute('aria-label')||''));
+  return b ? b.getAttribute('aria-label').replace(/^Address:\s*/, '') : null;
+})()"""
 
 _JS_ESCAPE = """(() => {
   document.body.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
@@ -250,8 +313,10 @@ def _set_saved_once(place_id, target_list, *, want_saved, navigate, evaluate, sl
 
         if target["checked"] == want_saved:
             evaluate(tab_id, _JS_ESCAPE)
-            return {"place_id": place_id, "list": target["name"],
-                    "saved": want_saved, "changed": False}
+            # Payload carries only what the caller could NOT predict. place_id
+            # and the requested state are echoes of the arguments; the resolved
+            # list name stopped being information once matching became exact.
+            return {"changed": False}
 
         # Indices are only valid for the read that produced them — the picker
         # reorders, floating the checked list to position 0 — so this must click
@@ -263,13 +328,13 @@ def _set_saved_once(place_id, target_list, *, want_saved, navigate, evaluate, sl
 
         # Verify against the DOM rather than trusting the click: a silent no-op here
         # would report success while nothing was saved.
-        wanted_label = _SAVED_BTN if want_saved else _SAVE_BTN
+        # "Saved", "Saved (2)", ... all mean saved; only bare "Save" means not.
         for _ in range(10):
-            if evaluate(tab_id, _JS_BUTTON_LABEL) == wanted_label:
+            lbl = evaluate(tab_id, _JS_BUTTON_LABEL) or ""
+            if lbl.startswith(_SAVED_BTN) == bool(want_saved):
                 evaluate(tab_id, _JS_ESCAPE)   # leave no dialog open for the next call
                 persist()
-                return {"place_id": place_id, "list": target["name"],
-                        "saved": want_saved, "changed": True}
+                return {"changed": True}
             sleep(1.0)
         raise MapsAutomationError(
             "maps_automation_stale",
@@ -290,7 +355,7 @@ def read_lists(place_id, *, navigate, evaluate, sleep, probe_signed_in, close_ta
                 items = _open_picker(tab_id, evaluate=evaluate, sleep=sleep,
                                      probe_signed_in=probe_signed_in)
                 evaluate(tab_id, _JS_ESCAPE)
-                return [{"name": i["name"], "saved": i["checked"]} for i in items]
+                return [{"list": i["name"], "in_list": i["checked"]} for i in items]
             finally:
                 if close_tab:
                     close_tab(tab_id)
@@ -309,6 +374,128 @@ def read_lists(place_id, *, navigate, evaluate, sleep, probe_signed_in, close_ta
         if attempt + 1 < attempts:
             sleep(2.0)
     raise last
+
+
+def all_lists(*, navigate, evaluate, sleep, probe_signed_in, close_tab=None):
+    """The account's saved lists with place counts. No place required."""
+    tab_id = navigate(_SAVED_URL)
+    try:
+        if not await_selector(tab_id, "button", evaluate=evaluate, sleep=sleep):
+            _raise_stale_or_auth("The saved-lists panel did not render.", probe_signed_in)
+        sleep(_POST_LOAD_SETTLE_S)
+        rows = evaluate(tab_id, _JS_LIST_ENTRIES) or []
+        if not rows:
+            _raise_stale_or_auth("The saved-lists panel rendered no lists.", probe_signed_in)
+        return [{"list": r["name"], "count": int(r["count"])} for r in rows]
+    finally:
+        if close_tab:
+            close_tab(tab_id)
+
+
+def _open_saved_list(tab_id, list_name, *, evaluate, sleep, probe_signed_in):
+    if not await_selector(tab_id, "button", evaluate=evaluate, sleep=sleep):
+        _raise_stale_or_auth("The saved-lists panel did not render.", probe_signed_in)
+    sleep(_POST_LOAD_SETTLE_S)
+    rows = evaluate(tab_id, _JS_LIST_ENTRIES) or []
+    names = [r["name"] for r in rows]
+    if list_name not in names:
+        match = next((n for n in names if n.lower() == (list_name or "").strip().lower()), None)
+        if not match:
+            raise MapsAutomationError(
+                "maps_list_not_found",
+                f"No saved list named {list_name!r}. Available: {', '.join(names)}.")
+        list_name = match
+    if not evaluate(tab_id, _JS_OPEN_LIST % json.dumps(list_name)):
+        _raise_stale_or_auth(f"Could not open the {list_name!r} list.", probe_signed_in)
+    sleep(_POST_LOAD_SETTLE_S)
+    return list_name
+
+
+def list_places(list_name, *, navigate, evaluate, sleep, probe_signed_in, close_tab=None):
+    """Clean place names in a list, in display order.
+
+    NAMES ONLY — the entries carry no identifier of any kind (verified by
+    sweeping every attribute on the row, its ancestors and its descendants).
+    Duplicates are returned as duplicates rather than de-duplicated: two starred
+    branches of the same chain are indistinguishable here, and hiding that would
+    be worse than showing it. Use resolve_name to turn one into a place_id.
+    """
+    tab_id = navigate(_SAVED_URL)
+    try:
+        _open_saved_list(tab_id, list_name, evaluate=evaluate, sleep=sleep,
+                         probe_signed_in=probe_signed_in)
+        return evaluate(tab_id, _JS_LIST_PLACES) or []
+    finally:
+        if close_tab:
+            close_tab(tab_id)
+
+
+def resolve_name(list_name, name, *, navigate, evaluate, sleep, probe_signed_in,
+                 search, close_tab=None):
+    """A place name in a list -> [{place_id, address}]. ALWAYS an array.
+
+    A name is not a key: two branches of a chain can both be starred and the
+    list view cannot tell them apart. Returning an array with addresses lets the
+    caller (or the operator) choose, instead of this guessing.
+
+    The place page does NOT contain the ChIJ place_id — navigating by CID proves
+    it (title and address correct, no ChIJ anywhere). So the id is recovered by
+    searching Places with the page's own coordinates as bias, then VERIFYING the
+    result's address matches the page's. Coordinate bias is what makes this safe:
+    unbiased, "Torchy's Tacos" returns branches 200 miles away.
+    """
+    tab_id = navigate(_SAVED_URL)
+    try:
+        _open_saved_list(tab_id, list_name, evaluate=evaluate, sleep=sleep,
+                         probe_signed_in=probe_signed_in)
+        names = evaluate(tab_id, _JS_LIST_PLACES) or []
+        matches = [n for n in names if n == name]
+        if not matches:
+            raise MapsAutomationError(
+                "maps_place_not_found",
+                f"{name!r} is not in {list_name!r}. Present: {', '.join(names) or '(empty)'}.")
+        out = []
+        for _ in matches:
+            if not evaluate(tab_id, _JS_CLICK_PLACE % json.dumps(name)):
+                _raise_stale_or_auth(f"Could not open {name!r} in the list.", probe_signed_in)
+            sleep(_POST_LOAD_SETTLE_S)
+            url = evaluate(tab_id, "(() => location.href)()") or ""
+            address = evaluate(tab_id, _JS_ADDRESS)
+            out.append(_identify(name, url, address, search=search))
+            break  # duplicates need per-row addressing; see the TODO below
+        return out
+    finally:
+        if close_tab:
+            close_tab(tab_id)
+
+
+def _latlng(url):
+    import re
+    m = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", url or "")
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
+def _identify(name, url, address, *, search):
+    lat, lng = _latlng(url)
+    if not lat:
+        raise MapsAutomationError(
+            "maps_automation_stale",
+            f"No coordinates in the place URL for {name!r}; cannot identify it.")
+    hits = search(name, near=f"{lat},{lng}", limit=3) or []
+    if not hits:
+        raise MapsAutomationError("maps_place_not_found",
+                                  f"Places returned nothing for {name!r} near {lat},{lng}.")
+    best = hits[0]
+    # VERIFY rather than trust: compare against the address shown on the page.
+    if address and best.get("address"):
+        a = "".join(ch for ch in address.lower() if ch.isalnum())
+        b = "".join(ch for ch in best["address"].lower() if ch.isalnum())
+        if not (a.startswith(b[:18]) or b.startswith(a[:18])):
+            raise MapsAutomationError(
+                "maps_place_not_found",
+                f"Could not confirm {name!r}: page says {address!r}, "
+                f"Places says {best['address']!r}.")
+    return {"place_id": best["place_id"], "address": best.get("address") or address}
 
 
 def live_driver():

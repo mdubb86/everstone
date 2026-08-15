@@ -8,6 +8,8 @@ import pytest
 
 from es.capabilities import maps_write as mw
 
+LIST = "Starred places"   # exact name; no prefix matching
+
 ITEMS_RAW = [
     {"text": "Travel plansPrivate · 0 places", "checked": "false"},
     {"text": "NailPrivate · 1 place", "checked": "false"},
@@ -32,7 +34,7 @@ def test_list_name_strips_material_icon_glyphs():
     assert mw.list_name("\ue87dStarred placesPrivate") == "Starred places"
     assert mw.choose_list(
         mw.parse_items([{"text": "\ue87dStarred placesPrivate", "checked": "false"}]),
-        "Starred")["name"] == "Starred places"
+        "Starred places")["name"] == "Starred places"
 
 
 def test_parse_items_indexes_and_flags_checked():
@@ -45,21 +47,12 @@ def test_parse_items_indexes_and_flags_checked():
 def test_shipped_default_prefix_matches_googles_wording():
     """config ships `Starred`; Google's list is "Starred places". The default
     must select it without hardcoding Google's exact wording."""
-    assert mw.choose_list(mw.parse_items(ITEMS_RAW), "Starred")["name"] == "Starred places"
+    assert mw.choose_list(mw.parse_items(ITEMS_RAW), "Starred places")["name"] == "Starred places"
 
 
-def test_exact_match_wins_over_prefix():
-    items = mw.parse_items([{"text": "SavedPrivate", "checked": "false"},
-                            {"text": "Saved placesPrivate", "checked": "false"}])
-    assert mw.choose_list(items, "Saved")["name"] == "Saved"
-
-
-def test_ambiguous_prefix_errors_rather_than_guessing():
-    items = mw.parse_items([{"text": "Want to goPrivate", "checked": "false"},
-                            {"text": "Want to seePrivate", "checked": "false"}])
-    with pytest.raises(mw.MapsAutomationError) as e:
-        mw.choose_list(items, "Want to")
-    assert e.value.es_code == "maps_list_ambiguous"
+def test_match_is_case_insensitive_but_still_exact():
+    items = mw.parse_items([{"text": "Saved placesPrivate", "checked": "false"}])
+    assert mw.choose_list(items, "saved places")["name"] == "Saved places"
 
 
 def test_unknown_list_names_the_available_ones():
@@ -119,8 +112,8 @@ class FakeBrowser:
 
 def test_star_clicks_the_target_list_and_verifies():
     b = FakeBrowser()
-    out = mw.set_saved("PID", "Starred", want_saved=True, **b.driver())
-    assert out == {"place_id": "PID", "list": "Starred places", "saved": True, "changed": True}
+    out = mw.set_saved("PID", LIST, want_saved=True, **b.driver())
+    assert out == {"changed": True}
     assert b.clicked == ["Starred places"]
     assert b.persisted
 
@@ -130,7 +123,7 @@ def test_star_is_idempotent_when_already_saved():
     items = [dict(i) for i in ITEMS_RAW]
     items[4]["checked"] = "true"
     b = FakeBrowser(items=items, button="Saved")
-    out = mw.set_saved("PID", "Starred", want_saved=True, **b.driver())
+    out = mw.set_saved("PID", LIST, want_saved=True, **b.driver())
     assert out["changed"] is False
     assert b.clicked == []
 
@@ -139,7 +132,7 @@ def test_unstar_only_clicks_when_currently_saved():
     items = [dict(i) for i in ITEMS_RAW]
     items[4]["checked"] = "true"
     b = FakeBrowser(items=items, button="Saved")
-    mw.set_saved("PID", "Starred", want_saved=False, **b.driver())
+    mw.set_saved("PID", LIST, want_saved=False, **b.driver())
     assert b.clicked == ["Starred places"]
 
 
@@ -150,7 +143,7 @@ def test_signed_out_raises_authentication_required():
     failure."""
     b = FakeBrowser(signed_in=False, button=None)
     with pytest.raises(mw.MapsAutomationError) as e:
-        mw.set_saved("PID", "Starred", want_saved=True, **b.driver())
+        mw.set_saved("PID", LIST, want_saved=True, **b.driver())
     assert e.value.es_code == "authentication_required"
 
 
@@ -159,14 +152,14 @@ def test_missing_button_while_signed_in_is_stale_not_auth():
     instead of sending the operator through a pointless re-login."""
     b = FakeBrowser(signed_in=True, button=None)
     with pytest.raises(mw.MapsAutomationError) as e:
-        mw.set_saved("PID", "Starred", want_saved=True, **b.driver())
+        mw.set_saved("PID", LIST, want_saved=True, **b.driver())
     assert e.value.es_code == "maps_automation_stale"
 
 
 def test_missing_picker_raises_stale_so_the_agent_can_fall_back():
     b = FakeBrowser(items=[])
     with pytest.raises(mw.MapsAutomationError) as e:
-        mw.set_saved("PID", "Starred", want_saved=True, **b.driver())
+        mw.set_saved("PID", LIST, want_saved=True, **b.driver())
     assert e.value.es_code == "maps_automation_stale"
 
 
@@ -175,14 +168,14 @@ def test_unverified_write_raises_rather_than_reporting_success():
     point of re-reading the button label after clicking."""
     b = FakeBrowser(click_ok=False)
     with pytest.raises(mw.MapsAutomationError) as e:
-        mw.set_saved("PID", "Starred", want_saved=True, **b.driver())
+        mw.set_saved("PID", LIST, want_saved=True, **b.driver())
     assert e.value.es_code == "maps_automation_stale"
 
 
 def test_read_lists_reports_membership_without_clicking_anything():
     b = FakeBrowser()
     out = mw.read_lists("PID", **{k: v for k, v in b.driver().items() if k != "persist"})
-    assert {"name": "Starred places", "saved": False} in out
+    assert {"list": "Starred places", "in_list": False} in out
     assert b.clicked == []
 
 
@@ -205,3 +198,40 @@ def test_list_items_are_clicked_by_name_never_by_index():
     evaluate that clicks it."""
     assert "clean(x.textContent) ===" in mw._JS_CLICK_ITEM
     assert "it[" not in mw._JS_CLICK_ITEM
+
+
+def test_list_rows_are_scoped_to_the_results_pane():
+    """Rows carry jsaction="pane.*"; the navigation rail uses
+    "click:navigationrail.*" and is otherwise shaped identically to the
+    name-extraction heuristic — which is how the "10Austin & Cedar Park" chip
+    leaked in as a place literally named "10"."""
+    assert "/^pane\\./" in mw._JS_LIST_PLACES
+    assert "/^pane\\./" in mw._JS_CLICK_PLACE
+
+
+def test_identify_verifies_the_address_before_trusting_the_search():
+    """The place page has no ChIJ id, so resolve recovers one via a
+    coordinate-biased Places search. Bias is what makes it safe — unbiased,
+    "Torchy's Tacos" returns branches 200 miles away — and the address check is
+    what proves the search found THIS branch rather than a neighbouring one."""
+    url = "https://www.google.com/maps/place/X/@30.4529759,-97.8276136,17z/data=x"
+    good = lambda q, near=None, limit=None: [
+        {"place_id": "ChIJgood", "address": "11521 Ranch Rd 620 N E-1000, Austin, TX 78726, USA"}]
+    out = mw._identify("Torchy's Tacos", url, "11521 Ranch Rd 620 N E-1000, Austin, TX 78726",
+                       search=good)
+    assert out["place_id"] == "ChIJgood"
+
+    wrong = lambda q, near=None, limit=None: [
+        {"place_id": "ChIJwrong", "address": "1468 E Whitestone Blvd, Cedar Park, TX"}]
+    with pytest.raises(mw.MapsAutomationError) as e:
+        mw._identify("Torchy's Tacos", url, "11521 Ranch Rd 620 N E-1000, Austin, TX 78726",
+                     search=wrong)
+    assert e.value.es_code == "maps_place_not_found"
+
+
+def test_identify_refuses_without_coordinates():
+    """No coords means no bias, and an unbiased search is the unsafe free-text
+    resolution this whole design removed."""
+    with pytest.raises(mw.MapsAutomationError) as e:
+        mw._identify("X", "https://www.google.com/maps/place/X", None, search=lambda *a, **k: [])
+    assert e.value.es_code == "maps_automation_stale"
