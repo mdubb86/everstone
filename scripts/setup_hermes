@@ -23,16 +23,10 @@ import yaml, pathlib
 prof = pathlib.Path("/opt/data/hermes/profiles/everstone")
 cfg = prof / "config.yaml"
 d = (yaml.safe_load(cfg.read_text()) if cfg.exists() else {}) or {}
-# Locked tool surface: NO terminal/file. The agent reaches es (tasks +
-# calendar) only through the everstone-es MCP server, which Hermes includes
-# on every platform by default (MCP servers are not gated by this list
-# unless it explicitly names them), so no MCP entry is needed here. This is
-# the security boundary — Rocky can't run raw shell or clobber the vault.
-# NOTE: this seed only writes on first profile-create; EXISTING profiles must
-# have their platform_toolsets.telegram updated by hand (drop terminal/file).
-d.setdefault("platform_toolsets", {})["telegram"] = [
-    "skills", "vision", "clarify", "web", "memory", "browser",
-]
+# Tool surface is NOT seeded here any more — assert_toolsets.py enforces it on
+# EVERY boot (see below). Seeding once at create time made it a default rather
+# than an assertion: drift was never corrected, and cron was never covered at
+# all, so cron-spawned agents inherited the full toolset including terminal.
 # Browser = the camofox-flex (Camoufox) stealth browser, reached via the CAMOFOX_URL
 # env (set at the container level). DM-only: the access_hook blocks browser_* in group
 # chats. managed_persistence is FALSE: flex is deliberately login-less and ephemeral
@@ -72,6 +66,11 @@ if ! python3 /scripts/assert_telegram.py; then
     echo "[setup_hermes] FATAL: Telegram security assertion failed (see above)." >&2
     exit 1
 fi
+
+# Assert the agent's tool surface every boot: the curated allowlist per platform
+# (telegram + cron) and the toolset denylist. ENFORCES rather than failing —
+# a widened surface self-heals on restart instead of bricking the assistant.
+python3 /scripts/assert_toolsets.py
 
 # Wire GitHub auth for git: if config.yaml supplied a token, set up the
 # `store` credential helper pointing at $HERMES_HOME/.git-credentials.

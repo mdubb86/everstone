@@ -95,3 +95,41 @@ profile config directly. They survive reboots — EverStone won't overwrite them
 `/opt/data/hermes/profiles/everstone/config.yaml`) is the **sole source** for the
 asserted keys. The legacy `/opt/config/hermes/envdir` envdir was retired — it no
 longer exists and is not generated.
+
+## Tool surface (asserted every boot)
+
+`scripts/assert_toolsets.py` runs on every start and ENFORCES the agent's tool
+surface in the profile config. This is EverStone's core security boundary: the
+agent is locked to a curated set and reaches capabilities only through the
+`everstone-es` MCP server.
+
+| Key | Value | Why |
+|---|---|---|
+| `platform_toolsets.telegram` | `skills, vision, clarify, web, memory, browser` | the interactive DM surface |
+| `platform_toolsets.cron` | `skills` | unattended — deliberately NARROWER than DM |
+| `agent.disabled_toolsets` | `terminal, coding, file, code_execution, debugging, delegation` | second line of defence |
+
+MCP servers are merged in automatically and are not gated by these lists unless
+explicitly named, so cron still gets every `es_*` tool.
+
+**Why it is asserted rather than seeded.** It used to be written once, at profile
+creation, inside setup_hermes' "if the profile does not exist" block — a default,
+not an assertion. Drift from a Hermes upgrade, a hand-edit, or `/config` in chat
+was never corrected.
+
+**Why `cron` matters.** It was never listed, so cron-spawned agents fell through to
+the unconfigured-platform default: the FULL toolset. Verified by asking a real cron
+job to enumerate its own tools — it had `terminal`, `execute_code`, `write_file`,
+`patch`, `delegate_task`. The unattended surface was strictly MORE privileged than
+the DM surface. Note the access hook does NOT run in cron context at all (also
+verified), so toolset resolution is the only gate there.
+
+**Honest limit of the denylist.** Hermes subtracts TOOLSET names, not tool names,
+and `terminal`/`write_file`/`execute_code` appear in ~25 toolsets (every `hermes-*`
+platform bundle among them). Naming all of them would rot with each release. The
+ALLOWLIST is the real mechanism; the denylist covers the names most plausibly
+enabled by accident.
+
+**ENFORCE, not fail.** Unlike `assert_telegram.py`, drift self-heals on restart
+rather than refusing to boot — a dead assistant with a config you cannot edit from
+chat is worse, and drift is far more likely to be an upstream default than an attack.
