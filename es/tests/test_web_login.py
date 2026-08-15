@@ -1,3 +1,5 @@
+import time
+
 import es.web_login as wl
 from es.web_login import signed_in_from_home
 
@@ -37,7 +39,17 @@ CADDY = "\thandle /oauth {\n\t\treverse_proxy localhost:8081\n\t}\n\n\thandle /*
 
 def test_build_login_url_appends_novnc_path_and_autoconnect():
     assert build_login_url("https://everstone.tail.ts.net") == \
-        "https://everstone.tail.ts.net/web-login/vnc.html?path=web-login/websockify&autoconnect=true"
+        ("https://everstone.tail.ts.net/web-login/vnc.html?path=/web-login/websockify"
+         "&autoconnect=true&reconnect=true&reconnect_delay=2000")
+
+
+def test_build_login_url_asks_novnc_to_reconnect():
+    # The vnc watcher restarts x11vnc on any display change, which drops a LIVE session
+    # mid-login. Without reconnect, noVNC gives up on the first drop and the operator has to
+    # ask for a whole new link. (It does not rescue a failed FIRST connect — noVNC never
+    # retries one — which is why the arm waits for a stable path instead.)
+    url = build_login_url("https://everstone.tail.ts.net")
+    assert "reconnect=true" in url and "reconnect_delay=2000" in url
 
 
 def test_build_login_url_strips_trailing_slash():
@@ -255,6 +267,115 @@ def test_probe_home_closes_its_tab(monkeypatch):
     assert wl.probe_home("google") == {"acct": True}
     assert closed and closed[0][0].endswith("/tabs/T1")
     assert closed[0][1] == {"userId": "google"}
+
+
+# --- The window supervisor: /web-login/ must always tell the truth --------------------------
+# The vnc watcher restarts x11vnc whenever Camoufox's display changes, and x11vnc exits when its
+# X server goes away, so the noVNC path can serve, drop, and come back — during startup AND long
+# after. Arming on the first successful probe published a link into that gap, and a one-shot arm
+# then left the route pointing at a dead pipe for the rest of the window; either way the operator
+# got "Failed to connect to server." with nothing to act on. The real chain is exercised in
+# e2e/test_web_login_vnc.py — these pin the DECISIONS: what a sequence of probes arms on, and
+# what it takes the route back down.
+
+READY, DOWN = (True, ":0"), (False, None)
+# stable_for/interval below => 6 consecutive passes on one display are required to arm.
+
+
+def _run_window(monkeypatch, samples, run_for=0.5, arm_timeout=0.2, grace=3):
+    """Drive _run_window over a scripted probe sequence; return the route swaps it made.
+    Past the end of the script the server reads as down, so only the script can arm."""
+    swaps, seq = [], list(samples)
+    sample = lambda: seq.pop(0) if seq else DOWN  # noqa: E731
+    monkeypatch.setattr(wl, "_swap_route", lambda fn: swaps.append(fn.__name__))
+    monkeypatch.setattr(wl, "_vnc_ready", sample)
+    monkeypatch.setattr(wl, "_rfb_over_websockify", lambda *a, **k: sample()[0])
+    wl._run_window(wl._next_generation(), interval=0.01, stable_for=0.05,
+                   arm_timeout=arm_timeout, watch_every=0.01, grace=grace, lifetime=run_for)
+    time.sleep(run_for + 0.2)  # past the worker's own lifetime, so its verdict is final
+    return swaps
+
+
+def test_arm_requires_continuous_readiness(monkeypatch):
+    assert _run_window(monkeypatch, [READY] * 6)[0] == "add_route_block"
+
+
+def test_arm_ignores_a_single_lucky_probe(monkeypatch):
+    # One pass, then the server drops (x11vnc restarting): the pass must not arm, and the streak
+    # must restart from zero — the 5 that follow are not enough. It gives up instead of arming.
+    assert _run_window(monkeypatch, [READY, DOWN] + [READY] * 5) == ["close_route_block"]
+
+
+def test_arm_resets_the_streak_when_the_display_changes(monkeypatch):
+    # A display change means the browser restarted onto a new Xvfb and x11vnc was restarted with
+    # it — the old streak proves nothing about the new server, so it must not count toward arming.
+    assert _run_window(monkeypatch, [READY] * 5 + [(True, ":1")] * 2) == ["close_route_block"]
+
+
+def test_arm_gives_up_to_the_closed_page(monkeypatch):
+    # Never armed within the timeout: fall back to the static page, or the preparing page would
+    # meta-refresh forever.
+    assert _run_window(monkeypatch, [DOWN] * 500) == ["close_route_block"]
+
+
+def test_a_dead_pipe_takes_the_route_back_down(monkeypatch):
+    # The regression that reaches the operator: the browser is reaped/killed/restarted AFTER the
+    # link was sent. The route must stop serving noVNC instead of leaving a dead pipe behind it.
+    swaps = _run_window(monkeypatch, [READY] * 6 + [DOWN] * 3)
+    assert swaps[:2] == ["add_route_block", "prepping_route_block"]
+
+
+def test_a_single_missed_probe_does_not_disarm(monkeypatch):
+    # One blip is not a dead window — disarming on it would bounce a working login back to the
+    # preparing page for no reason.
+    swaps = _run_window(monkeypatch, [READY] * 6 + [DOWN] + [READY] * 40, run_for=0.3)
+    assert swaps == ["add_route_block"]
+
+
+def test_a_window_that_recovers_gets_re_armed(monkeypatch):
+    # x11vnc restarted onto a new display: preparing page while it's gone, live noVNC once it is
+    # back and stable. The operator's page self-refreshes across the whole dip.
+    swaps = _run_window(monkeypatch, [READY] * 6 + [DOWN] * 3 + [(True, ":1")] * 8)
+    assert swaps[:3] == ["add_route_block", "prepping_route_block", "add_route_block"]
+
+
+def test_a_newer_call_supersedes_a_pending_window(monkeypatch):
+    swaps = []
+    monkeypatch.setattr(wl, "_swap_route", lambda fn: swaps.append(fn.__name__))
+    monkeypatch.setattr(wl, "_vnc_ready", lambda: READY)
+    stale = wl._next_generation()
+    wl._next_generation()  # a later open_signin/close claims the window
+    wl._run_window(stale, interval=0.01, stable_for=0.05, arm_timeout=0.2, lifetime=0.3)
+    time.sleep(0.3)
+    assert swaps == [], "a superseded window must not touch the route"
+
+
+def test_the_window_beats_the_login_tab_while_it_is_open(monkeypatch):
+    # VNC keystrokes never reach camofox's API, so without this the tab looks abandoned from the
+    # moment it opens and the reapers take the browser out from under the operator.
+    beats = []
+    monkeypatch.setattr(wl, "_swap_route", lambda fn: None)
+    monkeypatch.setattr(wl, "_vnc_ready", lambda: READY)
+    monkeypatch.setattr(wl, "_rfb_over_websockify", lambda *a, **k: True)
+    monkeypatch.setattr(wl, "_beat", lambda p, t: beats.append((p, t)))
+    monkeypatch.setattr(wl, "_KEEPALIVE_INTERVAL", 0.02)
+    wl._run_window(wl._next_generation(), "google", "TAB1", interval=0.01, stable_for=0.02,
+                   arm_timeout=0.2, watch_every=0.01, lifetime=0.2)
+    time.sleep(0.4)
+    assert beats and beats[0] == ("google", "TAB1")
+
+
+def test_no_tab_means_no_beats(monkeypatch):
+    beats = []
+    monkeypatch.setattr(wl, "_swap_route", lambda fn: None)
+    monkeypatch.setattr(wl, "_vnc_ready", lambda: READY)
+    monkeypatch.setattr(wl, "_rfb_over_websockify", lambda *a, **k: True)
+    monkeypatch.setattr(wl, "_beat", lambda p, t: beats.append((p, t)))
+    monkeypatch.setattr(wl, "_KEEPALIVE_INTERVAL", 0.02)
+    wl._run_window(wl._next_generation(), "google", None, interval=0.01, stable_for=0.02,
+                   arm_timeout=0.2, watch_every=0.01, lifetime=0.2)
+    time.sleep(0.4)
+    assert beats == []
 
 
 def test_probe_home_closes_its_tab_even_when_evaluate_raises(monkeypatch):

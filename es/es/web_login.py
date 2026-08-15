@@ -54,8 +54,24 @@ _ROUTE_RE = re.compile(r"\thandle_path /web-login/\* \{.*?\n\t\}\n", re.DOTALL)
 
 def build_login_url(public_url):
     """The noVNC seeding URL under the public base — WS path prefixed so it connects under
-    the /web-login/ mount, and auto-connecting so the operator just taps and logs in."""
-    return public_url.rstrip("/") + "/web-login/vnc.html?path=web-login/websockify&autoconnect=true"
+    the /web-login/ mount, and auto-connecting so the operator just taps and logs in.
+
+    `path` must be ABSOLUTE. noVNC resolves it with `new URL(path, location.href)` against a page
+    at /web-login/vnc.html, so the relative form (`web-login/websockify`) becomes
+    /web-login/web-login/websockify. That still happens to work here — Caddy's handle_path strips
+    the first segment and websockify upgrades a WebSocket on any path — but it only works by
+    luck, and any proxy in front that is stricter about paths breaks the login for good.
+
+    `reconnect` covers the drop that happens MID-LOGIN: the vnc plugin's watcher restarts
+    x11vnc whenever Camoufox's display changes (browser restart), which kills a live session.
+    Without it noVNC shows "Something went wrong, connection is closed" and stops. Note it does
+    NOT rescue a failed FIRST connect — noVNC starts with `inhibitReconnect = true` and only
+    clears it in connectFinished (app/ui.js), so a never-connected client never retries. That
+    hole is closed on the server side instead: _run_window only reveals noVNC while the path is
+    STABLY serving, so the first connect isn't made into a race.
+    """
+    return (public_url.rstrip("/") + "/web-login/vnc.html?path=/web-login/websockify"
+            "&autoconnect=true&reconnect=true&reconnect_delay=2000")
 
 
 def _set_route_block(caddyfile_text, block):
@@ -144,6 +160,7 @@ def run_es_login(profile, *, probe_home, capture, open_signin, close_window, log
 
 
 # --- Real I/O deps (thin; integration-tested in-container, not unit-tested) --------------
+import base64
 import os
 import socket
 import threading
@@ -238,46 +255,169 @@ def _swap_route(to_block_fn):
             _reload_caddy(to_block_fn(f.read()))
 
 
-# x11vnc listens here once the browser's display is up (the vnc plugin starts it on demand).
-_VNC_HOST, _VNC_PORT = "127.0.0.1", 5900
+# websockify (noVNC) bridges browser WebSockets to x11vnc (:5900) once the browser's display is
+# up — the vnc plugin starts both on demand. We probe the WEBSOCKIFY hop, not x11vnc directly:
+# that's the exact path the operator's browser takes through Caddy.
+_NOVNC_HOST, _NOVNC_PORT = "127.0.0.1", 6080
 _route_lock = threading.Lock()
 # Generation guard: each open_signin/close bumps this so a stale background arm can't flip the
 # route back open after a newer call has moved on.
 _arm_generation = 0
 
 
-def _vnc_ready():
-    """True once x11vnc is actually serving on :5900 — accepts a connection AND sends the RFB
-    banner. A bare TCP accept isn't enough (a half-up server can accept then hang)."""
+def _next_generation():
+    """Claim the window: supersedes every background worker started by an earlier call."""
+    global _arm_generation
+    _arm_generation += 1
+    return _arm_generation
+
+
+def _rfb_over_websockify(timeout=2.0):
+    """True once the WHOLE noVNC path serves an RFB banner: a WebSocket upgrade to websockify
+    (:6080) that x11vnc (:5900) answers with `RFB `. This is deliberately end-to-end — the same
+    hop chain the operator's browser makes through Caddy — because a raw :5900 accept can pass
+    while websockify is still refusing/wedged, and the client only cares about the whole chain.
+
+    Hand-rolled (~20 lines) rather than pulling in a websocket dependency for one probe: send the
+    RFC 6455 handshake, expect 101, then read the first server frame's payload (unmasked, and
+    small — the banner is 12 bytes, so no continuation handling is needed)."""
+    key = base64.b64encode(os.urandom(16)).decode()
+    req = (f"GET /websockify HTTP/1.1\r\nHost: {_NOVNC_HOST}:{_NOVNC_PORT}\r\n"
+           "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+           f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+           "Sec-WebSocket-Protocol: binary\r\n\r\n")
     try:
-        with socket.create_connection((_VNC_HOST, _VNC_PORT), timeout=1) as s:
-            s.settimeout(1)
-            return s.recv(3) == b"RFB"
-    except OSError:
+        with socket.create_connection((_NOVNC_HOST, _NOVNC_PORT), timeout=timeout) as s:
+            s.settimeout(timeout)
+            s.sendall(req.encode())
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                chunk = s.recv(4096)
+                if not chunk:
+                    return False
+                buf += chunk
+            head, rest = buf.split(b"\r\n\r\n", 1)
+            if b" 101 " not in head.split(b"\r\n", 1)[0]:
+                return False
+            # One frame: [FIN|opcode][len][payload]. len < 126 always here (banner is 12 bytes).
+            while len(rest) < 2:
+                chunk = s.recv(4096)
+                if not chunk:
+                    return False
+                rest += chunk
+            payload = rest[2:]
+            while len(payload) < 4:
+                chunk = s.recv(4096)
+                if not chunk:
+                    return False
+                payload += chunk
+            return payload.startswith(b"RFB ")
+    except (OSError, ValueError):
         return False
 
 
-def _arm_when_ready(timeout=30.0, interval=0.5):
-    """Background: once the VNC server is up, swap /web-login/ from the "preparing" page to the
-    live noVNC (the self-refreshing page then lands on it on its next reload). If the browser
-    never comes up within `timeout`, drop to the "closed" page so it can't refresh forever.
-    Generation-guarded so a newer open_signin/close supersedes a stale run."""
-    global _arm_generation
-    _arm_generation += 1
-    gen = _arm_generation
+def _vnc_display():
+    """The display x11vnc is currently attached to, per camofox's vnc plugin — or None if the
+    watcher has no live x11vnc. Used as an identity: if this CHANGES between probes, the browser
+    restarted onto a new display and x11vnc was restarted with it."""
+    try:
+        r = httpx.get(f"{_CAMOFOX}/vnc/status", timeout=2)
+        j = r.json() if r.status_code == 200 else {}
+    except Exception:  # noqa: BLE001
+        return None
+    return j.get("display") if j.get("running") else None
+
+
+def _vnc_ready():
+    """One readiness SAMPLE: (path serves RFB, display it's serving). Both parts matter — see
+    _run_window for why a single positive sample is not enough to arm on."""
+    return _rfb_over_websockify(), _vnc_display()
+
+
+# camofox reaps a tab that has seen no API activity for TAB_INACTIVITY_MS (5 min by default),
+# then closes the now-empty session, which lets the browser idle-shut-down — taking Xvfb and
+# x11vnc with it. A hand login is minutes of typing that camofox cannot see (VNC input never
+# reaches its API), so an un-beaten login window loses its sign-in page mid-login and then its
+# whole browser. GET /tabs/<id>/downloads is the cheapest call that bumps BOTH counters the
+# reapers read (tabState.toolCalls and session.lastAccess) and it touches nothing on the page.
+# 30s, not 60: camofox's reapers run on a 60s tick, so a beat every 30s guarantees every tick
+# sees activity even if one beat is lost to a hiccup.
+_KEEPALIVE_INTERVAL = 30.0
+
+
+def _beat(profile, tab_id):
+    """One keep-alive beat. Best-effort: a missed beat costs nothing (the reapers need a full
+    quiet tick), and the supervisor notices if the window dies anyway."""
+    try:
+        httpx.get(f"{_CAMOFOX}/tabs/{tab_id}/downloads", params={"userId": profile}, timeout=10)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _swap_if_current(gen, to_block_fn):
+    if _arm_generation == gen:
+        _swap_route(to_block_fn)
+
+
+def _run_window(gen, profile=None, tab_id=None, interval=0.5, stable_for=3.0,
+                arm_timeout=30.0, watch_every=5.0, grace=3, lifetime=900.0):
+    """Own /web-login/ for the lifetime of one login window, keeping the route HONEST: it shows
+    the live noVNC only while the noVNC path actually works, and the self-refreshing "preparing"
+    page whenever it doesn't. Generation-guarded, so a newer open_signin or a close supersedes it.
+
+    Arming waits for `stable_for` seconds of CONTINUOUS readiness on the SAME display, not the
+    first passing probe. The vnc plugin's watcher (plugins/vnc/vnc-watcher.sh) restarts x11vnc
+    whenever Camoufox's display changes, and x11vnc exits outright when its X server goes away, so
+    :5900 can serve, drop and come back during startup. Arming inside that gap published a link
+    that could not connect — and noVNC's autoconnect never retries a first connect (see
+    build_login_url), so the operator was stuck with "Failed to connect to server."
+
+    Watching matters just as much, because the pipe can die at any point AFTER arming — the
+    browser can be idle-reaped, OOM-killed or restarted onto a new display — and a one-shot arm
+    left the route pointing at a dead websockify for the rest of the window. `grace` consecutive
+    failures put the preparing page back, which self-refreshes and re-arms if the path returns,
+    or falls through to the "not active" page if it doesn't come back within `arm_timeout`. The
+    operator always sees the truth, and something they can act on.
+    """
+    # Samples are `interval` apart, so N samples span (N-1)*interval seconds of continuous uptime.
+    needed = int(stable_for / interval) + 1
 
     def worker():
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        end = time.monotonic() + lifetime
+        armed, streak, on_display, misses = False, 0, None, 0
+        arm_deadline = time.monotonic() + arm_timeout
+        next_watch = next_beat = time.monotonic() + _KEEPALIVE_INTERVAL
+        while time.monotonic() < end:
             if _arm_generation != gen:
-                return  # superseded
-            if _vnc_ready():
-                if _arm_generation == gen:
-                    _swap_route(add_route_block)
-                return
+                return  # superseded by a newer open_signin/close
+            now = time.monotonic()
+            if not armed:
+                ok, display = _vnc_ready()
+                if ok and display and display == on_display:
+                    streak += 1
+                elif ok and display:
+                    on_display, streak = display, 1  # first pass, or the display just changed
+                else:
+                    on_display, streak = None, 0
+                if streak >= needed:
+                    _swap_if_current(gen, add_route_block)
+                    armed, misses, next_watch = True, 0, now + watch_every
+                elif now >= arm_deadline:
+                    # Never came up (or never came back) — stop the preparing page refreshing
+                    # forever and tell the operator to ask for a fresh link.
+                    _swap_if_current(gen, close_route_block)
+                    return
+            elif now >= next_watch:
+                next_watch = now + watch_every
+                misses = 0 if _rfb_over_websockify() else misses + 1
+                if misses >= grace:
+                    _swap_if_current(gen, prepping_route_block)
+                    armed, streak, on_display = False, 0, None
+                    arm_deadline = now + arm_timeout
+            if tab_id and now >= next_beat:
+                next_beat = now + _KEEPALIVE_INTERVAL
+                _beat(profile, tab_id)
             time.sleep(interval)
-        if _arm_generation == gen:  # never came up — stop the preparing page's refresh loop
-            _swap_route(close_route_block)
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -286,11 +426,14 @@ def open_signin(profile):
     # 1. Show the self-refreshing "preparing" page immediately, so an early click gets a friendly
     #    self-advancing page instead of a dead noVNC while the browser + x11vnc spin up.
     _swap_route(prepping_route_block)
-    # 2. Launch the browser onto its display (the vnc plugin brings up Xvfb + x11vnc).
-    _navigate(profile, _SIGNIN_URL)
-    # 3. Flip to the live noVNC as soon as :5900 accepts — in the background, so es_login returns
-    #    the (preparing) link immediately.
-    _arm_when_ready()
+    # 2. Claim the window BEFORE the (blocking, multi-second) launch, so a close that lands while
+    #    we're still starting up supersedes the supervisor below.
+    gen = _next_generation()
+    # 3. Launch the browser onto its display (the vnc plugin brings up Xvfb + x11vnc).
+    tab = _navigate(profile, _SIGNIN_URL)
+    # 4. Hand the route to the supervisor: it arms when the noVNC path is stably serving, keeps
+    #    the tab alive while the operator types, and takes the route back down if the path dies.
+    _run_window(gen, profile, (tab or {}).get("tabId"))
 
 
 def close_window():
