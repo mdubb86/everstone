@@ -22,6 +22,7 @@ from es.capabilities import cal as cal_cap
 from es.capabilities import cal_support
 from es.capabilities import clock as clock_cap
 from es.capabilities import maps as maps_cap
+from es.capabilities import maps_write
 from es.capabilities import weather as weather_cap
 
 mcp = FastMCP("everstone-es")
@@ -526,6 +527,84 @@ def es_weather(location: str, start: Optional[str] = None,
         units=unit_system,
         periods=weather_cap.build_periods(hours, tzname, window),
     )
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_star(place_id: str, list: Optional[str] = None) -> dict:
+    """Save (star) a place to a Google Maps list — this is what makes it appear in Android Auto /
+    Google Automotive.
+
+    `place_id` is REQUIRED and exact. Get it from es_maps_search for a BUSINESS, or
+    es_maps_geocode for a STREET ADDRESS — they return different ids for the same spot, and
+    starring the geocoded one saves the address ("11521 N FM 620") rather than the place
+    ("Torchy's Tacos"). For a named business, always use es_maps_search.
+
+    `list` defaults to maps.save_list in config ("Starred", matching Google's "Starred places").
+    Idempotent: already-saved returns changed=false. Drives the logged-in browser, so it can
+    raise authentication_required — run es_login then retry. On maps_automation_stale, fall back
+    to sending the Maps deep link."""
+    return maps_write.set_saved(place_id, list or maps_write.save_list_default(),
+                                want_saved=True, **maps_write.live_driver())
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_unstar(place_id: str, list: Optional[str] = None) -> dict:
+    """Remove a place from a Google Maps saved list. `place_id` is REQUIRED and exact; idempotent.
+
+    Use the SAME place_id that was starred. Resolving free text here would search all of Google
+    Maps rather than your saved places, so "unstar Torchy's" could silently resolve to a different
+    branch and report changed=false while the one you meant stays saved."""
+    return maps_write.set_saved(place_id, list or maps_write.save_list_default(),
+                                want_saved=False, **maps_write.live_driver())
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_lists() -> list:
+    """The account's Google Maps saved lists with place counts: [{list, count}].
+
+    Use this to discover exact list names — es_maps_star/unstar match them EXACTLY."""
+    d = maps_write.live_driver()
+    return maps_write.all_lists(**{k: v for k, v in d.items() if k != "persist"})
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_list_places(list: str) -> list:
+    """Clean place NAMES in a saved list, in display order: ["Torchy's Tacos", "Uchi"].
+
+    Names only — Google's saved-list view carries no place ids. Duplicates are returned as
+    duplicates (two starred branches of a chain look identical here). Turn a name into a
+    place_id with es_maps_resolve; act with es_maps_star/unstar."""
+    d = maps_write.live_driver()
+    return maps_write.list_places(list, **{k: v for k, v in d.items() if k != "persist"})
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_place_lists(place_id: str) -> list:
+    """Which of the account's lists contain THIS place: [{list, in_list}].
+
+    The only EXACT way to ask whether a place is saved — es_maps_list_places answers by name,
+    which cannot distinguish two branches of a chain. Do not test with es_maps_star: calling it
+    on an unsaved place SAVES it."""
+    d = maps_write.live_driver()
+    return maps_write.read_lists(place_id, **{k: v for k, v in d.items() if k != "persist"})
+
+
+@mcp.tool()
+@mcp_envelope
+def es_maps_resolve(list: str, name: str) -> list:
+    """A place name in a list -> [{place_id, address}]. ALWAYS an array.
+
+    Slower than the other reads (it opens the place to identify it). A name is not a key, so a
+    chain with two starred branches returns two entries — pick using the addresses. Feed the
+    place_id to es_maps_unstar."""
+    d = maps_write.live_driver()
+    return maps_write.resolve_name(list, name, search=maps_cap.search,
+                                   **{k: v for k, v in d.items() if k != "persist"})
 
 
 @mcp.tool()
