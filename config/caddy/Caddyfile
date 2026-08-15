@@ -61,6 +61,17 @@
 		reverse_proxy localhost:8787
 	}
 
+	# Authenticated-browser login seeding (noVNC). This path is ALWAYS owned so an idle or
+	# expired link never falls through to the Hermes UI below (which would look like a broken
+	# auth prompt). Base state is this static "not active" page; es_login (es/es/web_login.py)
+	# swaps the whole block to `reverse_proxy 127.0.0.1:6080` (websockify/noVNC) while a login
+	# window is open, then swaps it back on close/timeout. Keep this block in sync with
+	# _CLOSED_BLOCK in web_login.py (the runtime swap matches it by the handle_path matcher).
+	handle_path /web-login/* {
+		header Content-Type "text/html; charset=utf-8"
+		respond `<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Login window closed</title><body style='font-family:system-ui,sans-serif;max-width:34rem;margin:14vh auto;padding:0 1.5rem;text-align:center;color:#1c1c1e'><h1 style='font-size:1.35rem;margin-bottom:.4rem'>Login window isn't active</h1><p style='color:#555;line-height:1.55'>There's no sign-in in progress right now. Ask your assistant to start the login again, then open the fresh link it sends you.</p></body>` 200
+	}
+
 	# Everything else (bare /, old root bookmarks, bare /hermes without the slash) →
 	# send to the UI. /hermes/* is handled above, so this never loops. The `*`
 	# matcher is REQUIRED: `redir /hermes/ 302` mis-parses `/hermes/` as a path

@@ -30,7 +30,7 @@ def test_missing_signal_is_not_signed_in():
     assert signed_in_from_home(None) is False
 
 
-from es.web_login import build_login_url, add_route_block, remove_route_block
+from es.web_login import build_login_url, add_route_block, close_route_block
 
 CADDY = "\thandle /oauth {\n\t\treverse_proxy localhost:8081\n\t}\n\n\thandle /* {\n\t\tredir * /hermes/ 302\n\t}\n"
 
@@ -57,13 +57,37 @@ def test_add_route_block_is_idempotent():
     assert add_route_block(once) == once
 
 
-def test_remove_route_block_removes_it():
-    with_block = add_route_block(CADDY)
-    assert "web-login" not in remove_route_block(with_block)
+def test_close_route_block_swaps_armed_to_static_page():
+    armed = add_route_block(CADDY)
+    closed = close_route_block(armed)
+    # The path stays OWNED (never falls through to the catch-all / Hermes UI) ...
+    assert "handle_path /web-login/*" in closed
+    assert closed.index("/web-login/") < closed.index("handle /*")
+    # ... but no longer proxies to the noVNC backend ...
+    assert "reverse_proxy 127.0.0.1:6080" not in closed
+    # ... it serves the static "not active" page instead.
+    assert "Login window isn't active" in closed
 
 
-def test_remove_route_block_noop_when_absent():
-    assert remove_route_block(CADDY) == CADDY
+def test_close_route_block_inserts_static_when_absent():
+    out = close_route_block(CADDY)
+    assert "handle_path /web-login/*" in out
+    assert "Login window isn't active" in out
+    assert out.index("/web-login/") < out.index("handle /*")
+
+
+def test_close_route_block_is_idempotent():
+    once = close_route_block(CADDY)
+    assert close_route_block(once) == once
+
+
+def test_add_route_block_swaps_static_to_armed():
+    # The reported bug: base config has the static page; arming must switch it to the proxy
+    # (an idle-then-armed link previously stayed the static/Hermes page).
+    armed = add_route_block(close_route_block(CADDY))
+    assert "reverse_proxy 127.0.0.1:6080" in armed
+    assert "Login window isn't active" not in armed
+    assert armed.index("/web-login/") < armed.index("handle /*")
 
 
 from es.web_login import has_session_cookies

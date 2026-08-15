@@ -19,12 +19,37 @@ def signed_in_from_home(signal):
     return bool(s.get("acct")) and not bool(s.get("signin"))
 
 
-# The noVNC seeding surface + its Caddy route. The route exists ONLY during an active login
-# window and is removed after (never in the base config) — see the persistent-web-login spec.
-# websockify serves noVNC on container-localhost:6080 (never published); Caddy is the only
-# ingress, so the route's presence/absence is the access gate.
-_ROUTE_BLOCK = "\thandle_path /web-login/* {\n\t\treverse_proxy 127.0.0.1:6080\n\t}\n\n"
+import re
+
+# The noVNC seeding surface + its Caddy route. The /web-login/ path is ALWAYS present in the
+# Caddyfile: its base state is the static "not active" page (config/caddy/Caddyfile), and
+# es_login SWAPS the block's body rather than adding/removing it. So an idle or expired link
+# never falls through to the catch-all (the Hermes UI password screen) — it shows a clear
+# "ask the assistant to start the login again" page. websockify serves noVNC on
+# container-localhost:6080 (never published); Caddy is the only ingress, so the block's MODE
+# — reverse-proxy vs static page — is the access gate.
+_ARMED_BLOCK = "\thandle_path /web-login/* {\n\t\treverse_proxy 127.0.0.1:6080\n\t}\n"
+# The auth target is generic (google today, others later), so the copy says "login", not
+# "Google login". Keep this page in sync with the /web-login/ block in config/caddy/Caddyfile
+# (the base copy) — the swap matches the block by its handle_path matcher, so drift still
+# works; an identical copy just keeps the base page and the post-close page the same.
+_CLOSED_PAGE = ("<!doctype html><meta charset=utf-8>"
+                "<meta name=viewport content='width=device-width,initial-scale=1'>"
+                "<title>Login window closed</title>"
+                "<body style='font-family:system-ui,sans-serif;max-width:34rem;margin:14vh auto;"
+                "padding:0 1.5rem;text-align:center;color:#1c1c1e'>"
+                "<h1 style='font-size:1.35rem;margin-bottom:.4rem'>Login window isn't active</h1>"
+                "<p style='color:#555;line-height:1.55'>There's no sign-in in progress right now. "
+                "Ask your assistant to start the login again, then open the fresh link it sends "
+                "you.</p></body>")
+_CLOSED_BLOCK = ("\thandle_path /web-login/* {\n"
+                 "\t\theader Content-Type \"text/html; charset=utf-8\"\n"
+                 "\t\trespond `" + _CLOSED_PAGE + "` 200\n"
+                 "\t}\n")
 _CATCH_ALL = "\thandle /* {"
+# Match the whole /web-login/ handle block (any body) so a swap is robust against formatting
+# drift between here and the Caddyfile template. Non-greedy to the first line that closes it.
+_ROUTE_RE = re.compile(r"\thandle_path /web-login/\* \{.*?\n\t\}\n", re.DOTALL)
 
 
 def build_login_url(public_url):
@@ -33,16 +58,24 @@ def build_login_url(public_url):
     return public_url.rstrip("/") + "/web-login/vnc.html?path=web-login/websockify&autoconnect=true"
 
 
+def _set_route_block(caddyfile_text, block):
+    """Ensure the /web-login/ handle block is exactly `block`: swap it in place if present,
+    else insert it just before the catch-all so the specific path wins. Idempotent. A function
+    replacement (not a string) keeps backslashes in `block` literal."""
+    if _ROUTE_RE.search(caddyfile_text):
+        return _ROUTE_RE.sub(lambda _m: block, caddyfile_text, count=1)
+    return caddyfile_text.replace(_CATCH_ALL, block + "\n" + _CATCH_ALL, 1)
+
+
 def add_route_block(caddyfile_text):
-    """Insert the /web-login route just before the catch-all so the specific path wins. Idempotent."""
-    if "/web-login/" in caddyfile_text:
-        return caddyfile_text
-    return caddyfile_text.replace(_CATCH_ALL, _ROUTE_BLOCK + _CATCH_ALL, 1)
+    """Arm: point /web-login/ at the noVNC backend (websockify :6080) for an active login."""
+    return _set_route_block(caddyfile_text, _ARMED_BLOCK)
 
 
-def remove_route_block(caddyfile_text):
-    """Remove the /web-login route block. Idempotent (no-op when absent)."""
-    return caddyfile_text.replace(_ROUTE_BLOCK, "", 1)
+def close_route_block(caddyfile_text):
+    """Close: swap /web-login/ back to the static "login not active" page. Never removes the
+    block, so an expired/idle link shows the friendly page instead of the Hermes UI."""
+    return _set_route_block(caddyfile_text, _CLOSED_BLOCK)
 
 
 # The durable Google session-anchor cookies. Their PRESENCE is a cheap NECESSARY condition
@@ -175,7 +208,7 @@ def open_signin(profile):
 
 def close_window():
     with open(_CADDYFILE) as f:
-        _reload_caddy(remove_route_block(f.read()))
+        _reload_caddy(close_route_block(f.read()))
 
 
 # No polling: login completion is handled by the human ("done" → agent re-calls es_login, which
