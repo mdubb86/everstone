@@ -174,12 +174,19 @@ _JS_LIST_PLACES = r"""(() => {
   return out;
 })()"""
 
+# Clicks the Nth row matching `want`. The index addresses DUPLICATES — two
+# starred branches of a chain are identical in this view — and is safe because
+# it is consumed within the single read that produced it, never stored.
 _JS_CLICK_PLACE = r"""(() => {
-  const want = %s;
+  const want = %s, wantIdx = %d;
+  let n = 0;
   for (const el of document.querySelectorAll('button,[role=button]')) {
     if (!/^pane\./.test(el.getAttribute('jsaction')||'')) continue;
     const full = (el.textContent||'').trim();
-    if (full.startsWith(want) && !/Private/.test(full)) { el.click(); return true; }
+    if (full.startsWith(want) && !/Private/.test(full)) {
+      if (n === wantIdx) { el.click(); return true; }
+      n++;
+    }
   }
   return false;
 })()"""
@@ -444,50 +451,72 @@ def resolve_name(list_name, name, *, navigate, evaluate, sleep, probe_signed_in,
     result's address matches the page's. Coordinate bias is what makes this safe:
     unbiased, "Torchy's Tacos" returns branches 200 miles away.
     """
+    # Pass 1: count how many rows carry this name.
     tab_id = navigate(_SAVED_URL)
     try:
         _open_saved_list(tab_id, list_name, evaluate=evaluate, sleep=sleep,
                          probe_signed_in=probe_signed_in)
         names = evaluate(tab_id, _JS_LIST_PLACES) or []
-        matches = [n for n in names if n == name]
-        if not matches:
-            raise MapsAutomationError(
-                "maps_place_not_found",
-                f"{name!r} is not in {list_name!r}. Present: {', '.join(names) or '(empty)'}.")
-        out = []
-        for _ in matches:
-            if not evaluate(tab_id, _JS_CLICK_PLACE % json.dumps(name)):
-                _raise_stale_or_auth(f"Could not open {name!r} in the list.", probe_signed_in)
+    finally:
+        if close_tab:
+            close_tab(tab_id)
+    n_matches = sum(1 for n in names if n == name)
+    if not n_matches:
+        raise MapsAutomationError(
+            "maps_place_not_found",
+            f"{name!r} is not in {list_name!r}. Present: {', '.join(names) or '(empty)'}.")
+
+    # Pass 2: identify each match. Clicking navigates away from the list, so the
+    # list is reopened per match rather than relying on back-navigation —
+    # slower, but this is already the slow tool and predictability is worth more
+    # than a few seconds.
+    out = []
+    for idx in range(n_matches):
+        tab_id = navigate(_SAVED_URL)
+        try:
+            _open_saved_list(tab_id, list_name, evaluate=evaluate, sleep=sleep,
+                             probe_signed_in=probe_signed_in)
+            if not evaluate(tab_id, _JS_CLICK_PLACE % (json.dumps(name), idx)):
+                _raise_stale_or_auth(
+                    f"Could not open match {idx + 1} of {name!r}.", probe_signed_in)
             sleep(_POST_LOAD_SETTLE_S)
             url = evaluate(tab_id, "(() => location.href)()") or ""
             address = evaluate(tab_id, _JS_ADDRESS)
             out.append(_identify(name, url, address, search=search))
-            break  # duplicates need per-row addressing; see the TODO below
-        return out
-    finally:
-        if close_tab:
-            close_tab(tab_id)
-
-
-def _latlng(url):
-    import re
-    m = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", url or "")
-    return (m.group(1), m.group(2)) if m else (None, None)
+        finally:
+            if close_tab:
+                close_tab(tab_id)
+    return out
 
 
 def _identify(name, url, address, *, search):
-    lat, lng = _latlng(url)
-    if not lat:
+    """Recover the real place_id for a row we clicked through to.
+
+    Searches Places for "<name>, <address>" using the address shown on the place
+    page, then VERIFIES the result's address matches it.
+
+    NOT coordinate bias — an earlier version used the @lat,lng in the URL, which
+    is the map VIEWPORT centre, not the place. With one pin it happened to sit on
+    the place and looked correct; with two starred branches the viewport shifted
+    and Places returned a third branch 15 miles away.
+
+    NOT the address alone either — a bare address query returns the ADDRESS
+    entity, a different place_id from the business at it (the same
+    business-vs-address split as geocode vs search). Measured, for one branch:
+
+        "Torchy's Tacos, 11521 Ranch Rd 620 N..." -> ChIJs0xt...  (the business)
+        "11521 Ranch Rd 620 N..."                 -> ChIJUW5f...  (the address)
+    """
+    if not address:
         raise MapsAutomationError(
             "maps_automation_stale",
-            f"No coordinates in the place URL for {name!r}; cannot identify it.")
-    hits = search(name, near=f"{lat},{lng}", limit=3) or []
+            f"No address on the place page for {name!r}; cannot identify it.")
+    hits = search(f"{name}, {address}", limit=1) or []
     if not hits:
-        raise MapsAutomationError("maps_place_not_found",
-                                  f"Places returned nothing for {name!r} near {lat},{lng}.")
+        raise MapsAutomationError(
+            "maps_place_not_found", f"Places returned nothing for {name!r} at {address!r}.")
     best = hits[0]
-    # VERIFY rather than trust: compare against the address shown on the page.
-    if address and best.get("address"):
+    if best.get("address"):
         a = "".join(ch for ch in address.lower() if ch.isalnum())
         b = "".join(ch for ch in best["address"].lower() if ch.isalnum())
         if not (a.startswith(b[:18]) or b.startswith(a[:18])):

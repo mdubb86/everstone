@@ -209,29 +209,53 @@ def test_list_rows_are_scoped_to_the_results_pane():
     assert "/^pane\\./" in mw._JS_CLICK_PLACE
 
 
-def test_identify_verifies_the_address_before_trusting_the_search():
-    """The place page has no ChIJ id, so resolve recovers one via a
-    coordinate-biased Places search. Bias is what makes it safe — unbiased,
-    "Torchy's Tacos" returns branches 200 miles away — and the address check is
-    what proves the search found THIS branch rather than a neighbouring one."""
-    url = "https://www.google.com/maps/place/X/@30.4529759,-97.8276136,17z/data=x"
-    good = lambda q, near=None, limit=None: [
-        {"place_id": "ChIJgood", "address": "11521 Ranch Rd 620 N E-1000, Austin, TX 78726, USA"}]
-    out = mw._identify("Torchy's Tacos", url, "11521 Ranch Rd 620 N E-1000, Austin, TX 78726",
-                       search=good)
-    assert out["place_id"] == "ChIJgood"
+ADDR = "11521 Ranch Rd 620 N E-1000, Austin, TX 78726"
 
-    wrong = lambda q, near=None, limit=None: [
-        {"place_id": "ChIJwrong", "address": "1468 E Whitestone Blvd, Cedar Park, TX"}]
+
+def test_identify_searches_name_AND_address():
+    """Name+address is what recovers the BUSINESS. A bare address query returns
+    the ADDRESS entity — a different place_id — the same business-vs-address
+    split as geocode vs search. Measured on one branch:
+        "Torchy's Tacos, 11521 Ranch Rd 620 N..." -> ChIJs0xt (business)
+        "11521 Ranch Rd 620 N..."                 -> ChIJUW5f (address)
+    """
+    seen = {}
+    def search(q, limit=None):
+        seen["q"] = q
+        return [{"place_id": "ChIJgood", "address": ADDR + ", USA"}]
+    out = mw._identify("Torchy's Tacos", "irrelevant", ADDR, search=search)
+    assert out["place_id"] == "ChIJgood"
+    assert seen["q"].startswith("Torchy's Tacos,") and ADDR in seen["q"]
+
+
+def test_identify_does_not_use_url_coordinates():
+    """An earlier version biased the search by the URL's @lat,lng — but that is
+    the map VIEWPORT centre, not the place. With one starred pin it coincided
+    and looked right; with two, the viewport shifted and Places returned a
+    branch 15 miles away. The URL is now unused."""
+    out = mw._identify("X", "https://maps.google.com/@1.0,2.0,17z/data=x", ADDR,
+                       search=lambda q, limit=None: [{"place_id": "P", "address": ADDR}])
+    assert out["place_id"] == "P"
+
+
+def test_identify_rejects_a_mismatched_address():
+    """Verification is what makes this safe: confirm Places found THIS branch,
+    not a neighbouring one."""
     with pytest.raises(mw.MapsAutomationError) as e:
-        mw._identify("Torchy's Tacos", url, "11521 Ranch Rd 620 N E-1000, Austin, TX 78726",
-                     search=wrong)
+        mw._identify("Torchy's Tacos", "u", ADDR,
+                     search=lambda q, limit=None: [
+                         {"place_id": "ChIJwrong", "address": "1468 E Whitestone Blvd, Cedar Park"}])
     assert e.value.es_code == "maps_place_not_found"
 
 
-def test_identify_refuses_without_coordinates():
-    """No coords means no bias, and an unbiased search is the unsafe free-text
-    resolution this whole design removed."""
+def test_identify_refuses_without_an_address():
     with pytest.raises(mw.MapsAutomationError) as e:
-        mw._identify("X", "https://www.google.com/maps/place/X", None, search=lambda *a, **k: [])
+        mw._identify("X", "u", None, search=lambda *a, **k: [])
     assert e.value.es_code == "maps_automation_stale"
+
+
+def test_click_place_addresses_duplicates_by_index():
+    """resolve must return one entry PER matching row. Two starred branches of a
+    chain are identical in the list view, so the Nth-match index is the only way
+    to reach the second — consumed within a single read, never stored."""
+    assert "wantIdx" in mw._JS_CLICK_PLACE
