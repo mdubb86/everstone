@@ -60,6 +60,18 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
     via `es.vault_client.VaultClient` (see "Notes vault & LiveSync" below).
   - **Contacts / web** — `es_contacts_search` (read-only Google contacts) and a
     web-fetch tool (`trafilatura`).
+  - **Maps** — reads via Google Maps Platform (`es_maps_geocode` / `search` / `place` /
+    `directions` / `distance_matrix`), plus **Saved Places writes driven through the
+    authenticated `google` browser** (`es_maps_star` / `unstar`), because no Google API
+    writes Saved Places. Starring is what surfaces a place in Android Auto / Google
+    Automotive. Discovery: `es_maps_lists` (what lists exist), `es_maps_list_places`
+    (names in a list), `es_maps_place_lists` (which lists hold a place — the only EXACT
+    membership test), `es_maps_resolve` (name → `[{place_id, address}]`).
+    **`place_id` is the only key that acts; names are only for looking.** Saved-list rows
+    carry no identifier of any kind, so `resolve` clicks through and recovers the id by
+    searching Places for `"<name>, <address>"` and verifying the address matches — see
+    `capabilities/maps_write.py`, which isolates every selector so a Google UI change has
+    one place to fix and always degrades to `maps_automation_stale` + a deep-link fallback.
   - **Weather** — a single `es_weather(location, start, end)` → Google Maps Platform
     **Weather API**, reusing `maps.api_key`. Hourly endpoint **only**: its 240h horizon
     equals daily's, and daily can't share a shape with hourly observations (its
