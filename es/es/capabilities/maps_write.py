@@ -18,6 +18,8 @@ DOM contract (verified live 2026-08-14):
   - each item's textContent is "<name>Private · N places" — the list name is
     everything before "Private"
 """
+import json
+
 from es import config
 
 _PROFILE = "google"
@@ -25,7 +27,10 @@ _PLACE_URL = "https://www.google.com/maps/place/?q=place_id:{pid}"
 _SAVE_BTN = "Save"
 _SAVED_BTN = "Saved"
 _ITEM_SELECTOR = "[role=menuitemradio]"
-_SAVE_SELECTOR = 'button[aria-label="Save"],button[aria-label="Saved"]'
+# Google rewrites this label by list count: "Save" -> "Saved" -> "Saved (2)".
+# Matching the first two exactly meant a place in 2+ lists became invisible and
+# EVERY operation failed with save=0. Prefix-match instead.
+_SAVE_SELECTOR = 'button[aria-label^="Save"]'
 _DEFAULT_LIST = "Starred"          # prefix-matches Google's "Starred places"
 
 
@@ -93,13 +98,13 @@ def save_list_default() -> str:
 
 _JS_BUTTON_LABEL = """(() => {
   const b = [...document.querySelectorAll('button,[role=button]')]
-    .find(x => ['Save','Saved'].includes((x.getAttribute('aria-label')||'').trim()));
+    .find(x => /^Save/.test((x.getAttribute('aria-label')||'').trim()));
   return b ? b.getAttribute('aria-label').trim() : null;
 })()"""
 
 _JS_CLICK_SAVE = """(() => {
   const b = [...document.querySelectorAll('button,[role=button]')]
-    .find(x => ['Save','Saved'].includes((x.getAttribute('aria-label')||'').trim()));
+    .find(x => /^Save/.test((x.getAttribute('aria-label')||'').trim()));
   if (!b) return false;
   b.click(); return true;
 })()"""
@@ -109,10 +114,15 @@ _JS_READ_ITEMS = """(() => [...document.querySelectorAll('%s')].map(x => ({
   checked: x.getAttribute('aria-checked')
 })))()""" % _ITEM_SELECTOR
 
+# Find AND click by NAME in one evaluate. Indices are unusable: the picker
+# reorders, floating checked lists to the top, so an index read in one call can
+# point at a different row by the next — which is how a "star" landed in
+# Favorites and corrupted the state this was trying to read.
 _JS_CLICK_ITEM = """(() => {
-  const it = [...document.querySelectorAll('%s')];
-  if (!it[%%d]) return false;
-  it[%%d].click(); return true;
+  const clean = t => (t||'').replace(/[\ue000-\uf8ff]/g, '').split('Private')[0].trim();
+  const el = [...document.querySelectorAll('%s')].find(x => clean(x.textContent) === %%s);
+  if (!el) return false;
+  el.click(); return true;
 })()""" % _ITEM_SELECTOR
 
 _JS_COUNT = "(() => document.querySelectorAll(%r).length)()"
@@ -246,7 +256,7 @@ def _set_saved_once(place_id, target_list, *, want_saved, navigate, evaluate, sl
         # Indices are only valid for the read that produced them — the picker
         # reorders, floating the checked list to position 0 — so this must click
         # within the same picker session that was just read.
-        if not evaluate(tab_id, _JS_CLICK_ITEM % (target["index"], target["index"])):
+        if not evaluate(tab_id, _JS_CLICK_ITEM % json.dumps(target["name"])):
             raise MapsAutomationError(
                 "maps_automation_stale",
                 f"Could not click the {target['name']!r} list entry — the UI has likely changed.")

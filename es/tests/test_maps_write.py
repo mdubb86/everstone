@@ -91,22 +91,24 @@ class FakeBrowser:
 
     def _eval(self, tab, js):
         if "querySelectorAll(" in js and ".length)()" in js:      # await_selector probe
-            if "menuitemradio" in js:
-                return len(self.items)
-            return 0 if self.button is None else 1
-        if self.button is None and "['Save','Saved'].includes" in js:
+            return len(self.items) if "menuitemradio" in js else (0 if self.button is None else 1)
+        if self.button is None and "/^Save/" in js:
             return False if "b.click()" in js else None
-        if "aria-checked" in js and "menuitemradio" in js and "click" not in js:
+        if "aria-checked" in js and "menuitemradio" in js and "clean" not in js:
             return self.items
         if "KeyboardEvent" in js:
             return True
-        if "['Save','Saved'].includes" in js and "b.click()" in js:
+        if "/^Save/" in js and "b.click()" in js:
             return True
-        if "['Save','Saved'].includes" in js:
+        if "/^Save/" in js:
             return self.button
-        if "it[" in js:                       # click a list item
-            idx = int(js.split("it[")[1].split("]")[0])
-            self.clicked.append(idx)
+        if "clean(x.textContent)" in js:      # click a list item BY NAME
+            name = js.split("=== ")[1].split(")")[0].strip().strip('"')
+            idx = next((i for i, it in enumerate(self.items)
+                        if mw.list_name(it["text"]) == name), None)
+            if idx is None:
+                return False
+            self.clicked.append(name)
             if self.click_ok:                      # toggle, like the real radio
                 now = self.items[idx].get("checked") != "true"
                 self.items[idx] = {**self.items[idx], "checked": "true" if now else "false"}
@@ -119,7 +121,7 @@ def test_star_clicks_the_target_list_and_verifies():
     b = FakeBrowser()
     out = mw.set_saved("PID", "Starred", want_saved=True, **b.driver())
     assert out == {"place_id": "PID", "list": "Starred places", "saved": True, "changed": True}
-    assert b.clicked == [4]
+    assert b.clicked == ["Starred places"]
     assert b.persisted
 
 
@@ -138,7 +140,7 @@ def test_unstar_only_clicks_when_currently_saved():
     items[4]["checked"] = "true"
     b = FakeBrowser(items=items, button="Saved")
     mw.set_saved("PID", "Starred", want_saved=False, **b.driver())
-    assert b.clicked == [4]
+    assert b.clicked == ["Starred places"]
 
 
 def test_signed_out_raises_authentication_required():
@@ -182,3 +184,24 @@ def test_read_lists_reports_membership_without_clicking_anything():
     out = mw.read_lists("PID", **{k: v for k, v in b.driver().items() if k != "persist"})
     assert {"name": "Starred places", "saved": False} in out
     assert b.clicked == []
+
+
+def test_save_button_matches_by_prefix_not_exact_label():
+    """Google rewrites the label by list count: Save -> Saved -> "Saved (2)".
+
+    Exact-matching ['Save','Saved'] made a place in TWO lists invisible: the
+    selector found nothing, every click was a no-op, and every operation failed
+    with save=0. This looked like flaky timing for hours; it was a string match.
+    """
+    assert mw._SAVE_SELECTOR == 'button[aria-label^="Save"]'
+    for label in ("Save", "Saved", "Saved (2)", "Saved (12)"):
+        assert label.startswith("Save")
+
+
+def test_list_items_are_clicked_by_name_never_by_index():
+    """The picker REORDERS — checked lists float to the top — so an index read
+    in one call can address a different row in the next. That is how a star
+    landed in Favorites. The click must find its row by name, in the same
+    evaluate that clicks it."""
+    assert "clean(x.textContent) ===" in mw._JS_CLICK_ITEM
+    assert "it[" not in mw._JS_CLICK_ITEM
