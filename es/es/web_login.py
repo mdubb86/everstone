@@ -121,6 +121,24 @@ def _evaluate(profile, tab_id, expression):
     return (r.json() or {}).get("result") or {}
 
 
+def _close_tab(profile, tab_id):
+    """Close a tab. Best-effort: cleanup must never mask the caller's result.
+
+    camofox's POST /tabs ALWAYS creates a new tab (sessionKey only groups them,
+    it does not dedupe), so every navigate leaks one unless the caller closes it.
+    Nothing here did, and the leak is invisible: GET /tabs returns [] unless you
+    pass ?userId=<profile>. Measured effect — camofox RSS grew 938MB -> 2013MB
+    with 8 abandoned tabs holding live google.com pages, taking the VM to 159MB
+    free and swapping.
+    """
+    if not tab_id:
+        return
+    try:
+        httpx.delete(f"{_CAMOFOX}/tabs/{tab_id}", params={"userId": profile}, timeout=20)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def probe_home(profile):
     # Navigate to google.com, then WAIT for the definitive top-right affordance to render (avatar
     # OR sign-in link) before reading it — robust against the header rendering a beat after nav
@@ -129,12 +147,17 @@ def probe_home(profile):
     tab = _navigate(profile, _HOME_URL)
     tid = tab.get("tabId")
     try:
-        httpx.post(f"{_CAMOFOX}/tabs/{tid}/wait",
-                   json={"userId": profile, "selector": _AFFORDANCE_SELECTOR, "timeout": 10000},
-                   timeout=15)
-    except Exception:  # noqa: BLE001 — selector-not-found is fine; the evaluate handles the fallback
-        pass
-    return _evaluate(profile, tid, _PROBE_JS)
+        try:
+            httpx.post(f"{_CAMOFOX}/tabs/{tid}/wait",
+                       json={"userId": profile, "selector": _AFFORDANCE_SELECTOR, "timeout": 10000},
+                       timeout=15)
+        except Exception:  # noqa: BLE001 — selector-not-found is fine; the evaluate handles the fallback
+            pass
+        return _evaluate(profile, tid, _PROBE_JS)
+    finally:
+        # run_warm_keep calls this every 6h and run_es_login on every retry, so
+        # an unclosed tab here leaked four live google.com pages a day, forever.
+        _close_tab(profile, tid)
 
 
 def _reload_caddy(text):

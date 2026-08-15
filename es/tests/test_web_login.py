@@ -1,3 +1,4 @@
+import es.web_login as wl
 from es.web_login import signed_in_from_home
 
 # Liveness is decided by a LIVE probe to google.com — the most natural page to poll, so
@@ -184,3 +185,37 @@ def test_web_login_defaults_to_9378_not_flex(monkeypatch):
     import es.web_login as wl
     importlib.reload(wl)
     assert wl._CAMOFOX == "http://localhost:9378"
+
+
+def test_probe_home_closes_its_tab(monkeypatch):
+    """probe_home leaked a tab on EVERY call. run_warm_keep calls it every 6h,
+    so EverStone abandoned four live google.com pages a day — camofox RSS grew
+    938MB -> 2013MB with 8 orphaned tabs, taking the VM to 159MB free. The leak
+    was invisible because GET /tabs returns [] without a ?userId param.
+    """
+    closed = []
+    monkeypatch.setattr(wl, "_navigate", lambda p, u: {"tabId": "T1"})
+    monkeypatch.setattr(wl, "_evaluate", lambda p, t, e: {"acct": True})
+    monkeypatch.setattr(wl.httpx, "post", lambda *a, **k: None)
+    monkeypatch.setattr(wl.httpx, "delete",
+                        lambda url, **k: closed.append((url, k.get("params"))))
+    assert wl.probe_home("google") == {"acct": True}
+    assert closed and closed[0][0].endswith("/tabs/T1")
+    assert closed[0][1] == {"userId": "google"}
+
+
+def test_probe_home_closes_its_tab_even_when_evaluate_raises(monkeypatch):
+    """The close must be in a finally — a failing probe is exactly when the
+    retry loop runs again, so a leak on the error path compounds fastest."""
+    closed = []
+    monkeypatch.setattr(wl, "_navigate", lambda p, u: {"tabId": "T2"})
+    def boom(*a, **k):
+        raise RuntimeError("evaluate failed")
+    monkeypatch.setattr(wl, "_evaluate", boom)
+    monkeypatch.setattr(wl.httpx, "post", lambda *a, **k: None)
+    monkeypatch.setattr(wl.httpx, "delete", lambda url, **k: closed.append(url))
+    try:
+        wl.probe_home("google")
+    except RuntimeError:
+        pass
+    assert closed and closed[0].endswith("/tabs/T2")
