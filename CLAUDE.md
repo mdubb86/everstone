@@ -56,7 +56,9 @@ cd e2e && uv run pytest test_routing.py -v   # single e2e module
 
 **`esadmin` is separate** (operator surface, `scripts/everstone_cli.py`, Typer): `status`/`logs`/`restart`/`backup`/`sync-state`/`auth`/`model`/`session`/`setup`/`calendars`/`chat`. Don't conflate it with the agent's `es_*` tools.
 
-**Caddy routing** (`config/caddy/Caddyfile`, served on `:80`): `/db/*`→CouchDB, `/caldav/*`→Radicale, `/hermes/*`→web UI (subpath on purpose — PWA service-worker scoping), `/oauth/google/callback`→the OAuth helper, `/version` and `/health` are direct responses; everything else 302s to `/hermes/`.
+**Caddy routing** (`config/caddy/Caddyfile`, served on `:80`): `/db/*`→CouchDB, `/caldav/*`→Radicale, `/hermes/*`→web UI (subpath on purpose — PWA service-worker scoping), `/oauth/google/callback`→the OAuth helper, `/web-login/*`→the noVNC login window, `/version` and `/health` are direct responses; everything else 302s to `/hermes/`.
+
+**`/web-login/` is a state machine, not a static route** — `es/es/web_login.py` rewrites that block (closed → preparing → armed `reverse_proxy :6080`) and reloads Caddy, supervised for the life of a login window. Don't reason about it from the Caddyfile alone; the rules and the failures behind them are in `docs/architecture.md` → "Authenticated browser & the `/web-login/` window."
 
 **Notes sync chain:** the agent writes to the vault at `/opt/data/vault` via `es_notes_*`; the **livesync-bridge** mirrors that directory ↔ CouchDB; Obsidian's Self-hosted LiveSync plugin syncs CouchDB ↔ devices. The bridge's storage peer must run with `useChokidar: true` + `scanOfflineChanges: true` (set in `generate_livesync_bridge_config`) — the native Deno watcher silently drops writes into subdirectories created after it starts (e.g. each day's `journal/YYYY-MM-DD/`). Full detail (chunk-tweak matching, remote-lock): `docs/architecture.md` → "Notes vault & LiveSync."
 

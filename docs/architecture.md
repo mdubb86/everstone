@@ -72,6 +72,9 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
     searching Places for `"<name>, <address>"` and verifying the address matches — see
     `capabilities/maps_write.py`, which isolates every selector so a Google UI change has
     one place to fix and always degrades to `maps_automation_stale` + a deep-link fallback.
+    The session those writes ride on is seeded and kept alive as described in **"Authenticated
+    browser & the `/web-login/` window"**; `maps_automation_stale` vs `authentication_required`
+    is the split between "the UI moved" and "run `es_login`".
   - **Weather** — a single `es_weather(location, start, end)` → Google Maps Platform
     **Weather API**, reusing `maps.api_key`. Hourly endpoint **only**: its 240h horizon
     equals daily's, and daily can't share a shape with hourly observations (its
@@ -137,11 +140,95 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   credential. `es` deps must include **`google-auth-oauthlib`** (the flow lib
   gcalcli used to provide).
 
+## Authenticated browser & the `/web-login/` window
+
+Some capabilities have **no API at all** — Google Saved Places is the standing example — so
+EverStone keeps a real, logged-in browser session and drives it. The login itself can only be
+done by a human (password, 2FA, consent screens), so `es_login` **seeds** a session by putting
+that browser on screen for the operator, once, and everything else keeps it alive.
+
+- **Two isolated Camoufox instances, and the isolation is structural.** `camofox-flex` (:9377,
+  root `/opt/camofox-flex`) serves the agent's flexible `browser_*` tools: **no plugins**, no
+  pinned fingerprint, profiles under `/run/camofox-flex` **wiped at every start**.
+  `camofox-auth` (:9378, root `/opt/camofox-browser`) owns the **authenticated** session:
+  `fingerprint` + `vnc` + `persistence` plugins, profiles under `/opt/data/browser/profiles`.
+  They need **separate install roots** because camofox resolves `camofox.config.json` from its
+  own `ROOT_DIR` with no env override — a shared root would force a shared plugin set, and
+  therefore a shared fingerprint and a reachable login. **`es` reads `CAMOFOX_AUTH_URL`**;
+  pointing it at `CAMOFOX_URL` would silently drive the login-less instance. All of this is
+  regression-guarded by `e2e/test_browser_isolation.py`, because a Dockerfile edit could
+  re-merge the two and everything would still look healthy.
+- **Liveness is a LIVE probe, never stored cookies.** `probe_home` browses google.com and reads
+  the top-right affordance (account avatar vs a `ServiceLogin` link); ambiguous ⇒ signed out.
+  The probe is also self-healing (it creates/restores the session, and the persistence plugin
+  re-injects the durable login). `run_warm_keep` (s6 longrun, every 6h) browses so the
+  short-lived `*PSIDTS` cookies keep rotating, gated on a cheap durable-cookie pre-check — and
+  it **never** opens a login window; only a real tool use may do that.
+- **The seeding surface is noVNC, mounted at `/web-login/`:**
+  `browser → Caddy /web-login/* → websockify :6080 → x11vnc :5900 → Xvfb ← Camoufox renders`.
+  The vnc plugin's watcher starts websockify **once** and then attaches — and **re-attaches** —
+  x11vnc to whatever display Camoufox is currently using. websockify binds container-localhost
+  and is never published, so **the Caddy block's mode is the entire access gate**.
+- **That block is a three-state machine owned by `es`** (`web_login.py`), and it is **always
+  present** in the Caddyfile so an idle or expired link never falls through to the catch-all
+  (the Hermes UI password screen): **closed** (static "login isn't active — ask the assistant"),
+  **preparing** (static, self-refreshing), **armed** (`reverse_proxy 127.0.0.1:6080`). Swaps
+  match the block by its `handle_path` matcher, so formatting drift between the template and the
+  swap can't break them. **GOTCHA:** the static pages must be **brace-free** — Caddy's `respond`
+  treats `{…}` as placeholders — which is why "preparing" advances with a `meta refresh` rather
+  than JS or CSS.
+
+### Why a supervisor, not a one-shot arm
+
+`_run_window` owns the route for the whole life of one login window. Each of its rules is a
+failure that reached the operator as **"Failed to connect to server."** — a dead end, because
+**noVNC never retries a FIRST connect** (`inhibitReconnect` starts `true` and is only cleared
+in `connectFinished`), so the server must never publish a link into a gap. `reconnect=true` on
+the URL only covers a drop **after** a successful connect, which is a different (real) case: the
+watcher restarts x11vnc on any display change.
+
+- **The browser launch happens inside the supervisor, retried** (~45s), never on `es_login`'s
+  thread. camofox-auth binds its port seconds **after** the container reports healthy, and a cold
+  Camoufox start can outrun an HTTP timeout; either way the old code raised *after* the route was
+  already swapped to "preparing", leaving the operator refreshing a page that could never
+  advance. A slow start now costs a few more seconds of "Preparing…", and `es_login` returns the
+  link immediately instead of blocking on a browser launch.
+- **Arming requires the WHOLE path, stable.** Readiness is a real WebSocket upgrade to websockify
+  answered by an `RFB` banner — not a raw `:5900` accept, which can pass while websockify is
+  wedged — held **continuously for ~3s on one display** (a display change resets the streak).
+  x11vnc exits with its X server and is restarted by the watcher, so a single passing probe
+  proves nothing.
+- **The route keeps being checked after arming**, and after a few consecutive failures goes back
+  to "preparing" (self-refreshing, so it re-arms if the path returns) and then to "closed" if it
+  doesn't. The invariant is that **`/web-login/` never serves noVNC that a fresh client can't
+  connect to** — a one-shot arm left a dead pipe exposed for the rest of the window.
+- **The login tab is beaten every 30s.** camofox reaps by *API* activity, and VNC keystrokes
+  never touch its API, so a hand login looks abandoned from the moment it opens: tab reaped →
+  empty session closed → browser idle-shutdown → Xvfb and x11vnc gone, with the route still
+  armed. Measured with shortened reapers: armed at 7s, dead at 155s. `GET /tabs/<id>/downloads`
+  is the cheapest call that bumps both counters the reapers read and touches nothing on the page.
+- A **generation guard** means a newer `open_signin`/`close_window` supersedes every background
+  worker from an older call, and a fail-safe timer closes the window after 10 minutes if the
+  operator never returns.
+
+**GOTCHA — the noVNC `path` param must be ABSOLUTE.** noVNC resolves it with
+`new URL(path, location.href)` against `/web-login/vnc.html`, so a relative `web-login/websockify`
+becomes `/web-login/web-login/websockify`. That still works here *by luck* — `handle_path` strips
+one segment and websockify upgrades a WebSocket on any path — but behind a stricter proxy it
+fails **100% of the time, immediately**, while every server-side check looks perfect. No unit
+test can catch this: it lives in the URL the client builds for itself. `e2e/test_web_login_vnc.py`
+therefore drives an actual browser (via the flex instance) at the real page and asserts both the
+resolved WS path and that it reaches a desktop, alongside hand-rolled WS clients that assert the
+route's invariant continuously through the open→armed→dead lifecycle.
+
 ## Notes vault & LiveSync
 
-The `es_notes_*` tools write to an Obsidian vault on disk at `/opt/data/vault`
-(journal entries under `journal/YYYY-MM-DD/`, curated docs under `topics/`). That
-directory is the filesystem end of a three-link chain:
+The `es_notes_*` tools write to an Obsidian vault on disk at `/opt/data/vault`: journal entries
+under `Journal/YYYY-MM-DD/`, curated docs under **category** folders — `obsidian.categories` in
+`config.yaml`, defaulting to `[Topics]`, with `obsidian.journal_folder` defaulting to `Journal`.
+Categories are top-level folders the agent may file into (e.g. `Recipes`, `People`, `Places`);
+folder names are **case-sensitive** on disk, so a lowercase `topics/` left over from an older
+vault is simply invisible to `es`. That directory is the filesystem end of a three-link chain:
 
 `es_notes_* → /opt/data/vault → livesync-bridge ⇄ CouchDB ⇄ Obsidian (Self-hosted LiveSync)`
 
