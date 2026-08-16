@@ -359,23 +359,50 @@ def test_the_window_beats_the_login_tab_while_it_is_open(monkeypatch):
     monkeypatch.setattr(wl, "_rfb_over_websockify", lambda *a, **k: True)
     monkeypatch.setattr(wl, "_beat", lambda p, t: beats.append((p, t)))
     monkeypatch.setattr(wl, "_KEEPALIVE_INTERVAL", 0.02)
-    wl._run_window(wl._next_generation(), "google", "TAB1", interval=0.01, stable_for=0.02,
+    monkeypatch.setattr(wl, "_launch_signin_tab", lambda p, **k: "TAB1")
+    wl._run_window(wl._next_generation(), "google", interval=0.01, stable_for=0.02,
                    arm_timeout=0.2, watch_every=0.01, lifetime=0.2)
     time.sleep(0.4)
     assert beats and beats[0] == ("google", "TAB1")
 
 
-def test_no_tab_means_no_beats(monkeypatch):
-    beats = []
-    monkeypatch.setattr(wl, "_swap_route", lambda fn: None)
+def test_a_browser_that_never_comes_up_closes_the_window(monkeypatch):
+    # The launch is what strands an operator: the route is already showing the self-refreshing
+    # preparing page, so a launch that fails silently leaves them refreshing forever. Say so.
+    swaps, beats = [], []
+    monkeypatch.setattr(wl, "_swap_route", lambda fn: swaps.append(fn.__name__))
     monkeypatch.setattr(wl, "_vnc_ready", lambda: READY)
-    monkeypatch.setattr(wl, "_rfb_over_websockify", lambda *a, **k: True)
     monkeypatch.setattr(wl, "_beat", lambda p, t: beats.append((p, t)))
     monkeypatch.setattr(wl, "_KEEPALIVE_INTERVAL", 0.02)
-    wl._run_window(wl._next_generation(), "google", None, interval=0.01, stable_for=0.02,
+    monkeypatch.setattr(wl, "_launch_signin_tab", lambda p, **k: None)
+    wl._run_window(wl._next_generation(), "google", interval=0.01, stable_for=0.02,
                    arm_timeout=0.2, watch_every=0.01, lifetime=0.2)
-    time.sleep(0.4)
-    assert beats == []
+    time.sleep(0.3)
+    assert swaps == ["close_route_block"] and beats == []
+
+
+def test_the_launch_waits_out_a_browser_that_is_not_up_yet(monkeypatch):
+    # camofox-auth binds its port well after the container reports healthy, and a cold Camoufox
+    # start can outlast one HTTP timeout. Neither should cost the operator their login.
+    calls = []
+
+    def flaky(profile, url, timeout=None):
+        calls.append(url)
+        if len(calls) < 3:
+            raise OSError("connection refused")
+        return {"tabId": "T9"}
+
+    monkeypatch.setattr(wl, "_navigate", flaky)
+    assert wl._launch_signin_tab("google", retry_for=30, backoff=0) == "T9"
+    assert len(calls) == 3
+
+
+def test_the_launch_gives_up_rather_than_hanging_forever(monkeypatch):
+    def never(profile, url, timeout=None):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(wl, "_navigate", never)
+    assert wl._launch_signin_tab("google", retry_for=0) is None
 
 
 def test_probe_home_closes_its_tab_even_when_evaluate_raises(monkeypatch):

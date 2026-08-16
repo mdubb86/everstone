@@ -430,6 +430,31 @@ def test_the_route_stops_serving_novnc_when_the_pipe_dies(everstone):
     assert _route_state(base) in ("preparing", "closed")
 
 
+def test_a_login_opened_before_the_browser_is_up_still_arms(everstone):
+    """A login triggered while camofox-auth isn't answering must still end up at a desktop.
+
+    Not a hypothetical: the container reports healthy several seconds before camofox-auth binds
+    its port, and a cold Camoufox launch on a loaded box can outlast a single HTTP timeout. The
+    launch used to run on es_login's critical path, so either one raised out of the tool AFTER
+    the route had been swapped to "preparing" — leaving the operator refreshing a page that could
+    never advance. Stopping the service outright reproduces that window deterministically.
+    """
+    c, base = everstone["container_name"], everstone["base_url"]
+    _close_window(c)
+    stop = _exec(c, "s6-svc", "-d", "/run/service/camofox-auth")
+    assert stop.returncode == 0, f"could not stop camofox-auth: {stop.stderr}"
+    try:
+        _open_signin(c)  # must not raise, and must not strand the route
+        time.sleep(5)
+        assert _route_state(base) == "preparing"
+    finally:
+        up = _exec(c, "s6-svc", "-u", "/run/service/camofox-auth")
+        assert up.returncode == 0, f"could not restart camofox-auth: {up.stderr}"
+
+    violations, _ = _watch_until_armed(base, timeout=180)
+    assert not violations, f"armed while the RFB path was down: {violations}"
+
+
 def test_an_open_login_window_outlives_the_idle_reapers(impatient_everstone):
     """An open login window must survive a human's pace — the failure that reaches the operator.
 

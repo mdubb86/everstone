@@ -182,8 +182,9 @@ _PROBE_JS = ('(()=>{const signin=!!document.querySelector(\'a[href*="ServiceLogi
              'return {acct, signin};})()')
 
 
-def _navigate(profile, url):
-    r = httpx.post(f"{_CAMOFOX}/tabs", json={"userId": profile, "sessionKey": "default", "url": url}, timeout=30)
+def _navigate(profile, url, timeout=30):
+    r = httpx.post(f"{_CAMOFOX}/tabs", json={"userId": profile, "sessionKey": "default", "url": url},
+                   timeout=timeout)
     r.raise_for_status()
     return r.json()
 
@@ -359,7 +360,29 @@ def _swap_if_current(gen, to_block_fn):
         _swap_route(to_block_fn)
 
 
-def _run_window(gen, profile=None, tab_id=None, interval=0.5, stable_for=3.0,
+def _launch_signin_tab(profile, retry_for=45.0, timeout=90.0, backoff=5.0):
+    """Open the sign-in page, tolerating a browser that is cold or not up yet. Returns the tab id,
+    or None if it never came up.
+
+    Both failures are real and neither is exotic. camofox-auth binds its port well after the
+    container reports healthy, so a login triggered in that window used to die on connect; and a
+    first Camoufox launch on a loaded box can outlast a short HTTP timeout. Either way the old
+    code raised out of open_signin AFTER the route had been swapped to "preparing" — so the
+    operator was left refreshing a page that would never advance, forever. Retrying here (and
+    doing it in the background, off the tool's critical path) turns a slow start into a slightly
+    longer "Preparing your login…" instead of a dead end. `retry_for` bounds the RETRIES, not the
+    attempts: a service that takes half a minute to bind shouldn't exhaust three quick tries."""
+    give_up_at = time.monotonic() + retry_for
+    while True:
+        try:
+            return (_navigate(profile, _SIGNIN_URL, timeout=timeout) or {}).get("tabId")
+        except Exception:  # noqa: BLE001 — connection refused, launch timeout, 5xx: all retryable
+            if time.monotonic() >= give_up_at:
+                return None
+            time.sleep(backoff)
+
+
+def _run_window(gen, profile=None, interval=0.5, stable_for=3.0,
                 arm_timeout=30.0, watch_every=5.0, grace=3, lifetime=900.0):
     """Own /web-login/ for the lifetime of one login window, keeping the route HONEST: it shows
     the live noVNC only while the noVNC path actually works, and the self-refreshing "preparing"
@@ -383,6 +406,13 @@ def _run_window(gen, profile=None, tab_id=None, interval=0.5, stable_for=3.0,
     needed = int(stable_for / interval) + 1
 
     def worker():
+        # Launch INSIDE the supervisor: the browser can take a while to come up, and none of that
+        # belongs on es_login's critical path — the operator already has the link and is looking
+        # at the self-refreshing preparing page. The arm clock only starts once we're launched.
+        tab_id = _launch_signin_tab(profile) if profile else None
+        if profile and not tab_id:
+            _swap_if_current(gen, close_route_block)  # browser never came up — say so, don't spin
+            return
         end = time.monotonic() + lifetime
         armed, streak, on_display, misses = False, 0, None, 0
         arm_deadline = time.monotonic() + arm_timeout
@@ -423,17 +453,17 @@ def _run_window(gen, profile=None, tab_id=None, interval=0.5, stable_for=3.0,
 
 
 def open_signin(profile):
-    # 1. Show the self-refreshing "preparing" page immediately, so an early click gets a friendly
-    #    self-advancing page instead of a dead noVNC while the browser + x11vnc spin up.
+    """Open a login window: show the preparing page NOW, and hand everything else to a background
+    supervisor so es_login answers immediately with a link the operator can already open."""
+    # The preparing page first, so a link tapped a second later gets a friendly self-advancing
+    # page rather than a dead noVNC or the Hermes UI.
     _swap_route(prepping_route_block)
-    # 2. Claim the window BEFORE the (blocking, multi-second) launch, so a close that lands while
-    #    we're still starting up supersedes the supervisor below.
+    # Claim the window before anything slow, so a close landing mid-launch supersedes us.
     gen = _next_generation()
-    # 3. Launch the browser onto its display (the vnc plugin brings up Xvfb + x11vnc).
-    tab = _navigate(profile, _SIGNIN_URL)
-    # 4. Hand the route to the supervisor: it arms when the noVNC path is stably serving, keeps
-    #    the tab alive while the operator types, and takes the route back down if the path dies.
-    _run_window(gen, profile, (tab or {}).get("tabId"))
+    # The supervisor launches the browser (retrying a cold start), arms the route once the noVNC
+    # path is stably serving, keeps the tab alive while the operator types, and takes the route
+    # back down if the path dies.
+    _run_window(gen, profile)
 
 
 def close_window():
