@@ -8,6 +8,7 @@ Today this only understands PDFs — there is no real format dispatch yet
 Phase 2's other document formats; SUPPORTED is the seam that will grow.
 """
 import json
+import os
 import re
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -15,7 +16,7 @@ from typing import List, Optional, Tuple
 from pdfminer.pdfdocument import PDFEncryptionError
 from pdfplumber.utils.exceptions import PdfminerException
 
-from es import doc_cache, paths
+from es import config, doc_cache, paths
 from es.capabilities import doc_pdf
 
 MAX_MARKDOWN_CHARS = 40_000
@@ -123,8 +124,48 @@ def _page_count(real: Path) -> int:
     return total
 
 
+_VAULT_PREFIX = "$vault/"
+
+
+def _expand_source(source: str) -> str:
+    """Rewrite the two accepted vault-relative `source` forms into a path
+    string for paths.resolve_readable to confine — expansion never
+    substitutes for confinement, it only decides what candidate string gets
+    checked next:
+
+    - an absolute path: returned untouched. Checked FIRST and unconditionally,
+      so an absolute path is never reinterpreted as vault-relative. This is
+      also how every Telegram upload arrives (Hermes injects an absolute
+      path), so it stays the primary form for uploads — there is no
+      cache-relative form to expand.
+    - "$vault/..." (the prefix must include the slash, so a literal file
+      named "$vault" with no trailing slash is never treated as the prefix —
+      it just falls through to the bare-relative case below): an explicit,
+      unambiguous synonym for the vault-relative form. Looked up by name here
+      (docs.py owns "which root is 'the vault'"); paths.py never learns that
+      name.
+    - anything else (a bare relative path): joined onto the vault root — the
+      same convention es_notes_read/es_notes_attach/es_notes_list already use
+      (they hand back vault-relative paths like "Topics/Soccer/schedule.pdf"
+      for exactly this source), so "$vault/X" and bare "X" are interchangeable.
+
+    A "$vault/../../etc/passwd" (or bare "../../etc/passwd") traversal is NOT
+    rejected here — Path joining does not normalize ".." — it is rejected by
+    resolve_readable() next, exactly the same way any other out-of-root
+    absolute path is, because that call site resolves (normalizes) the path
+    THEN checks containment. Expansion only changes what string reaches that
+    check, never whether the check runs.
+    """
+    s = str(source)
+    if os.path.isabs(s):
+        return s
+    if s.startswith(_VAULT_PREFIX):
+        return str(config.vault_root() / s[len(_VAULT_PREFIX):])
+    return str(config.vault_root() / s)
+
+
 def _prepare(source: str, roots, cache_root: Path):
-    """Shared front half: purge, confine, size-check, dispatch-check.
+    """Shared front half: purge, expand, confine, size-check, dispatch-check.
 
     Confinement runs before the size/extension checks below, but AFTER the
     stale-artifact purge — the purge only ever touches our own `.es/`
@@ -135,8 +176,9 @@ def _prepare(source: str, roots, cache_root: Path):
     tidy; it does not weaken confinement.
     """
     doc_cache.purge(cache_root)
+    expanded = _expand_source(source)
     try:
-        real = paths.resolve_readable(source, roots)
+        real = paths.resolve_readable(expanded, roots)
     except paths.SourceNotFound as e:
         # paths.py is deliberately generic; this is where the document-domain
         # remedy belongs. Uploaded files are cache-evicted after 24h, and the
@@ -151,11 +193,18 @@ def _prepare(source: str, roots, cache_root: Path):
         # — critically — identical whether or not the path exists, closing a
         # probing oracle), so the document-specific remedy is added here, not
         # there. The remedy MUST NOT depend on anything paths.py doesn't
-        # already expose (existence, real target, ...) or the oracle reopens.
+        # already expose (existence, real target, ...) or the oracle reopens
+        # — everything appended below is static text plus the untouched `{e}`,
+        # never anything that differs between an existing and a missing path.
+        # Naming the accepted forms here (not just "uploads or the vault") is
+        # the actual fix for the bug this feature exists for: a vault-relative
+        # source used to land here — doc_forbidden — for what was really a
+        # path-FORM mistake, not an authorization one.
         raise paths.SourceForbidden(
-            f"{e} — documents can only be read from uploads or the vault; "
-            "ask the user to resend it as a Telegram upload, or save it into "
-            "the vault first") from e
+            f"{e} — source must be an absolute path inside the vault or "
+            "uploads, \"$vault/...\", or a vault-relative path (e.g. "
+            "\"Topics/Manual.pdf\"); ask the user to resend it as a Telegram "
+            "upload, or save it into the vault first") from e
     except OSError as e:
         # resolve_readable's own existence check can still hit the filesystem
         # AFTER confinement already passed (e.g. ENAMETOOLONG on a path that

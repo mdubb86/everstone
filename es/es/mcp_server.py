@@ -430,8 +430,10 @@ def _doc_roots():
 @mcp_envelope
 def es_doc_extract(source: str, pages: Optional[str] = None) -> dict:
     """Read a document (PDF) and return it as Markdown. source is the local path
-    of a file the user uploaded or a file in the vault. pages optionally narrows
-    a long document ("1-5", "1-2,7"). Pages that are images rather than text are
+    of a file the user uploaded (an absolute path) or a file in the vault,
+    given as "$vault/..." or a vault-relative path (e.g. "Topics/Manual.pdf",
+    same convention as es_notes_read). pages optionally narrows a long
+    document ("1-5", "1-2,7"). Pages that are images rather than text are
     rendered to PNGs and linked inline as ![page N](path) — read those with
     vision_analyze. Returns {doc_id, kind, page_count, markdown, images,
     truncated}; truncated=true means use pages to narrow."""
@@ -446,10 +448,13 @@ def es_doc_render(source: str, pages: Optional[str] = None) -> dict:
     extraction as useless prose. Read the returned paths with vision_analyze.
     Use es_doc_extract first — this is for when its text came back unhelpful.
 
-    pages narrows to a range/list ("1-5", "1-2,7"); omit it to render the first
-    10 pages, or all of them if the document is shorter. An EXPLICIT pages range
-    that runs past the document's end is an error (it likely names the wrong
-    page) — omit pages instead if you just want "as much as there is"."""
+    source is the local path of an uploaded file (an absolute path) or a file
+    in the vault, given as "$vault/..." or a vault-relative path (e.g.
+    "Topics/Manual.pdf", same convention as es_notes_read). pages narrows to a
+    range/list ("1-5", "1-2,7"); omit it to render the first 10 pages, or all
+    of them if the document is shorter. An EXPLICIT pages range that runs past
+    the document's end is an error (it likely names the wrong page) — omit
+    pages instead if you just want "as much as there is"."""
     return docs_cap.render(source, _doc_roots(), _doc_cache_root(), pages=pages)
 
 
