@@ -13,6 +13,7 @@ from typing import List, Optional
 
 import yaml
 
+from es import paths
 from es.deeplink import build_deeplink
 
 ILLEGAL = re.compile(r'[/\\:*?"<>|]')
@@ -261,15 +262,15 @@ class VaultClient:
 
     def attach(self, target: str, source: str) -> dict:
         note = self._resolve(target)
-        src = Path(source)
-        if not src.is_file():
-            raise AttachmentSourceNotFound(f"source not found: {source!r}")
         # Confine source to an allowlisted dir (the Hermes media cache), resolving
         # symlinks first so a link inside the cache can't point at a secret.
-        real = src.resolve()
-        if not any(real.is_relative_to(d) for d in self.attach_sources):
-            raise AttachmentSourceForbidden(
-                f"source not in an allowed attachments directory: {source!r}")
+        try:
+            real = paths.resolve_readable(source, self.attach_sources)
+        except paths.SourceNotFound as e:
+            raise AttachmentSourceNotFound(str(e)) from e
+        except paths.SourceForbidden as e:
+            raise AttachmentSourceForbidden(str(e)) from e
+        src = real
         if self._is_structural_folder(note.parent):   # flat → promote to same-name folder-note
             folder = note.parent / note.stem
             dest = folder / note.name

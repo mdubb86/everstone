@@ -43,6 +43,13 @@ def attach_source_dirs(obsidian=None) -> list:
     return list(((obs.get("attachments") or {}).get("sources")) or _DEFAULT_ATTACH_SOURCES)
 
 
+def readable_source_dirs(obsidian=None) -> list:
+    """Dirs the agent may READ documents from: the media cache plus the vault.
+    Attachment sources stay separate — attach copies INTO the vault, so the
+    vault is deliberately not an attach source."""
+    return list(attach_source_dirs(obsidian)) + [str(vault_root())]
+
+
 def maps_config(cfg=None) -> dict:
     cfg = cfg if cfg is not None else load_config()
     return cfg.get("maps") or {}
