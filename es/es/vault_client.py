@@ -13,6 +13,7 @@ from typing import List, Optional
 
 import yaml
 
+from es import paths
 from es.deeplink import build_deeplink
 
 ILLEGAL = re.compile(r'[/\\:*?"<>|]')
@@ -138,7 +139,14 @@ class VaultClient:
         self.categories = list(categories) if categories else ["Topics"]
         # Directories es_notes_attach may copy FROM. Fail-closed: empty → nothing
         # allowed. Resolved once so symlink/`..` escapes can't dodge the check.
-        self.attach_sources = [Path(d).resolve() for d in (attach_sources or [])]
+        if attach_sources is None:
+            attach_sources = []
+        elif isinstance(attach_sources, (str, bytes, os.PathLike)):
+            # A bare scalar is iterable char-by-char — without this guard
+            # `attach_sources="/opt/cache"` would splat into single-character
+            # roots like `Path("/")`, which contains every path on disk.
+            attach_sources = [attach_sources]
+        self.attach_sources = [Path(d).resolve() for d in attach_sources]
 
     def _within_root(self, p: Path) -> bool:
         """True if `p` (symlinks + `..` resolved) is inside the vault root."""
@@ -261,15 +269,16 @@ class VaultClient:
 
     def attach(self, target: str, source: str) -> dict:
         note = self._resolve(target)
-        src = Path(source)
-        if not src.is_file():
-            raise AttachmentSourceNotFound(f"source not found: {source!r}")
         # Confine source to an allowlisted dir (the Hermes media cache), resolving
         # symlinks first so a link inside the cache can't point at a secret.
-        real = src.resolve()
-        if not any(real.is_relative_to(d) for d in self.attach_sources):
+        try:
+            real = paths.resolve_readable(source, self.attach_sources)
+        except paths.SourceNotFound as e:
+            raise AttachmentSourceNotFound(f"source not found: {source!r}") from e
+        except paths.SourceForbidden as e:
             raise AttachmentSourceForbidden(
-                f"source not in an allowed attachments directory: {source!r}")
+                f"source not in an allowed attachments directory: {source!r}") from e
+        src = real
         if self._is_structural_folder(note.parent):   # flat → promote to same-name folder-note
             folder = note.parent / note.stem
             dest = folder / note.name
@@ -279,7 +288,10 @@ class VaultClient:
             folder.mkdir(parents=True, exist_ok=True)
             note = note.rename(dest)
         folder = note.parent
-        att = _unique_attachment(folder, src.name)
+        # Name the copy after the ORIGINAL source (not the resolved target) —
+        # if source is a symlink inside the cache, this keeps the attachment's
+        # extension/name matching what the user actually sent.
+        att = _unique_attachment(folder, Path(source).name)
         shutil.copy2(src, folder / att)
         # Path-qualified embed so same-named attachments in other notes can't
         # cross-resolve in Obsidian.

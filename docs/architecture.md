@@ -58,6 +58,11 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
     Calendar API directly** (`google-api-python-client`); gcalcli was dropped.
   - **Notes** — `es_notes_*` (journal/topic/topics/read/list) → the Obsidian vault
     via `es.vault_client.VaultClient` (see "Notes vault & LiveSync" below).
+  - **Documents** — `es_doc_extract(source, pages=None)` / `es_doc_render(source, pages)`
+    read PDFs the agent otherwise has no way to open (no terminal, no OCR skill) —
+    backed by `es.capabilities.docs` (confinement/caching/dispatch), `doc_pdf.py`
+    (pdfplumber + pypdfium2), and `doc_cache.py` (the artifact cache). See
+    "Document reading & the doc cache" below.
   - **Contacts / web** — `es_contacts_search` (read-only Google contacts) and a
     web-fetch tool (`trafilatura`).
   - **Maps** — reads via Google Maps Platform (`es_maps_geocode` / `search` / `place` /
@@ -249,6 +254,42 @@ vault is simply invisible to `es`. That directory is the filesystem end of a thr
   device to `accepted_nodes`; other devices stay blocked until they complete a Fetch.
   A stale lock can wedge a device even when data is converged — it's clearable on the
   milestone `_local` doc in CouchDB.
+
+## Document reading & the doc cache
+
+`es_doc_extract`/`es_doc_render` (`es/es/capabilities/docs.py`) let the agent read a PDF the
+user sent, since the agent has no terminal and no OCR skill to fall back on (Hermes's own
+attachment note suggests both — neither exists in this profile; the tool is the actual path).
+
+- **Output is Markdown, not raw text.** `doc_pdf.convert()` (pdfplumber) walks pages in order;
+  a page whose text layer is effectively empty (below `BLANK_PAGE_CHARS`) is treated as
+  image-only and rasterized (pypdfium2) to a sibling PNG, linked inline as
+  `![page N](path)` — the agent reads that PNG with `vision_analyze`, no separate escalation
+  protocol needed. A text page with a large embedded image (a chart, a diagram) still gets a
+  pointer comment suggesting `es_doc_render` for that page, since its meaning may be the image,
+  not the extracted prose. `es_doc_render` does the same rasterization on demand for specific
+  pages, for when extracted text came back useless (a scanned form, a map).
+- **Artifacts live in `.es/<doc_id>/` *inside* Hermes's own per-profile document cache**
+  (`cache/documents/` under the profile dir) rather than a separate directory — `doc_cache.py`
+  namespaces under it instead of duplicating it. This is safe specifically because Hermes's own
+  `_cleanup_cache_dir` iterates cache files only and never recurses into subdirectories, so it
+  will never see (or purge) anything under `.es/`; conversely, `es`'s own purge only ever walks
+  its `.es/` namespace, never Hermes's inbound files beside it. `doc_id` is a content hash
+  (sha256 of the file, truncated), so re-reading the same upload is a cache hit, not a
+  re-conversion.
+- **The cache TTL is 24h since last ACCESS, not creation.** `doc_cache.touch()` bumps an
+  artifact directory's mtime on every cache hit (extract, render, even a repeat read), and
+  `purge()` evicts only directories whose mtime is older than the TTL. A creation-based clock
+  would delete a document out from under a conversation that's still actively reading it
+  (asking follow-up questions about page 12 an hour after the first extract); measuring last
+  use instead means a document only expires once nobody has touched it for a full day.
+- **Path confinement is the actual security boundary here, not `access_hook`.** `source` is an
+  agent-supplied string; `paths.resolve_readable` confines it to `config.readable_source_dirs()`
+  — the attachment source dirs (where Telegram uploads land) plus the vault root — resolving
+  symlinks and checking containment *before* even checking existence, so the tool cannot be used
+  as a path-existence oracle outside those roots. That check matters because `access_hook`
+  grants full tool trust in DMs; without confinement in `docs.py`/`paths.py`, a DM user could ask
+  the agent to read arbitrary files elsewhere on the container's filesystem.
 
 ## Config & env model
 
