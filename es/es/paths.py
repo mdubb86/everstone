@@ -37,11 +37,12 @@ def resolve_readable(source: PathLike, roots: Iterable[PathLike]) -> Path:
     """Return the resolved path, or raise. `roots` are the allowed directories."""
     try:
         real = Path(source).resolve()
-    except (OSError, RuntimeError, ValueError) as e:
+    except (OSError, RuntimeError, ValueError, TypeError) as e:
         # Path.resolve() is non-strict (fine for a nonexistent path) but can
-        # still raise on e.g. a symlink loop or an embedded NUL byte. Either
-        # way we cannot prove containment, so this fails CLOSED (forbidden),
-        # not not-found — see the module docstring on the probing oracle.
+        # still raise on e.g. a symlink loop or an embedded NUL byte, and
+        # Path() itself rejects bytes with TypeError. Either way we cannot
+        # prove containment, so this fails CLOSED (forbidden), not not-found —
+        # see the module docstring on the probing oracle.
         raise SourceForbidden(f"path is not in an allowed directory: {source!r}") from e
 
     if roots is None:
@@ -56,7 +57,7 @@ def resolve_readable(source: PathLike, roots: Iterable[PathLike]) -> Path:
     for r in roots:
         try:
             allowed.append(Path(r).resolve())
-        except (OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError, TypeError):
             continue   # a root that can't be resolved grants nothing
 
     if not any(real.is_relative_to(d) for d in allowed):

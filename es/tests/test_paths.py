@@ -142,3 +142,26 @@ def test_forbidden_error_is_identical_whether_or_not_file_exists(tmp_path):
     # Messages differ only in the echoed path, not in structure/wording.
     assert str(exists_exc.value).replace(str(exists), "PATH") == \
         str(missing_exc.value).replace(str(missing), "PATH")
+
+
+def test_bytes_input_fails_closed(tmp_path):
+    """Path() rejects bytes with TypeError. That must fail CLOSED like any
+    other unresolvable input, not escape as an unhandled exception."""
+    root = tmp_path / "cache"
+    root.mkdir()
+    f = root / "a.pdf"
+    f.write_text("x")
+
+    with pytest.raises(paths.SourceForbidden):
+        paths.resolve_readable(str(f), b"/tmp")          # bytes as a scalar root
+    with pytest.raises(paths.SourceForbidden):
+        paths.resolve_readable(bytes(str(f), "utf8"), [root])   # bytes as source
+
+
+def test_unresolvable_root_does_not_disable_the_valid_ones(tmp_path):
+    """A bad root is skipped, not fatal — a good root alongside it still grants."""
+    root = tmp_path / "cache"
+    root.mkdir()
+    f = root / "a.pdf"
+    f.write_text("x")
+    assert paths.resolve_readable(str(f), [b"/tmp", root]) == f.resolve()
