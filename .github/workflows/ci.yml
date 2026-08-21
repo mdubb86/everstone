@@ -28,7 +28,9 @@ jobs:
           pip install -e ./es
           # typer is for scripts/everstone_cli.py (the esadmin CLI); es itself no
           # longer depends on it, so install it explicitly for scripts/tests.
-          pip install pytest radicale requests jsonschema typer
+          # reportlab builds the es_doc PDF fixtures (es/tests/conftest.py); it's in
+          # es/pyproject.toml's dev group, which this manual pip list must mirror.
+          pip install pytest radicale requests jsonschema typer reportlab
 
       - name: es tests
         run: pytest es/tests -q
