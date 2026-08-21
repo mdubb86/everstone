@@ -8,8 +8,11 @@ Confinement is checked before existence on purpose: this module is the
 security boundary for ingesting files from untrusted senders, and checking
 existence first would let a caller distinguish "exists but forbidden" from
 "does not exist" for arbitrary paths anywhere on the filesystem — a
-path-probing oracle. Fails closed: no roots, or roots that fail to resolve,
-permit nothing.
+path-probing oracle. A path that cannot even be resolved (symlink loop, NUL
+byte, ...) is reported the same way as any other forbidden path — we cannot
+prove containment, so it's forbidden, not not-found — for the same reason.
+Fails closed: no roots, a scalar passed where a list of roots is expected, or
+roots that fail to resolve, permit nothing.
 
 Messages here are generic and caller-agnostic — callers should re-raise with
 their own wording/hints (e.g. attach vs. document-read have different nouns
@@ -34,16 +37,26 @@ def resolve_readable(source: PathLike, roots: Iterable[PathLike]) -> Path:
     """Return the resolved path, or raise. `roots` are the allowed directories."""
     try:
         real = Path(source).resolve()
-    except (OSError, RuntimeError) as e:
+    except (OSError, RuntimeError, ValueError) as e:
         # Path.resolve() is non-strict (fine for a nonexistent path) but can
-        # still raise on e.g. a symlink loop.
-        raise SourceNotFound(f"file not found: {source!r}") from e
+        # still raise on e.g. a symlink loop or an embedded NUL byte. Either
+        # way we cannot prove containment, so this fails CLOSED (forbidden),
+        # not not-found — see the module docstring on the probing oracle.
+        raise SourceForbidden(f"path is not in an allowed directory: {source!r}") from e
+
+    if roots is None:
+        roots = []
+    elif isinstance(roots, (str, bytes, os.PathLike)):
+        # A bare scalar is iterable char-by-char (or byte-by-byte) — without
+        # this guard `roots="/opt/cache"` splats into single-character roots
+        # like `Path("/")`, which contains every path on the filesystem.
+        roots = [roots]
 
     allowed = []
-    for r in (roots or []):
+    for r in roots:
         try:
             allowed.append(Path(r).resolve())
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, ValueError):
             continue   # a root that can't be resolved grants nothing
 
     if not any(real.is_relative_to(d) for d in allowed):

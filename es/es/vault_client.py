@@ -139,7 +139,14 @@ class VaultClient:
         self.categories = list(categories) if categories else ["Topics"]
         # Directories es_notes_attach may copy FROM. Fail-closed: empty → nothing
         # allowed. Resolved once so symlink/`..` escapes can't dodge the check.
-        self.attach_sources = [Path(d).resolve() for d in (attach_sources or [])]
+        if attach_sources is None:
+            attach_sources = []
+        elif isinstance(attach_sources, (str, bytes, os.PathLike)):
+            # A bare scalar is iterable char-by-char — without this guard
+            # `attach_sources="/opt/cache"` would splat into single-character
+            # roots like `Path("/")`, which contains every path on disk.
+            attach_sources = [attach_sources]
+        self.attach_sources = [Path(d).resolve() for d in attach_sources]
 
     def _within_root(self, p: Path) -> bool:
         """True if `p` (symlinks + `..` resolved) is inside the vault root."""

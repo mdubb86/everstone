@@ -367,9 +367,32 @@ def test_attach_source_inside_allowlist_ok(tmp_path):
 def test_attach_source_outside_allowlist_forbidden(tmp_path):
     vc, _cache = _cache_vault(tmp_path)
     secret = tmp_path / "config.yaml"; secret.write_text("bot_token: SECRET")
-    with pytest.raises(vault_client.AttachmentSourceForbidden):
+    with pytest.raises(vault_client.AttachmentSourceForbidden,
+                        match="source not in an allowed attachments directory"):
         vc.attach("Fridge", str(secret))
     assert not (tmp_path / "Topics" / "Fridge").exists()  # nothing copied/promoted
+
+
+def test_attach_missing_source_error_wording(tmp_path):
+    vc, cache = _cache_vault(tmp_path)
+    with pytest.raises(vault_client.AttachmentSourceNotFound, match="source not found"):
+        vc.attach("Fridge", str(cache / "nope.pdf"))
+
+
+def test_attach_sources_scalar_string_not_splatted(tmp_path):
+    """A scalar string passed for attach_sources (instead of a list) must not
+    decompose into single-character allowed roots — that would make `/` an
+    allowed root and let attach read anything on the filesystem."""
+    cache = tmp_path / "cache"; cache.mkdir()
+    vc = vault_client.VaultClient(tmp_path, "V", categories=("Topics",),
+                                  attach_sources=str(cache))
+    vc.write_topic("Fridge", body="s")
+    with pytest.raises(vault_client.AttachmentSourceForbidden):
+        vc.attach("Fridge", "/etc/hosts")
+    # but the scalar root itself still works as an allowed source
+    src = cache / "photo.jpg"; src.write_bytes(b"x")
+    out = vc.attach("Fridge", str(src))
+    assert out["ref"].endswith("photo.jpg]]")
 
 
 def test_attach_source_absolute_outside_forbidden(tmp_path):
