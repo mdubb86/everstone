@@ -45,6 +45,12 @@ def test_attach_source_dirs_ignores_empty_override():
         ["/opt/data/hermes/profiles/everstone/cache"]
 
 
+def test_readable_source_dirs_includes_attach_sources_and_vault(monkeypatch, tmp_path):
+    monkeypatch.setenv("ES_VAULT_PATH", str(tmp_path))
+    obs = {"attachments": {"sources": ["/a/cache", "/b/inbox"]}}
+    assert config.readable_source_dirs(obs) == ["/a/cache", "/b/inbox", str(tmp_path)]
+
+
 def test_maps_config_defaults_empty():
     assert config.maps_config({}) == {}
     assert config.maps_config({"maps": {"api_key": "AIza"}}) == {"api_key": "AIza"}

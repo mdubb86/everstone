@@ -267,9 +267,10 @@ class VaultClient:
         try:
             real = paths.resolve_readable(source, self.attach_sources)
         except paths.SourceNotFound as e:
-            raise AttachmentSourceNotFound(str(e)) from e
+            raise AttachmentSourceNotFound(f"source not found: {source!r}") from e
         except paths.SourceForbidden as e:
-            raise AttachmentSourceForbidden(str(e)) from e
+            raise AttachmentSourceForbidden(
+                f"source not in an allowed attachments directory: {source!r}") from e
         src = real
         if self._is_structural_folder(note.parent):   # flat → promote to same-name folder-note
             folder = note.parent / note.stem
@@ -280,7 +281,10 @@ class VaultClient:
             folder.mkdir(parents=True, exist_ok=True)
             note = note.rename(dest)
         folder = note.parent
-        att = _unique_attachment(folder, src.name)
+        # Name the copy after the ORIGINAL source (not the resolved target) —
+        # if source is a symlink inside the cache, this keeps the attachment's
+        # extension/name matching what the user actually sent.
+        att = _unique_attachment(folder, Path(source).name)
         shutil.copy2(src, folder / att)
         # Path-qualified embed so same-named attachments in other notes can't
         # cross-resolve in Obsidian.
