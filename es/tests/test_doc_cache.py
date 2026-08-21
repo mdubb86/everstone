@@ -66,11 +66,25 @@ def test_touch_makes_a_stale_directory_fresh(tmp_path):
 
 
 def test_purge_ignores_hermes_inbound_files(tmp_path):
+    """Regression note: with no `.es/` namespace directory at all, purge()
+    short-circuits on `ns.is_dir()` before it could ever touch anything —
+    so this test alone would pass even if purge recursed into and deleted
+    namespace files. Create a real (stale) namespace entry alongside the
+    inbound file so purge actually runs its removal logic here, and pin the
+    real "doesn't touch the parent dir" coverage in
+    test_purge_survives_a_file_in_the_namespace / …stale_directories."""
     inbound = tmp_path / "inbound.pdf"
     inbound.write_bytes(b"x")
     old = time.time() - (25 * 3600)
     os.utime(inbound, (old, old))
-    doc_cache.purge(tmp_path)
+
+    stale = doc_cache.artifact_dir(tmp_path, "stale0000000")
+    os.utime(stale, (old, old))
+
+    removed = doc_cache.purge(tmp_path)
+
+    assert removed == 1
+    assert not stale.exists()
     assert inbound.exists(), "purge must not touch Hermes's own cache files"
 
 

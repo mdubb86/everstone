@@ -440,11 +440,16 @@ def es_doc_extract(source: str, pages: Optional[str] = None) -> dict:
 
 @mcp.tool()
 @mcp_envelope
-def es_doc_render(source: str, pages: str = "1-10") -> dict:
+def es_doc_render(source: str, pages: Optional[str] = None) -> dict:
     """Render document pages to PNG images and return their paths, for pages whose
     meaning is visual (a chart, a map, a form) and therefore survives text
     extraction as useless prose. Read the returned paths with vision_analyze.
-    Use es_doc_extract first — this is for when its text came back unhelpful."""
+    Use es_doc_extract first — this is for when its text came back unhelpful.
+
+    pages narrows to a range/list ("1-5", "1-2,7"); omit it to render the first
+    10 pages, or all of them if the document is shorter. An EXPLICIT pages range
+    that runs past the document's end is an error (it likely names the wrong
+    page) — omit pages instead if you just want "as much as there is"."""
     return docs_cap.render(source, _doc_roots(), _doc_cache_root(), pages=pages)
 
 

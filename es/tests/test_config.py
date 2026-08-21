@@ -45,6 +45,16 @@ def test_attach_source_dirs_ignores_empty_override():
         ["/opt/data/hermes/profiles/everstone/cache"]
 
 
+def test_attach_source_dirs_normalizes_a_scalar_string_instead_of_splatting_it():
+    """A scalar `sources: /a/cache` (instead of a YAML list) must not be
+    iterated char-by-char into `['/', 'a', 'c', ...]`, which would put '/' in
+    the allowlist. paths.py/vault_client.py both guard against a scalar
+    reaching them, but production calls THROUGH attach_source_dirs — so the
+    scalar must be normalized here, before it ever reaches those guards."""
+    obs = {"attachments": {"sources": "/a/cache"}}
+    assert config.attach_source_dirs(obs) == ["/a/cache"]
+
+
 def test_readable_source_dirs_includes_attach_sources_and_vault(monkeypatch, tmp_path):
     monkeypatch.setenv("ES_VAULT_PATH", str(tmp_path))
     obs = {"attachments": {"sources": ["/a/cache", "/b/inbox"]}}

@@ -38,9 +38,22 @@ _DEFAULT_ATTACH_SOURCES = ["/opt/data/hermes/profiles/everstone/cache"]
 
 def attach_source_dirs(obsidian=None) -> list:
     """Allowed attachment source dirs, from obsidian.attachments.sources or the
-    default. Pass the already-loaded obsidian sub-config."""
+    default. Pass the already-loaded obsidian sub-config.
+
+    production routes to paths.py/vault_client.py THROUGH this function, and
+    both of those guard against a bare scalar string being iterated
+    char-by-char (`roots="/x"` -> `["/", "x"]`, putting "/" in the allowlist)
+    — but only if a scalar ever reaches them. A scalar `sources:` value in
+    config.yaml would splat right here, before either guard runs. Not
+    exploitable in a booted container (the config schema requires an array
+    and configure.py refuses to boot otherwise), but normalize it anyway so
+    this call site can't hand either guard a value it was never meant to see.
+    """
     obs = obsidian or {}
-    return list(((obs.get("attachments") or {}).get("sources")) or _DEFAULT_ATTACH_SOURCES)
+    sources = (obs.get("attachments") or {}).get("sources")
+    if isinstance(sources, (str, bytes)):
+        sources = [sources]
+    return list(sources or _DEFAULT_ATTACH_SOURCES)
 
 
 def readable_source_dirs(obsidian=None) -> list:

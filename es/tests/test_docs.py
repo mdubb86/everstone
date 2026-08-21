@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import time
 
 import pytest
@@ -48,6 +49,28 @@ def fake_pdf(tmp_path):
     """A plain text file wearing a .pdf extension."""
     p = tmp_path / "fake.pdf"
     p.write_text("this is just a text file renamed to .pdf\n" * 5)
+    return p
+
+
+@pytest.fixture
+def one_scanned_one_text_pdf(tmp_path):
+    """Page 1 is image-only (auto-rendered by extract); page 2 has a real
+    text layer. Gives extract() a non-empty images.json (from page 1) that
+    is distinguishable from a PNG a LATER es_doc_render call would drop into
+    the same artifact dir for page 2."""
+    from PIL import Image
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    png = tmp_path / "scan.png"
+    Image.new("RGB", (400, 300), (200, 200, 200)).save(png)
+    p = tmp_path / "one_scanned_one_text.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    c.drawImage(str(png), 72, 400, width=400, height=300)
+    c.showPage()
+    c.drawString(72, 720, "Page two has a real text layer.")
+    c.showPage()
+    c.save()
     return p
 
 
@@ -104,11 +127,85 @@ def test_extract_truncates_oversized_output_but_caches_the_full_markdown(
     monkeypatch.setattr(docs, "MAX_MARKDOWN_CHARS", 40)
     out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
     assert out["truncated"] is True
-    assert len(out["markdown"]) <= 40
+    # The content actually kept (everything before the appended resume
+    # marker) stays bounded by the limit; the marker itself is allowed to
+    # push the total past it (it's operator text, not document content).
+    assert len(out["markdown"].rsplit("\n\n*(truncated", 1)[0]) <= 40
 
     cached = (tmp_path / ".es" / out["doc_id"] / "doc.md").read_text(encoding="utf-8")
     assert len(cached) > 40
     assert "Fall Season Schedule" in cached
+
+
+def test_truncation_cuts_at_a_page_boundary_with_a_correct_usable_resume_range(
+        text_pdf, tmp_path, monkeypatch):
+    """When truncation lands past page 1, the cut must land exactly at the
+    "## Page N" heading boundary (not mid-page), and the resume marker must
+    name a page range that (a) picks up exactly where output stopped and
+    (b) actually works if the agent uses it."""
+    baseline = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
+    assert baseline["truncated"] is False
+    boundary = baseline["markdown"].index("\n\n## Page 2")
+    monkeypatch.setattr(docs, "MAX_MARKDOWN_CHARS", boundary + 2)
+
+    out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
+    assert out["truncated"] is True
+    assert out["markdown"].endswith(
+        '*(truncated after page 1 of 2 — call es_doc_extract again with '
+        'pages="2-2" to continue)*')
+    # The cut landed cleanly at the page boundary: page 1's content survives
+    # whole, page 2's content is entirely gone (not a partial fragment of it).
+    assert "Fall Season Schedule" in out["markdown"]
+    assert "Game 1" not in out["markdown"]
+
+    # The marker's suggested range is actually usable.
+    resumed = docs.extract(str(text_pdf), roots=[text_pdf.parent],
+                           cache_root=tmp_path, pages="2-2")
+    assert "Game 1" in resumed["markdown"]
+
+
+def test_truncation_never_splits_a_markdown_image_link(tmp_path, monkeypatch):
+    """Build a multi-page all-image PDF long enough that a naive
+    markdown[:MAX_MARKDOWN_CHARS] slice would land inside one of the
+    "![page N](/long/tmp/path/pNNN.png)" links; the fix must cut at a page
+    boundary instead, so no link is ever left half-written."""
+    from PIL import Image
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    png = tmp_path / "scan.png"
+    Image.new("RGB", (400, 300), (200, 200, 200)).save(png)
+    pdf = tmp_path / "all_scanned.pdf"
+    c = canvas.Canvas(str(pdf), pagesize=letter)
+    for _ in range(5):
+        c.drawImage(str(png), 72, 400, width=400, height=300)
+        c.showPage()
+    c.save()
+
+    baseline = docs.extract(str(pdf), roots=[tmp_path], cache_root=tmp_path)
+    assert baseline["truncated"] is False
+    link_start = baseline["markdown"].index("![page 3]")
+    # Land the limit squarely inside page 3's image link.
+    monkeypatch.setattr(docs, "MAX_MARKDOWN_CHARS", link_start + 5)
+
+    out = docs.extract(str(pdf), roots=[tmp_path], cache_root=tmp_path)
+    assert out["truncated"] is True
+    for m in re.finditer(r"!\[", out["markdown"]):
+        tail = out["markdown"][m.start():]
+        assert re.match(r"!\[[^\]]*\]\([^)]*\)", tail), \
+            "an image link was cut in half by truncation"
+
+
+def test_truncation_when_even_page_one_alone_exceeds_the_limit(text_pdf, tmp_path, monkeypatch):
+    """No earlier page boundary exists to cut at, so this falls back to a hard
+    cut. It must still say why (rather than silently truncating) and must not
+    offer a page-range resume marker, since re-requesting page 1 alone would
+    reproduce the identical oversized page."""
+    monkeypatch.setattr(docs, "MAX_MARKDOWN_CHARS", 10)
+    out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
+    assert out["truncated"] is True
+    assert "page 1" in out["markdown"].lower()
+    assert 'pages="' not in out["markdown"]
 
 
 def test_extract_purges_stale_artifacts(text_pdf, tmp_path):
@@ -144,6 +241,48 @@ def test_extract_second_call_is_a_cache_hit_not_a_reconvert(text_pdf, tmp_path, 
     assert len(calls) == 1  # convert() ran once; the second call was a cache hit
     assert second["markdown"] == first["markdown"]
     assert second["doc_id"] == first["doc_id"]
+
+
+def test_extract_recovers_from_a_corrupted_cached_doc_md(text_pdf, tmp_path):
+    """doc_id is a CONTENT hash: if doc.md was left truncated by a crash or
+    ENOSPC, re-sending the identical PDF lands in the same artifact dir and
+    must NOT raise (and must not stay broken for the 24h TTL) — an
+    undecodable/unreadable doc.md must be treated as a cache miss, the same
+    way a broken images.json already is, and the entry overwritten with a
+    good reconversion."""
+    first = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
+    md_path = tmp_path / ".es" / first["doc_id"] / "doc.md"
+    md_path.write_bytes(b"\xff\xfe\x00 not valid utf-8 \x80\x81")
+
+    out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
+    assert "Fall Season Schedule" in out["markdown"]
+
+    # The bad cache entry was overwritten with the good reconversion.
+    assert "Fall Season Schedule" in md_path.read_text(encoding="utf-8")
+
+
+def test_cache_hit_images_come_from_manifest_not_a_directory_scan(
+        one_scanned_one_text_pdf, tmp_path):
+    """A cache-hit extract must report only the images the ORIGINAL extract
+    produced (from images.json) — not every PNG that happens to sit in the
+    artifact dir, including ones a later es_doc_render call drops there for
+    pages the extract itself never rendered."""
+    first = docs.extract(str(one_scanned_one_text_pdf),
+                         roots=[one_scanned_one_text_pdf.parent], cache_root=tmp_path)
+    assert len(first["images"]) == 1  # only page 1, the image-only page
+
+    # es_doc_render page 2 into the SAME artifact dir — page 2 has real text
+    # and was never rendered by extract(), so its PNG is new to the dir.
+    rendered = docs.render(str(one_scanned_one_text_pdf),
+                           roots=[one_scanned_one_text_pdf.parent],
+                           cache_root=tmp_path, pages="2")
+    assert rendered["images"]
+    adir = tmp_path / ".es" / first["doc_id"]
+    assert len(list(adir.glob("*.png"))) == 2  # both PNGs now physically present
+
+    second = docs.extract(str(one_scanned_one_text_pdf),
+                          roots=[one_scanned_one_text_pdf.parent], cache_root=tmp_path)
+    assert second["images"] == first["images"]  # unchanged by the render() call
 
 
 def test_extract_page_subset_does_not_clobber_full_extract_cache(text_pdf, tmp_path):
@@ -249,6 +388,41 @@ def test_render_returns_page_images(text_pdf, tmp_path):
     assert out["page_count"] == 2
 
 
+def _make_pdf(path, n_pages):
+    """An n-page PDF with real text on every page (used to check the
+    render() default range against documents of varying length)."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    c = canvas.Canvas(str(path), pagesize=letter)
+    for i in range(n_pages):
+        c.drawString(72, 720, f"Page {i + 1} content")
+        c.showPage()
+    c.save()
+    return path
+
+
+@pytest.mark.parametrize("n_pages", [1, 2, 15])
+def test_render_default_pages_clamps_to_the_document_length(tmp_path, n_pages):
+    """The default (pages omitted) must never error just because the document
+    is shorter than the default 1-10 window — the motivating case is a 1-3
+    page schedule. A document at/over the window renders exactly the window."""
+    pdf = _make_pdf(tmp_path / f"doc_{n_pages}.pdf", n_pages)
+    out = docs.render(str(pdf), roots=[tmp_path], cache_root=tmp_path)
+    assert out["page_count"] == n_pages
+    assert len(out["images"]) == min(n_pages, 10)
+
+
+def test_render_explicit_out_of_range_still_errors_even_when_default_would_clamp(tmp_path):
+    """Clamping is only for the implicit default. An agent-supplied EXPLICIT
+    range past the document's end stays a loud error (matching extract()'s
+    explicit-range behavior) rather than silently returning a partial result —
+    it more likely names a wrong page than an intentional partial ask."""
+    pdf = _make_pdf(tmp_path / "doc_3.pdf", 3)
+    with pytest.raises(docs.InvalidPageRange):
+        docs.render(str(pdf), roots=[tmp_path], cache_root=tmp_path, pages="1-10")
+
+
 def test_render_rejects_page_out_of_range(text_pdf, tmp_path):
     with pytest.raises(docs.InvalidPageRange):
         docs.render(str(text_pdf), roots=[text_pdf.parent],
@@ -260,7 +434,11 @@ def test_render_rejects_more_pages_than_the_cap(text_pdf, tmp_path, monkeypatch)
     with pytest.raises(docs.InvalidPageRange) as e:
         docs.render(str(text_pdf), roots=[text_pdf.parent],
                     cache_root=tmp_path, pages="1-2")
-    assert "1" in str(e.value)
+    msg = str(e.value)
+    # Specific enough to fail if the cap or the requested-page count regress
+    # (the old "1" in str(e.value) assertion would pass on almost any message).
+    assert "cannot render 2 pages" in msg
+    assert "limit is 1" in msg
 
 
 # --- parse_pages() ---------------------------------------------------------
@@ -366,6 +544,19 @@ def test_doc_roots_returns_media_cache_and_vault_only(tmp_path, monkeypatch):
     monkeypatch.setenv("ES_VAULT_PATH", str(vault_dir))
 
     assert mcp_server._doc_roots() == [str(cache_dir), str(vault_dir)]
+
+
+def test_forbidden_message_names_the_remedy(text_pdf, tmp_path):
+    """docs._prepare wraps paths.SourceForbidden with a document-specific
+    remedy, the same way it already wraps SourceNotFound — the generic
+    paths.py message alone never tells the agent what IS readable."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(docs.paths.SourceForbidden) as e:
+        docs.extract(str(text_pdf), roots=[outside], cache_root=tmp_path)
+    msg = str(e.value).lower()
+    assert "uploads" in msg or "vault" in msg
+    assert e.value.es_code == "doc_forbidden"
 
 
 def test_forbidden_message_identical_whether_file_exists_or_not(text_pdf, tmp_path):

@@ -8,8 +8,9 @@ Today this only understands PDFs — there is no real format dispatch yet
 Phase 2's other document formats; SUPPORTED is the seam that will grow.
 """
 import json
+import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from pdfminer.pdfdocument import PDFEncryptionError
 from pdfplumber.utils.exceptions import PdfminerException
@@ -145,6 +146,16 @@ def _prepare(source: str, roots, cache_root: Path):
             f"{e} — if this was a recently uploaded file, it may have aged "
             "out of the cache (uploads are only kept for 24 hours); ask the "
             "user to resend it") from e
+    except paths.SourceForbidden as e:
+        # Same reasoning as SourceNotFound above: paths.py stays generic (and
+        # — critically — identical whether or not the path exists, closing a
+        # probing oracle), so the document-specific remedy is added here, not
+        # there. The remedy MUST NOT depend on anything paths.py doesn't
+        # already expose (existence, real target, ...) or the oracle reopens.
+        raise paths.SourceForbidden(
+            f"{e} — documents can only be read from uploads or the vault; "
+            "ask the user to resend it as a Telegram upload, or save it into "
+            "the vault first") from e
     except OSError as e:
         # resolve_readable's own existence check can still hit the filesystem
         # AFTER confinement already passed (e.g. ENAMETOOLONG on a path that
@@ -177,10 +188,20 @@ def _prepare(source: str, roots, cache_root: Path):
 
 
 def _read_cached_markdown(adir: Path) -> Optional[str]:
+    """None means "treat as a cache MISS" — both for a plain absence and for
+    an unreadable/undecodable doc.md. doc_id is a CONTENT hash, so a doc.md
+    truncated by a crash or ENOSPC would otherwise poison every future
+    extract of this exact document for the full 24h TTL (identical content ->
+    identical doc_id -> the same broken cache entry every time). Reconverting
+    and overwriting on a bad read is strictly better than raising — mirrors
+    how _read_images_manifest already treats a broken images.json."""
     md_path = adir / DOC_MD_NAME
     if not md_path.is_file():
         return None
-    return md_path.read_text(encoding="utf-8")
+    try:
+        return md_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def _read_images_manifest(adir: Path) -> List[str]:
@@ -197,6 +218,71 @@ def _write_full_extract(adir: Path, markdown: str, images: List[Path]) -> None:
     (adir / DOC_MD_NAME).write_text(markdown, encoding="utf-8")
     (adir / DOC_IMAGES_MANIFEST).write_text(
         json.dumps([str(i) for i in images]), encoding="utf-8")
+
+
+# Matches the "\n\n" that doc_pdf.convert's "\n\n".join(parts) puts before
+# every page's "## Page N" heading except the very first — i.e. every safe
+# block-boundary cut point in the markdown.
+_PAGE_BOUNDARY_RE = re.compile(r"\n\n(?=## Page (\d+)\b)")
+# The very first heading in the markdown — for a page-SUBSET extract (e.g.
+# pages="5-8") this is NOT page 1, so the no-earlier-boundary fallback must
+# read the real number here rather than assume 1.
+_FIRST_PAGE_RE = re.compile(r"\A## Page (\d+)\b")
+# A markdown image link as doc_pdf.convert emits it: "![page N](/path.png)".
+# Used only to keep a HARD (no-boundary-available) cut from landing inside
+# one — the boundary cut above never can, since links are their own block.
+_IMAGE_LINK_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+
+
+def _safe_hard_cut(text: str, limit: int) -> int:
+    """A cut index <= limit that never lands inside a markdown image link —
+    landing inside one would hand the agent a truncated, unusable path."""
+    cut = min(limit, len(text))
+    for m in _IMAGE_LINK_RE.finditer(text):
+        if m.start() < cut < m.end():
+            return m.start()
+    return cut
+
+
+def _truncate_markdown(markdown: str, total_pages: int) -> Tuple[str, bool]:
+    """Cut `markdown` to at most MAX_MARKDOWN_CHARS at a page-block boundary
+    (the last "## Page N" heading before the limit), never mid-word or
+    mid-image-link, and append a marker naming where extraction stopped and
+    how to resume. Returns (markdown, truncated).
+
+    If even the FIRST page's content alone exceeds the limit there is no
+    earlier block boundary to cut at — a page-range resume can't help (the
+    identical oversized page would just come back truncated the same way
+    again), so that case falls back to a hard cut (still guarded against
+    landing inside an image link) and says plainly why a resume marker isn't
+    offered, rather than pretending a narrower range would fix anything.
+    Reads the real page number off the first heading rather than assuming 1
+    — a page-SUBSET extract (e.g. pages="5-8") starts with "## Page 5", not 1.
+    """
+    if len(markdown) <= MAX_MARKDOWN_CHARS:
+        return markdown, False
+
+    boundaries = [(m.start(), int(m.group(1)))
+                  for m in _PAGE_BOUNDARY_RE.finditer(markdown)]
+    candidates = [b for b in boundaries if b[0] <= MAX_MARKDOWN_CHARS]
+
+    if candidates:
+        cut_pos, next_page = max(candidates)
+        stopped_after = next_page - 1
+        marker = (f"\n\n*(truncated after page {stopped_after} of {total_pages} "
+                   f"— call es_doc_extract again with pages=\"{stopped_after + 1}-"
+                   f"{total_pages}\" to continue)*")
+        return markdown[:cut_pos] + marker, True
+
+    first_match = _FIRST_PAGE_RE.match(markdown)
+    first_page = int(first_match.group(1)) if first_match else 1
+    cut_pos = _safe_hard_cut(markdown, MAX_MARKDOWN_CHARS)
+    marker = (f"\n\n*(truncated inside page {first_page} — its content alone "
+              f"exceeds the {MAX_MARKDOWN_CHARS}-character limit, so there is "
+              "no earlier page boundary to stop at; narrowing pages won't "
+              f"help since page {first_page} alone is already too large — try "
+              "es_doc_render on this page instead)*")
+    return markdown[:cut_pos] + marker, True
 
 
 def extract(source: str, roots, cache_root: Path,
@@ -239,17 +325,30 @@ def extract(source: str, roots, cache_root: Path,
         doc_cache.touch(adir)
         images = [str(i) for i in image_paths]
 
-    truncated = len(markdown) > MAX_MARKDOWN_CHARS
-    if truncated:
-        markdown = markdown[:MAX_MARKDOWN_CHARS]
+    markdown, truncated = _truncate_markdown(markdown, total)
     return {"doc_id": did, "kind": "pdf", "page_count": total,
             "markdown": markdown, "images": images, "truncated": truncated}
 
 
-def render(source: str, roots, cache_root: Path, pages: str = "1-10") -> dict:
+DEFAULT_RENDER_PAGES_HI = 10
+
+
+def render(source: str, roots, cache_root: Path, pages: Optional[str] = None) -> dict:
+    """pages=None means "no explicit request" — render the first
+    DEFAULT_RENDER_PAGES_HI pages, clamped down to the document's actual
+    length so a short document (the 1-3 page schedule this feature exists
+    for) doesn't error just because it's shorter than the default window.
+
+    An EXPLICIT pages argument is never clamped: if the agent asks for a
+    range that runs past the document's end, that's a loud error (same as
+    extract()'s explicit-range behavior) rather than a silent partial
+    result — an explicit out-of-range ask is more likely a wrong page
+    number than an intentional "give me what you can" request.
+    """
     real, did, adir = _prepare(source, roots, cache_root)
     total = _page_count(real)
-    wanted = parse_pages(pages, total)
+    spec = pages if pages is not None else f"1-{min(DEFAULT_RENDER_PAGES_HI, total)}"
+    wanted = parse_pages(spec, total)
     if len(wanted) > MAX_RENDER_PAGES:
         raise InvalidPageRange(
             f"cannot render {len(wanted)} pages in one call — the limit is "
