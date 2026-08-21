@@ -6,10 +6,14 @@ cache. We reuse Hermes's directory but own our namespace: its cleanup
 never touch ours — and ours never touches its inbound files.
 """
 import hashlib
+import os
+import shutil
+import time
 from pathlib import Path
 
 DOC_ID_LEN = 12
 ES_NAMESPACE = ".es"
+TTL_SECONDS = 24 * 3600
 
 
 def doc_id(source: Path) -> str:
@@ -32,3 +36,34 @@ def artifact_dir(cache_root: Path, did: str) -> Path:
 def page_image_path(adir: Path, page_no: int) -> Path:
     """Zero-padded so lexical order matches page order."""
     return Path(adir) / f"p{page_no:03d}.png"
+
+
+def touch(adir: Path) -> None:
+    """Mark a document as used. Makes the directory mtime an ACCESS time, so
+    the TTL means '24h since last use' rather than '24h since conversion' —
+    otherwise a document expires while a conversation is still using it."""
+    now = time.time()
+    try:
+        os.utime(adir, (now, now))
+    except OSError:
+        pass
+
+
+def purge(cache_root: Path, ttl_seconds: int = TTL_SECONDS) -> int:
+    """Delete artifact directories unused for longer than the TTL. Returns the
+    count removed. Only touches our `.es/` namespace — Hermes's own inbound
+    files in the parent directory are left alone."""
+    ns = Path(cache_root) / ES_NAMESPACE
+    if not ns.is_dir():
+        return 0
+    cutoff = time.time() - ttl_seconds
+    removed = 0
+    for d in ns.iterdir():
+        try:
+            if d.is_dir() and d.stat().st_mtime < cutoff:
+                shutil.rmtree(d, ignore_errors=True)
+                removed += 1
+        except OSError:
+            # Removed concurrently between iterdir() and stat() — not our problem.
+            continue
+    return removed
