@@ -94,3 +94,13 @@ def test_group_allows_es_time():
     # Time is group-safe and load-bearing: without it the agent can't resolve
     # "this weekend" in a group chat either.
     assert run_policy("es_time", "agent:main:telegram:group:-100") is None
+
+
+def test_group_blocks_es_doc_tools():
+    # Documents are private: es_doc_* is neither es_tasks_* nor es_cal_*, so it
+    # is blocked in groups (DM-only). The allowlist already denies these — this
+    # guards against a future edit to _GROUP_ALLOWED_PREFIXES quietly exposing
+    # document reading, which can reach any file in the cache or the vault.
+    for tool in ("es_doc_extract", "es_doc_render"):
+        r = run_policy(tool, "agent:main:telegram:group:-100")
+        assert r is not None and "block" in str(r), tool
