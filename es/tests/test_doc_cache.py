@@ -103,3 +103,20 @@ def test_purge_survives_a_file_in_the_namespace(tmp_path):
     os.utime(stray, (old, old))
     assert doc_cache.purge(tmp_path) == 0, "only directories are purged"
     assert stray.exists()
+
+
+def test_purge_skips_symlinks_without_counting_them(tmp_path):
+    """rmtree refuses to act through a symlink, so counting one as removed
+    would overstate the result. Nothing creates these, but don't lie if present."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("x")
+    ns = tmp_path / ".es"
+    ns.mkdir(parents=True, exist_ok=True)
+    link = ns / "linked000000"
+    link.symlink_to(outside)
+    old = time.time() - (25 * 3600)
+    os.utime(link, (old, old), follow_symlinks=False)
+
+    assert doc_cache.purge(tmp_path) == 0
+    assert (outside / "keep.txt").exists(), "must never delete through a symlink"

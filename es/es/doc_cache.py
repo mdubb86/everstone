@@ -60,6 +60,11 @@ def purge(cache_root: Path, ttl_seconds: int = TTL_SECONDS) -> int:
     removed = 0
     for d in ns.iterdir():
         try:
+            if d.is_symlink():
+                # Nothing here creates symlinks (artifact_dir only mkdirs), and
+                # rmtree refuses to act through one — so counting it as removed
+                # would overstate the result. Skip rather than lie.
+                continue
             if d.is_dir() and d.stat().st_mtime < cutoff:
                 shutil.rmtree(d, ignore_errors=True)
                 removed += 1
