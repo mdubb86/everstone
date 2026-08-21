@@ -84,6 +84,37 @@ def test_extract_missing_file_mentions_resend(text_pdf, tmp_path):
     assert "resend" in str(e.value).lower() or "re-send" in str(e.value).lower()
 
 
+def test_mcp_tools_are_registered():
+    from es import mcp_server
+    assert hasattr(mcp_server, "es_doc_extract")
+    assert hasattr(mcp_server, "es_doc_render")
+
+
+def test_mcp_extract_returns_envelope_on_bad_path(monkeypatch, tmp_path):
+    from es import mcp_server
+    monkeypatch.setattr(mcp_server, "_doc_roots", lambda: [tmp_path])
+    monkeypatch.setattr(mcp_server, "_doc_cache_root", lambda: tmp_path)
+    out = mcp_server.es_doc_extract("/etc/passwd")
+    assert out["ok"] is False
+    assert out["error"]["code"] in ("doc_not_found", "doc_forbidden")
+
+
+def test_mcp_extract_returns_envelope_on_success(text_pdf, monkeypatch, tmp_path):
+    from es import mcp_server
+    monkeypatch.setattr(mcp_server, "_doc_roots", lambda: [text_pdf.parent])
+    monkeypatch.setattr(mcp_server, "_doc_cache_root", lambda: tmp_path)
+    out = mcp_server.es_doc_extract(str(text_pdf))
+    assert out["ok"] is True
+    assert "Fall Season Schedule" in out["data"]["markdown"]
+
+
+def test_doc_cache_root_follows_hermes_home(monkeypatch):
+    from es import mcp_server
+    monkeypatch.setenv("HERMES_HOME", "/somewhere/else")
+    assert str(mcp_server._doc_cache_root()) == \
+        "/somewhere/else/profiles/everstone/cache/documents"
+
+
 def test_forbidden_message_identical_whether_file_exists_or_not(text_pdf, tmp_path):
     """Confinement must fail the same way regardless of whether the forbidden
     path exists — otherwise the error becomes a path-probing oracle."""

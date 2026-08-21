@@ -5,7 +5,9 @@ Wraps the same in-process clients the CLI uses; returns the same
 AGENT only ever sees these tools.
 """
 import functools
+import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Generic, Optional, TypeVar
 
 from mcp.server.fastmcp import FastMCP
@@ -21,6 +23,7 @@ from es.vault_client import VaultClient
 from es.capabilities import cal as cal_cap
 from es.capabilities import cal_support
 from es.capabilities import clock as clock_cap
+from es.capabilities import docs as docs_cap
 from es.capabilities import maps as maps_cap
 from es.capabilities import maps_write
 from es.capabilities import weather as weather_cap
@@ -408,6 +411,41 @@ def es_web_fetch(url: str) -> dict:
     title = (getattr(meta, "title", "") or "") if meta else ""
     return {"url": final_url, "title": title, "text": text, "status": resp.status_code,
             "thin": len(text) < _WEB_FETCH_THIN_CHARS}
+
+
+def _doc_cache_root() -> Path:
+    """Hermes's document cache for the active profile — where inbound uploads
+    land and where our converted artifacts live beside them. Verified live:
+    Telegram media goes to the PROFILE cache, not $HERMES_HOME/cache."""
+    home = os.environ.get("HERMES_HOME", "/opt/data/hermes")
+    return Path(home) / "profiles" / "everstone" / "cache" / "documents"
+
+
+def _doc_roots():
+    cfg = config.load_config()
+    return config.readable_source_dirs(cfg.get("obsidian") or {})
+
+
+@mcp.tool()
+@mcp_envelope
+def es_doc_extract(source: str, pages: Optional[str] = None) -> dict:
+    """Read a document (PDF) and return it as Markdown. source is the local path
+    of a file the user uploaded or a file in the vault. pages optionally narrows
+    a long document ("1-5", "1-2,7"). Pages that are images rather than text are
+    rendered to PNGs and linked inline as ![page N](path) — read those with
+    vision_analyze. Returns {doc_id, kind, page_count, markdown, images,
+    truncated}; truncated=true means use pages to narrow."""
+    return docs_cap.extract(source, _doc_roots(), _doc_cache_root(), pages=pages)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_doc_render(source: str, pages: str = "1-10") -> dict:
+    """Render document pages to PNG images and return their paths, for pages whose
+    meaning is visual (a chart, a map, a form) and therefore survives text
+    extraction as useless prose. Read the returned paths with vision_analyze.
+    Use es_doc_extract first — this is for when its text came back unhelpful."""
+    return docs_cap.render(source, _doc_roots(), _doc_cache_root(), pages=pages)
 
 
 _CONTACTS_READ_MASK = "names,phoneNumbers,emailAddresses,addresses,organizations"
