@@ -32,7 +32,8 @@ def radicale(tmp_path):
 
 @pytest.fixture
 def text_pdf(tmp_path):
-    """Two-page PDF with a real text layer; page 2 contains a table-like grid."""
+    """Two-page PDF with a real text layer on both pages (plain drawString
+    calls — no actual table; pdfplumber's extract_tables() finds none here)."""
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
 
@@ -43,6 +44,88 @@ def text_pdf(tmp_path):
     c.showPage()
     c.drawString(72, 720, "Game 1  Sat Sep 5  9:00 AM  Field 3")
     c.drawString(72, 700, "Game 2  Sat Sep 12  11:00 AM  Field 1")
+    c.showPage()
+    c.save()
+    return p
+
+
+@pytest.fixture
+def table_pdf(tmp_path):
+    """One page with prose plus a genuinely bordered (reportlab GRID-style)
+    table that pdfplumber's find_tables()/extract_tables() actually detect —
+    confirmed empirically, not assumed. One cell contains a literal '|' to
+    exercise pipe-escaping in the emitted Markdown table."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+    from reportlab.platypus import Table, TableStyle
+
+    p = tmp_path / "table.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    c.drawString(72, 740, "Roster")
+    data = [
+        ["Name", "Position", "Number"],
+        ["Alice", "Forward|Winger", "9"],
+        ["Bob", "Goalie", "1"],
+    ]
+    t = Table(data, colWidths=[100, 100, 100])
+    t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 1, colors.black)]))
+    t.wrap(0, 0)
+    t.drawOn(c, 72, 600)
+    c.showPage()
+    c.save()
+    return p
+
+
+@pytest.fixture
+def table_only_pdf(tmp_path):
+    """One page containing NOTHING but a bordered table — no heading, no
+    other text anywhere on the page. Regression fixture for a blank-page
+    test that (wrongly) decides on table-excluded text: that text would be
+    empty here even though the page is far from blank."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+    from reportlab.platypus import Table, TableStyle
+
+    p = tmp_path / "table_only.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    data = [
+        ["Name", "Position", "Number"],
+        ["Alice", "Forward", "9"],
+        ["Bob", "Goalie", "1"],
+    ]
+    t = Table(data, colWidths=[100, 100, 100])
+    t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 1, colors.black)]))
+    t.wrap(0, 0)
+    t.drawOn(c, 72, 600)
+    c.showPage()
+    c.save()
+    return p
+
+
+@pytest.fixture
+def mixed_content_pdf(tmp_path):
+    """Two pages, each with meaningful text plus an image. Page 1's image is
+    large (a chart) — the agent must be told it's there. Page 2's image is a
+    small decorative mark (a logo) — it must NOT trigger a note on every page
+    of an otherwise-textual document."""
+    from PIL import Image
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    big_png = tmp_path / "big.png"
+    Image.new("RGB", (300, 200), (100, 150, 200)).save(big_png)
+    small_png = tmp_path / "small.png"
+    Image.new("RGB", (30, 30), (10, 10, 10)).save(small_png)
+
+    p = tmp_path / "mixed.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    c.drawString(72, 740, "Attendance chart for the fall season follows below.")
+    c.drawImage(str(big_png), 72, 500, width=300, height=200)
+    c.showPage()
+    c.drawString(72, 740, "Report footer text with a small logo mark nearby.")
+    c.drawImage(str(small_png), 72, 700, width=30, height=30)
     c.showPage()
     c.save()
     return p
