@@ -85,17 +85,25 @@ def _has_meaningful_image(page) -> bool:
     )
 
 
-def _render_page(source: Path, adir: Path, page_no: int) -> Path:
-    """Rasterize one 1-indexed page to a PNG in `adir`."""
-    doc = pdfium.PdfDocument(str(source))
+def _render_page(doc: "pdfium.PdfDocument", adir: Path, page_no: int) -> Path:
+    """Rasterize one 1-indexed page to a PNG in `adir`, using an already-open
+    pdfium document.
+
+    Takes the open document rather than a source path: opening a fresh
+    pypdfium2.PdfDocument per page (once per page of a multi-page render) is
+    both wasteful — re-parsing the whole file's object table and resources
+    each time — and the kind of repeated open/close-of-the-same-file churn
+    that pypdfium2's own docs warn is best avoided. Callers open one document
+    for the whole render and close it once when done.
+    """
+    page = doc[page_no - 1]
     try:
-        page = doc[page_no - 1]
         bitmap = page.render(scale=RENDER_DPI / 72)
         out = doc_cache.page_image_path(adir, page_no)
         bitmap.to_pil().save(out)
         return out
     finally:
-        doc.close()
+        page.close()
 
 
 def render(source: Path, adir: Path, pages: List[int]) -> List[Path]:
@@ -111,47 +119,64 @@ def render(source: Path, adir: Path, pages: List[int]) -> List[Path]:
             raise ValueError(
                 f"page {n} is out of range: this document has {total} "
                 f"page{'s' if total != 1 else ''} (valid pages: 1-{total})")
-    return [_render_page(source, adir, n) for n in pages]
+    with pdfium.PdfDocument(str(source)) as doc:
+        return [_render_page(doc, adir, n) for n in pages]
 
 
 def convert(source: Path, adir: Path,
             pages: Optional[List[int]] = None) -> Tuple[str, List[Path]]:
-    """Return (markdown, rendered_image_paths)."""
+    """Return (markdown, rendered_image_paths).
+
+    pdfplumber (text/tables) and pypdfium2 (rasterizing image-only pages) are
+    two independent libraries reading the same file. That overlap is
+    unavoidable here — a page's image-or-text classification is only known
+    once pdfplumber has read it — but the pypdfium2 side is opened at most
+    ONCE per call, lazily, on the first page that actually needs rendering,
+    rather than once per rendered page. That keeps the overlap window (and
+    the number of times the same file is opened) as small as possible.
+    """
     parts: List[str] = []
     images: List[Path] = []
     rendered = 0
-    with pdfplumber.open(source) as pdf:
-        for idx, page in enumerate(pdf.pages, start=1):
-            if pages is not None and idx not in pages:
-                continue
-            parts.append(f"## Page {idx}")
-            full_text = (page.extract_text() or "").strip()
+    pdfium_doc: Optional["pdfium.PdfDocument"] = None
+    try:
+        with pdfplumber.open(source) as pdf:
+            for idx, page in enumerate(pdf.pages, start=1):
+                if pages is not None and idx not in pages:
+                    continue
+                parts.append(f"## Page {idx}")
+                full_text = (page.extract_text() or "").strip()
 
-            if len(full_text) < BLANK_PAGE_CHARS:
-                if rendered < MAX_AUTO_RENDER_PAGES:
-                    img = _render_page(source, adir, idx)
-                    images.append(img)
-                    rendered += 1
-                    parts.append(f"![page {idx}]({img})")
-                else:
+                if len(full_text) < BLANK_PAGE_CHARS:
+                    if rendered < MAX_AUTO_RENDER_PAGES:
+                        if pdfium_doc is None:
+                            pdfium_doc = pdfium.PdfDocument(str(source))
+                        img = _render_page(pdfium_doc, adir, idx)
+                        images.append(img)
+                        rendered += 1
+                        parts.append(f"![page {idx}]({img})")
+                    else:
+                        parts.append(
+                            f"*(page {idx} is an image; not rendered — the per-call "
+                            f"limit of {MAX_AUTO_RENDER_PAGES} pages was reached. "
+                            f"Use es_doc_render with pages=\"{idx}\".)*")
+                    continue
+
+                tables = page.find_tables()
+                bboxes = [t.bbox for t in tables]
+                prose = _prose_text(page, bboxes)
+                if prose:
+                    parts.append(prose)
+                for table in page.extract_tables() or []:
+                    md = _table_to_markdown(table)
+                    if md:
+                        parts.append(md)
+
+                if _has_meaningful_image(page):
                     parts.append(
-                        f"*(page {idx} is an image; not rendered — the per-call "
-                        f"limit of {MAX_AUTO_RENDER_PAGES} pages was reached. "
-                        f"Use es_doc_render with pages=\"{idx}\".)*")
-                continue
-
-            tables = page.find_tables()
-            bboxes = [t.bbox for t in tables]
-            prose = _prose_text(page, bboxes)
-            if prose:
-                parts.append(prose)
-            for table in page.extract_tables() or []:
-                md = _table_to_markdown(table)
-                if md:
-                    parts.append(md)
-
-            if _has_meaningful_image(page):
-                parts.append(
-                    f"*(page {idx} also contains an image not shown here — "
-                    f"use es_doc_render with pages=\"{idx}\" to view it.)*")
+                        f"*(page {idx} also contains an image not shown here — "
+                        f"use es_doc_render with pages=\"{idx}\" to view it.)*")
+    finally:
+        if pdfium_doc is not None:
+            pdfium_doc.close()
     return "\n\n".join(parts), images
