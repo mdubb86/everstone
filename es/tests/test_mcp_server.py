@@ -2,6 +2,7 @@ from datetime import datetime
 from unittest.mock import MagicMock
 import pytest
 from es import mcp_server
+from es import url_guard
 from es.tasks_client import ParentNotFound, HasSubtasks
 
 
@@ -615,10 +616,15 @@ def test_web_fetch_short_but_complete_feed_is_not_thin(monkeypatch):
 
 
 def test_web_fetch_text_body_is_capped(monkeypatch):
-    monkeypatch.setattr(mcp_server, "_WEB_FETCH_MAX_BYTES", 50)
+    """The text-ish branch is capped by its own constant, _WEB_FETCH_TEXT_MAX_CHARS
+    (context-window-sized), not by _WEB_FETCH_MAX_BYTES (the HTML/lxml input
+    cap) — the two are deliberately different orders of magnitude."""
+    monkeypatch.setattr(mcp_server, "_WEB_FETCH_TEXT_MAX_CHARS", 50)
     monkeypatch.setattr("es.mcp_server._http_get",
                         lambda u: _fake_resp(ctype="text/plain", text="x" * 500))
-    assert len(mcp_server.es_web_fetch("https://ex.com/a")["data"]["text"]) <= 50
+    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
+    assert d["text"].split("\n\n")[0] == "x" * 50
+    assert d["truncated"] is True
 
 
 def test_web_fetch_binary_still_thin_until_phase_2(monkeypatch):
@@ -633,10 +639,136 @@ def test_web_fetch_return_shape_is_stable(monkeypatch):
     """Every branch returns the same keys, so the agent never reasons about
     which are present. cached_path/doc are filled in Phase 2."""
     expected = {"url", "title", "text", "status", "thin", "content_type",
-                "cached_path", "doc"}
+                "cached_path", "doc", "truncated"}
     for ctype, body in [("text/html", "<html><body>hi</body></html>"),
                         ("text/calendar", ICS_BODY),
                         ("application/pdf", "%PDF-1.4")]:
         monkeypatch.setattr("es.mcp_server._http_get",
                             lambda u, c=ctype, b=body: _fake_resp(ctype=c, text=b))
         assert set(mcp_server.es_web_fetch("https://ex.com/a")["data"]) == expected
+
+
+# ── review fixups: content-type parsing, redirect-hop mutation coverage,
+#    text-branch truncation ───────────────────────────────────────────────
+
+@pytest.mark.parametrize("ctype,body,expect_extracted", [
+    # A JSON body whose Content-Type happens to mention "text/html" in a
+    # parameter must NOT be routed to trafilatura — the old substring check
+    # ("text/html" in ctype) matched this and silently lost the JSON.
+    ('application/json; profile="text/html"', '{"a": 1}', False),
+    # Same trap for a feed: a fallback param naming text/html must not steal
+    # an ICS body away from the text-ish branch.
+    ("text/calendar; fallback=text/html", "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", False),
+    # A binary type that merely mentions text/html in a parameter must stay
+    # in the thin/binary branch, not get fed to trafilatura as HTML.
+    ("application/octet-stream; foo=text/html", "\x89PNG\r\n", False),
+])
+def test_web_fetch_content_type_base_not_substring_matched(monkeypatch, ctype, body, expect_extracted):
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype=ctype, text=body))
+    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
+    # None of these are real HTML, so trafilatura must never have run on them:
+    # the raw body (or nothing, for the octet-stream case) must come back
+    # untouched by extraction, never coerced to "".
+    if ctype.startswith("application/json") or ctype.startswith("text/calendar"):
+        assert d["text"] == body
+    else:
+        assert d["text"] == ""  # binary stays thin/empty, same as today
+
+
+def test_web_fetch_json_with_charset_param_is_still_text_ish(monkeypatch):
+    """application/json; charset=utf-8 is one of the most common headers on
+    the web — the base-type split must not choke on it."""
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="application/json; charset=utf-8",
+                                             text='{"ok": true}'))
+    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
+    assert d["text"] == '{"ok": true}' and d["thin"] is False
+
+
+def test_web_fetch_xml_plus_suffix_with_charset_is_text_ish(monkeypatch):
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="application/atom+xml; charset=utf-8",
+                                             text="<feed>x</feed>"))
+    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
+    assert d["text"] == "<feed>x</feed>"
+
+
+def test_web_fetch_missing_content_type_is_not_text_ish(monkeypatch):
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="", text="whatever"))
+    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
+    assert d["text"] == "" and d["thin"] is True
+
+
+def test_web_fetch_malformed_content_type_is_not_text_ish(monkeypatch):
+    """A header that's just parameters with no base type at all."""
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="; charset=utf-8", text="whatever"))
+    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
+    assert d["text"] == "" and d["thin"] is True
+
+
+def test_http_get_reguards_every_redirect_hop_via_real_client(monkeypatch):
+    """Drives the REAL _http_get (not just the hook function) through an
+    actual redirect chain via httpx.MockTransport. This is the test the
+    mutation review asked for: _http_get has two guard call sites (the
+    explicit url_guard.check_url(url) and the per-request event hook) that
+    mask each other when tested in isolation — deleting either one alone left
+    the old suite green. Here, deleting the explicit call changes the
+    recorded call sequence (asserted exactly below); deleting the event_hooks
+    registration means the redirect to the internal host is never re-checked,
+    so the request succeeds instead of raising — either mutation fails this
+    single test.
+    """
+    calls = []
+
+    def fake_check(u):
+        calls.append(u)
+        if "internal" in u:
+            raise url_guard.BlockedAddress("blocked")
+
+    monkeypatch.setattr("es.mcp_server.url_guard.check_url", fake_check)
+
+    def handler(request):
+        if request.url.path == "/start":
+            return _httpx.Response(
+                302, headers={"location": "https://hop2.example.com/internal"})
+        return _httpx.Response(200, text="ok")
+
+    transport = _httpx.MockTransport(handler)
+    real_client = _httpx.Client
+
+    def fake_client_ctor(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("es.mcp_server.httpx.Client", fake_client_ctor)
+
+    with pytest.raises(url_guard.BlockedAddress):
+        mcp_server._http_get("https://hop1.example.com/start")
+
+    assert calls == [
+        "https://hop1.example.com/start",   # explicit check_url(url) call
+        "https://hop1.example.com/start",   # hook, initial request
+        "https://hop2.example.com/internal",  # hook, redirect hop -> raises
+    ]
+
+
+def test_web_fetch_text_body_over_cap_is_truncated_with_marker(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_WEB_FETCH_TEXT_MAX_CHARS", 100)
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="text/calendar", text="x" * 500))
+    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
+    assert d["truncated"] is True
+    assert len(d["text"]) > 100  # cut text (100) + appended marker
+    assert "truncated" in d["text"] and "no" in d["text"]  # in-band, honest-remedy marker
+    assert d["text"].startswith("x" * 100)
+
+
+def test_web_fetch_normal_size_feed_is_not_truncated(monkeypatch):
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="text/calendar", text=ICS_BODY))
+    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
+    assert d["truncated"] is False
+    assert d["text"] == ICS_BODY
