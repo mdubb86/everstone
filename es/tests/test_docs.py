@@ -1000,6 +1000,74 @@ def test_ole2_xlsx_is_reported_as_encrypted_not_generic_corruption(tmp_path):
     assert "password" in str(e.value).lower()
 
 
+# --- a bug in OUR OWN converter code must surface as itself, never get -----
+# --- relabeled "corrupt file" (the whole point of this refactor) -----------
+#
+# _CONVERSION_ERRORS used to catch ValueError/KeyError/AttributeError over
+# the ENTIRE mod.convert() call — not just the library's own open/parse
+# step — so a real bug in doc_office.py/doc_text.py's own rendering logic
+# that happened to raise one of those ordinary types would previously have
+# been swallowed and misreported as doc_unreadable. These are regression
+# guards for the fix: each monkeypatches a piece of a converter's OWN
+# rendering logic (never the open/parse call itself) to raise, and asserts
+# the raw exception propagates unchanged — proving docs.py's parse-error
+# catch is scoped to the parse step, not the whole conversion.
+
+def test_a_bug_in_doc_office_docx_rendering_is_not_masked_as_corrupt(
+        docx_file, tmp_path, monkeypatch):
+    from es.capabilities import docs, doc_office
+
+    def boom(paragraph):
+        raise ValueError("simulated bug in doc_office rendering")
+
+    monkeypatch.setattr(doc_office, "_paragraph_block", boom)
+
+    with pytest.raises(ValueError, match="simulated bug in doc_office rendering"):
+        docs.extract(str(docx_file), roots=[docx_file.parent], cache_root=tmp_path)
+
+
+def test_a_bug_in_doc_office_xlsx_rendering_is_not_masked_as_corrupt(
+        xlsx_file, tmp_path, monkeypatch):
+    from es.capabilities import docs, doc_office
+
+    def boom(*args, **kwargs):
+        raise ValueError("simulated bug in doc_office rendering")
+
+    monkeypatch.setattr(doc_office, "_render_sheet_rows", boom)
+
+    with pytest.raises(ValueError, match="simulated bug in doc_office rendering"):
+        docs.extract(str(xlsx_file), roots=[xlsx_file.parent], cache_root=tmp_path)
+
+
+def test_a_bug_in_doc_text_csv_rendering_is_not_masked_as_corrupt(
+        csv_file, tmp_path, monkeypatch):
+    from es.capabilities import docs, doc_text
+
+    def boom(cells, width):
+        raise ValueError("simulated bug in doc_text rendering")
+
+    monkeypatch.setattr(doc_text, "format_row", boom)
+
+    with pytest.raises(ValueError, match="simulated bug in doc_text rendering"):
+        docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
+
+
+def test_a_bug_in_doc_text_json_rendering_is_not_masked_as_corrupt(
+        json_file, tmp_path, monkeypatch):
+    """Same guard, but through the JSON handler's own truncation logic
+    (rather than the parse step, which is json.loads/json.dumps — both
+    inside the tight ParseFailed boundary, see doc_text._convert_json)."""
+    from es.capabilities import docs, doc_text
+
+    def boom(text, limit):
+        raise ValueError("simulated bug in doc_text rendering")
+
+    monkeypatch.setattr(doc_text, "_truncate_at_line_boundary", boom)
+
+    with pytest.raises(ValueError, match="simulated bug in doc_text rendering"):
+        docs.extract(str(json_file), roots=[json_file.parent], cache_root=tmp_path)
+
+
 # --- cross-format cache collision (doc_id must include the format) ---------
 
 def test_cross_format_cache_collision_is_fixed(text_pdf, tmp_path):

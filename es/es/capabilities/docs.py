@@ -20,17 +20,12 @@ import os
 import re
 from pathlib import Path
 from typing import List, Optional, Tuple
-from xml.etree.ElementTree import ParseError
-from zipfile import BadZipFile
 
-from docx.opc.exceptions import PackageNotFoundError
-from lxml.etree import XMLSyntaxError
-from openpyxl.utils.exceptions import InvalidFileException
 from pdfminer.pdfdocument import PDFEncryptionError
 from pdfplumber.utils.exceptions import PdfminerException
 
 from es import config, doc_cache, paths
-from es.capabilities import doc_ics, doc_office, doc_pdf, doc_text
+from es.capabilities import doc_ics, doc_office, doc_pdf, doc_support, doc_text
 
 MAX_MARKDOWN_CHARS = 40_000
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
@@ -162,149 +157,50 @@ def _reraise_pdf_error(real: Path, exc: PdfminerException):
         "truncated, or not actually a PDF; ask the user to resend it") from exc
 
 
-# The OLE2/CFBF container signature (MS-CFB) — every legitimate, unencrypted
-# .docx/.xlsx is a zip archive; a password-protected one is instead stored in
-# this legacy container format (the same one .doc/.xls used), which is how
-# real Office password-protection actually works, not a guess. Neither
-# python-docx nor openpyxl exposes a distinct "needs a password" exception —
-# both simply fail to open the file as a zip, indistinguishable by exception
-# type alone from ordinary corruption (verified empirically against both
-# libraries) — so this sniffs the file's own magic bytes instead, the same
-# first-principles move _reraise_pdf_error makes by inspecting pdfminer's
-# real cause rather than trusting a single generic exception type.
-_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
-
-
-def _is_ole2_container(real: Path) -> bool:
-    try:
-        with open(real, "rb") as f:
-            return f.read(len(_OLE2_MAGIC)) == _OLE2_MAGIC
-    except OSError:
-        return False
-
-
-def _reraise_office_error(real: Path, exc: Exception):
-    """python-docx and openpyxl each raise their OWN exception type for a
-    parse failure — PackageNotFoundError (python-docx, which itself
-    normalizes a bad/missing zip into this one type), BadZipFile (openpyxl,
-    which does NOT normalize it), and InvalidFileException (openpyxl's own
-    filename-extension guard — included for defense in depth even though
-    docs.py's dispatch already only ever routes a real .xlsx path here, so
-    it should never actually fire in practice). All three collapse to the
-    same UnreadableDocument, EXCEPT when the file is an OLE2 container (see
-    _is_ole2_container above) — that one case is password-protection, not
-    corruption, and gets its own EncryptedDocument message."""
-    if _is_ole2_container(real):
-        raise EncryptedDocument(
-            f"{real.name} is password-protected — es cannot open encrypted "
-            "Word/Excel documents; ask the user for an unlocked copy") from exc
-    raise UnreadableDocument(
-        f"{real.name} could not be read as a Word/Excel document — it may "
-        "be corrupt, truncated, or not actually a .docx/.xlsx file; ask the "
-        "user to resend it") from exc
-
-
-def _reraise_text_error(real: Path, exc: Exception) -> None:
-    """doc_text's own decoding (`errors="replace"`) only covers turning
-    bytes into a str — it says nothing about csv.reader's or json.loads's
-    own STRUCTURAL parsing of that str, and both can still raise past it:
-
-    - csv.Error: either a field genuinely larger than CSV_FIELD_SIZE_LIMIT
-      above (rare now that the limit is 10 MiB, not stdlib's 128 KiB
-      default), or an unbalanced/unterminated quote — which makes
-      csv.reader treat everything from that quote to EOF as one field,
-      hitting the exact same limit from a different root cause. Either way
-      the agent needs "narrower/cleaner CSV", not "Error".
-    - RecursionError: json.loads recurses one Python stack frame per nesting
-      level; a JSON document nested far deeper than any hand-authored file
-      would be (~1000 levels) blows the interpreter's recursion limit. Not
-      a bug in this module — a genuinely pathological/adversarial document.
-
-    Both collapse to the same UnreadableDocument as every other converter's
-    parse failures, distinguished only by exception type (never by
-    guessing at message text) since which one fired already tells us which
-    of .csv/.json triggered it."""
-    if isinstance(exc, RecursionError):
-        raise UnreadableDocument(
-            f"{real.name} is nested too deeply to parse as JSON; ask the "
-            "user to resend a flatter export") from exc
-    raise UnreadableDocument(
-        f"{real.name} could not be parsed as a CSV — a field is larger than "
-        f"the {CSV_FIELD_SIZE_LIMIT // (1024*1024)}MB limit, or an "
-        "unbalanced quote runs to the end of the file; ask the user to "
-        "resend it or export a narrower/cleaner version") from exc
-
-
-# Per-converter-module exception mapping: each module's OWN underlying
-# library raises its own exception type on a parse failure, and this table
-# names exactly those types so the two call sites in extract() below can
-# catch precisely them — never a bare `except Exception`, which would just
-# as happily swallow a genuine bug in OUR code (a TypeError from a mistake in
-# this module, say) and misreport it to the agent as "your file is corrupt".
+# Per-converter-module parse-failure handling. Two DIFFERENT mechanisms meet
+# here, on purpose:
 #
-# doc_office's tuple is wider than "obviously corrupt" on purpose — verified
-# empirically (not guessed) against real python-docx/openpyxl behavior for
-# every case in the review that motivated this: a real .docx renamed .xlsx
-# (openpyxl -> OSError), a real .xlsx renamed .docx (python-docx -> ValueError),
-# a truncated worksheet XML (openpyxl's read_only streaming reader uses the
-# stdlib xml.etree parser regardless of lxml being installed -> ParseError), a
-# truncated word/document.xml (python-docx uses lxml -> XMLSyntaxError), a
-# valid zip missing "[Content_Types].xml" entirely (both libraries do a plain
-# dict-style archive lookup -> KeyError), and a valid zip whose
-# "[Content_Types].xml" parses but has no default namespace so python-docx's
-# lxml class lookup never upgrades it to its own CT_Types wrapper, and the
-# next attribute access on it -> AttributeError. All nine are ordinary
-# "wrong/damaged file" shapes (a renamed extension, a partial download), not
-# adversarial input — a genuine bug in OUR OWN code around the `mod.convert()`
-# call below would have to coincidentally raise one of these same types to be
-# swallowed here, and nothing in this module's few lines around that call
-# does.
+# - doc_pdf raises PdfminerException directly — pdfplumber's own exception
+#   type, which ONLY that library raises, never ordinary application code by
+#   coincidence (unlike ValueError/KeyError/AttributeError). It is therefore
+#   safe to catch broadly around the whole `mod.convert()` call without risk
+#   of masking a bug in doc_pdf's own code; see _reraise_pdf_error, which
+#   also distinguishes "needs a password" from ordinary corruption by
+#   inspecting pdfminer's own wrapped cause.
+# - doc_office and doc_text instead raise doc_support.ParseFailed — a
+#   sentinel THEY construct themselves, from inside a try/except scoped
+#   tightly around their own library's open/parse call only (see each
+#   module's own _open_docx/_open_xlsx/_safe_row_iter and
+#   _safe_csv_rows/RecursionError handling). Their underlying libraries'
+#   parse failures are ordinary types (ValueError, KeyError, AttributeError,
+#   ...) that a genuine bug in OUR OWN code could just as easily raise by
+#   coincidence — so what makes a failure "a parse failure" here is WHERE it
+#   was raised (the narrow try/except inside the converter), never the
+#   exception's type. See doc_support.ParseFailed's docstring for the full
+#   reasoning. Catching ParseFailed broadly around `mod.convert()` below is
+#   safe precisely because a bug elsewhere in doc_office.py/doc_text.py can
+#   never raise ParseFailed itself — only their own narrow parse-boundary
+#   code does.
 #
-# doc_ics has no entry: it already catches its own parse failures internally
+# doc_ics has neither: it already catches its own parse failures internally
 # (see doc_ics._read_calendar's `except Exception: return None`, which
 # convert() turns into a friendly in-band "could not be read" markdown
-# instead of raising) — `.get(mod, ())` below yields an empty tuple, i.e.
-# "catch nothing", for it, and that is still true after this feature.
-#
-# doc_text is NOT exception-free the way a stale version of this comment
-# once claimed: `errors="replace"` only guards the bytes->str DECODE step,
-# not csv.reader's or json.loads's own structural parsing, both of which can
-# raise past it (csv.Error, RecursionError — see _reraise_text_error above).
-#
-# This lives here, keyed by module, rather than each converter module raising
-# docs.py's own exception classes itself: docs.py already imports every
-# converter module to populate CONVERTERS, so a converter importing back
-# from docs.py to raise UnreadableDocument/EncryptedDocument would be a
-# circular import. A converter module knowing its own library's exception
-# TYPES is unavoidable (only that module imports that library) but deciding
-# what those types MEAN in es's shared error catalogue is policy that
-# belongs in one auditable place — the same reason _reraise_pdf_error already
-# lived here before this feature added a second format family.
-_CONVERSION_ERRORS = {
-    doc_pdf: (PdfminerException,),
-    doc_office: (PackageNotFoundError, InvalidFileException, BadZipFile,
-                 OSError, ValueError, ParseError, XMLSyntaxError,
-                 KeyError, AttributeError),
-    doc_text: (csv.Error, RecursionError),
-}
-
-
-def _reraise_conversion_error(mod, real: Path, exc: Exception) -> None:
-    """Always raises. Dispatches to the format-family-specific mapping for
-    `mod` — the one place a converter's raw library exception is translated
-    into the shared {EncryptedDocument, UnreadableDocument} catalogue."""
-    if mod is doc_pdf:
+# instead of raising), and that catch is ALREADY scoped to just the parse
+# call (`Calendar.from_ical(...)`), so it has none of the masking risk this
+# module exists to avoid — nothing to change here.
+def _reraise_conversion_error(real: Path, exc: Exception) -> None:
+    """Always raises. The one place a converter's parse failure is
+    translated into the shared {EncryptedDocument, UnreadableDocument}
+    catalogue — kept here (not in each converter module) because docs.py
+    already imports every converter module to populate CONVERTERS, so a
+    converter importing back from docs.py to raise these classes itself
+    would be a circular import."""
+    if isinstance(exc, PdfminerException):
         _reraise_pdf_error(real, exc)
-    if mod is doc_office:
-        _reraise_office_error(real, exc)
-    if mod is doc_text:
-        _reraise_text_error(real, exc)
-    # Defensive fallback, not expected to fire today: every module currently
-    # in _CONVERSION_ERRORS is handled by name above. Kept so a future module
-    # added to that table without a matching branch here still fails safe
-    # (a catalogue code) instead of leaking whatever it raised.
-    raise UnreadableDocument(
-        f"{real.name} could not be read; ask the user to resend it") from exc
+    assert isinstance(exc, doc_support.ParseFailed)
+    if exc.encrypted:
+        raise EncryptedDocument(str(exc)) from exc
+    raise UnreadableDocument(str(exc)) from exc
 
 
 def _page_count(mod, real: Path) -> Optional[int]:
@@ -646,8 +542,8 @@ def extract(source: str, roots, cache_root: Path,
         else:
             try:
                 markdown, image_paths = mod.convert(real, adir, pages=None)
-            except _CONVERSION_ERRORS.get(mod, ()) as e:
-                _reraise_conversion_error(mod, real, e)
+            except (doc_support.ParseFailed, PdfminerException) as e:
+                _reraise_conversion_error(real, e)
             _write_full_extract(adir, markdown, image_paths)
             doc_cache.touch(adir)
             images = [str(i) for i in image_paths]
@@ -661,8 +557,8 @@ def extract(source: str, roots, cache_root: Path,
         # the full-document result is cached.
         try:
             markdown, image_paths = mod.convert(real, adir, pages=wanted)
-        except _CONVERSION_ERRORS.get(mod, ()) as e:
-            _reraise_conversion_error(mod, real, e)
+        except (doc_support.ParseFailed, PdfminerException) as e:
+            _reraise_conversion_error(real, e)
         doc_cache.touch(adir)
         images = [str(i) for i in image_paths]
 

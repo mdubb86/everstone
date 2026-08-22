@@ -15,6 +15,32 @@ import back through docs.py.
 from typing import List, Optional
 
 
+class ParseFailed(Exception):
+    """Raised by a converter ONLY around the exact call(s) into its
+    underlying library's own open/parse step — never around the converter's
+    own rendering logic (body walking, sheet/table formatting, budget
+    tracking, ...). That boundary is the entire point of this class: a
+    library exception (a corrupt/truncated file, a wrong password) and a
+    genuine bug in OUR OWN code can raise the exact same Python exception
+    TYPE (a stray `KeyError`/`AttributeError`/`ValueError` from a typo is
+    exactly as likely as one from a real parser), so the only reliable way
+    to tell them apart is WHERE the catch is scoped, not what type it
+    catches. A converter that raises ParseFailed is asserting "this failure
+    came from the library's own parse, not from me" — docs.py trusts that
+    assertion and maps it to the shared {EncryptedDocument, UnreadableDocument}
+    catalogue without needing to know each library's own exception types.
+
+    `encrypted=True` means the converter positively identified the failure
+    as password-protection (e.g. doc_office's OLE2 magic-byte sniff), not
+    ordinary corruption — docs.py maps that to a different, more useful
+    catalogue entry (EncryptedDocument) than the default (UnreadableDocument).
+    """
+
+    def __init__(self, message: str, *, encrypted: bool = False):
+        super().__init__(message)
+        self.encrypted = encrypted
+
+
 def format_cell(value: Optional[str]) -> str:
     """Escape one cell's text for safe placement inside a Markdown pipe
     table: collapse embedded newlines (which would otherwise break the row

@@ -84,17 +84,138 @@ past the structural cap) without fabricating an exact total.
 """
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
+from xml.etree.ElementTree import ParseError
+from zipfile import BadZipFile
 
 from docx import Document
+from docx.opc.exceptions import PackageNotFoundError
 from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.paragraph import Paragraph
+from lxml.etree import XMLSyntaxError
 from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 
-from es.capabilities.doc_support import format_cell, format_row
+from es.capabilities.doc_support import ParseFailed, format_cell, format_row
 
 # Shared by both formats — see module docstring.
 MAX_CHARS = 30_000
+
+# --------------------------------------------------------------------------
+# Parse-step error mapping (see doc_support.ParseFailed for the boundary
+# rule this exists to enforce).
+# --------------------------------------------------------------------------
+#
+# python-docx and openpyxl each raise their OWN exception type for a parse
+# failure — PackageNotFoundError (python-docx, which itself normalizes a
+# bad/missing zip into this one type), BadZipFile (openpyxl, which does NOT
+# normalize it), InvalidFileException (openpyxl's own filename-extension
+# guard — included for defense in depth even though docs.py's dispatch
+# already only ever routes a real .xlsx path here, so it should never
+# actually fire in practice), OSError (python-docx's own "no valid workbook/
+# document part" case), ParseError (openpyxl's read_only streaming reader
+# uses the stdlib xml.etree parser regardless of lxml being installed),
+# XMLSyntaxError (python-docx uses lxml), KeyError (a valid zip missing
+# "[Content_Types].xml" entirely — both libraries do a plain dict-style
+# archive lookup), and AttributeError (a valid zip whose
+# "[Content_Types].xml" parses but has no default namespace, so python-docx's
+# lxml class lookup never upgrades it to its own CT_Types wrapper, and the
+# next attribute access on it fails). All nine are verified empirically (not
+# guessed) against real python-docx/openpyxl behavior for every ordinary
+# "wrong/damaged file" shape (a renamed extension, a partial download) — see
+# tests/test_docs.py's realistic-malformed-documents case.
+#
+# This tuple is used ONLY around the two open/parse call sites below
+# (_open_docx, _open_xlsx, and the lazy per-row XML parse in
+# _safe_row_iter) — never around this module's own rendering logic (body
+# walking, sheet/table formatting, budget tracking). A bug in THAT code
+# that happens to raise one of these same ordinary types (a typo'd dict
+# key, an attribute on a None) must surface as itself, not get relabeled
+# "corrupt file" — see doc_support.ParseFailed's docstring for why the
+# BOUNDARY, not the exception type, is what keeps the two apart.
+_PARSE_ERRORS = (PackageNotFoundError, InvalidFileException, BadZipFile,
+                 OSError, ValueError, ParseError, XMLSyntaxError,
+                 KeyError, AttributeError)
+
+# The OLE2/CFBF container signature (MS-CFB) — every legitimate, unencrypted
+# .docx/.xlsx is a zip archive; a password-protected one is instead stored in
+# this legacy container format (the same one .doc/.xls used), which is how
+# real Office password-protection actually works, not a guess. Neither
+# python-docx nor openpyxl exposes a distinct "needs a password" exception —
+# both simply fail to open the file as a zip, indistinguishable by exception
+# type alone from ordinary corruption (verified empirically against both
+# libraries) — so this sniffs the file's own magic bytes instead.
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _is_ole2_container(source: Path) -> bool:
+    try:
+        with open(source, "rb") as f:
+            return f.read(len(_OLE2_MAGIC)) == _OLE2_MAGIC
+    except OSError:
+        return False
+
+
+def _raise_parse_failed(source: Path, exc: Exception) -> None:
+    """Always raises ParseFailed. Shared by both formats: neither
+    python-docx nor openpyxl distinguishes "needs a password" from ordinary
+    corruption by exception type, so both route through the same OLE2 sniff
+    (see _is_ole2_container above)."""
+    if _is_ole2_container(source):
+        raise ParseFailed(
+            f"{source.name} is password-protected — es cannot open "
+            "encrypted Word/Excel documents; ask the user for an unlocked "
+            "copy", encrypted=True) from exc
+    raise ParseFailed(
+        f"{source.name} could not be read as a Word/Excel document — it "
+        "may be corrupt, truncated, or not actually a .docx/.xlsx file; "
+        "ask the user to resend it") from exc
+
+
+def _open_docx(source: Path) -> Document:
+    """The ONLY place .docx parsing can fail: verified empirically that
+    python-docx's `Document()` eagerly parses the entire package (zip +
+    every XML part it needs) at open time — unlike openpyxl's read_only
+    mode (see _open_xlsx/_safe_row_iter below), nothing about the walk in
+    _convert_docx re-enters the library's own parser."""
+    try:
+        return Document(str(source))
+    except _PARSE_ERRORS as e:
+        _raise_parse_failed(source, e)
+
+
+def _open_xlsx(source: Path):
+    """Opens the workbook-level parts (workbook.xml, styles, shared
+    strings) eagerly — but NOT a sheet's own XML, which read_only mode
+    streams lazily (see _safe_row_iter: a truncated sheet1.xml only raises
+    while actually ITERATING that sheet's rows, verified empirically, never
+    here)."""
+    try:
+        return load_workbook(str(source), data_only=False, read_only=True)
+    except _PARSE_ERRORS as e:
+        _raise_parse_failed(source, e)
+
+
+def _safe_row_iter(row_iter, source: Path):
+    """Wrap ONLY the underlying iterator's own `next()` call — the exact
+    point where openpyxl's read_only reader lazily parses the next chunk of
+    a sheet's XML (verified empirically: a truncated sheet1.xml raises
+    `xml.etree.ElementTree.ParseError` mid-iteration, not at `load_workbook()`
+    time — read_only mode defers a SHEET's own parse to iteration even
+    though the workbook-level parts are already parsed by then). Every
+    caller's own row-processing logic (format_cell/format_row, budget
+    tracking, `saw_any`/`kept` bookkeeping) stays entirely outside this
+    function and outside its try block, reached only via the values this
+    generator yields — so a bug in that logic can never be caught here and
+    relabeled "corrupt file"."""
+    while True:
+        try:
+            row = next(row_iter)
+        except StopIteration:
+            return
+        except _PARSE_ERRORS as e:
+            _raise_parse_failed(source, e)
+        yield row
 
 # Per-sheet structural caps — see module docstring. Independent of MAX_CHARS.
 XLSX_MAX_ROWS = 5000
@@ -236,7 +357,7 @@ def _iter_body_blocks(document: Document, remaining_budget) -> Iterator[str]:
 
 
 def _convert_docx(source: Path) -> str:
-    document = Document(str(source))
+    document = _open_docx(source)
 
     lines: List[str] = []
     used = 0
@@ -278,7 +399,7 @@ def _convert_docx(source: Path) -> str:
 # .xlsx
 # --------------------------------------------------------------------------
 
-def _render_sheet_rows(ws, budget: int) -> Tuple[str, int, Optional[int], int]:
+def _render_sheet_rows(ws, budget: int, source: Path) -> Tuple[str, int, Optional[int], int]:
     """Render up to XLSX_MAX_ROWS x XLSX_MAX_COLS of `ws` as one pipe table
     (first row as the header), stopping early if the running character
     `budget` is exhausted first. Returns (markdown, kept_rows, total_rows,
@@ -326,7 +447,8 @@ def _render_sheet_rows(ws, budget: int) -> Tuple[str, int, Optional[int], int]:
         # repeated `ws.append([...])` calls). A later row genuinely wider
         # than row 1 will have its extra columns dropped, same as any sheet
         # whose real width exceeds XLSX_MAX_COLS today.
-        first_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+        first_row = next(_safe_row_iter(
+            ws.iter_rows(min_row=1, max_row=1, values_only=True), source), None)
         capped_cols = min(len(first_row), XLSX_MAX_COLS) if first_row else XLSX_MAX_COLS
 
     lines: List[str] = []
@@ -339,9 +461,15 @@ def _render_sheet_rows(ws, budget: int) -> Tuple[str, int, Optional[int], int]:
     # beyond the structural cap" — cheap, because the read_only parser stops
     # as soon as it sees a row index past this bound, so this never costs a
     # full-sheet scan even when the dimension is unknown.
-    for idx, row in enumerate(ws.iter_rows(min_row=1, max_row=row_cap + 1,
-                                            min_col=1, max_col=capped_cols,
-                                            values_only=True), start=1):
+    #
+    # Wrapped through _safe_row_iter, not iterated directly: read_only mode
+    # parses a sheet's own XML lazily, one row at a time, so a truncated/
+    # malformed sheet1.xml raises HERE, mid-iteration — never at
+    # load_workbook() time (see _open_xlsx/_safe_row_iter's docstrings).
+    for idx, row in enumerate(_safe_row_iter(
+            ws.iter_rows(min_row=1, max_row=row_cap + 1,
+                         min_col=1, max_col=capped_cols,
+                         values_only=True), source), start=1):
         saw_any = True
         if idx > row_cap:
             break
@@ -410,7 +538,7 @@ def _convert_xlsx(source: Path) -> str:
     # sheet-by-sheet render loop below, not just long enough to list
     # `worksheets`, or the first `iter_rows` call on any sheet raises
     # "Attempt to use ZIP archive that was already closed".
-    wb = load_workbook(str(source), data_only=False, read_only=True)
+    wb = _open_xlsx(source)
     try:
         worksheets = list(wb.worksheets)
         if not worksheets:
@@ -430,7 +558,8 @@ def _convert_xlsx(source: Path) -> str:
             used += header_cost
             sheets_rendered += 1
 
-            table_md, kept, total_rows, capped_rows = _render_sheet_rows(ws, MAX_CHARS - used)
+            table_md, kept, total_rows, capped_rows = _render_sheet_rows(
+                ws, MAX_CHARS - used, source)
             if table_md:
                 lines.append("")
                 lines.append(table_md)

@@ -28,7 +28,16 @@ import json
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from es.capabilities.doc_support import format_cell, format_row
+from es.capabilities.doc_support import ParseFailed, format_cell, format_row
+
+# Mirrors docs.CSV_FIELD_SIZE_LIMIT (10 MiB) — used ONLY for this module's own
+# ParseFailed message wording below, not to configure the csv module itself
+# (docs.py owns that process-wide call). Duplicated rather than imported for
+# the same reason MAX_CHARS is duplicated below: docs.py imports this module
+# at load time to populate CONVERTERS, so this module importing back from
+# docs.py to read the real constant would run while docs.py is still
+# mid-import. Keep the two values in sync by hand if either changes.
+_CSV_FIELD_SIZE_LIMIT_MB = 10
 
 # Character budget shared by every converter in this module (CSV rows,
 # text/Markdown/JSON lines), enforced by truncating at a whole-ROW or
@@ -106,13 +115,39 @@ def _read_text(source: Path) -> str:
     return source.read_text(encoding="utf-8", errors="replace")
 
 
+def _safe_csv_rows(reader, source: Path):
+    """Wrap ONLY the underlying csv.reader's own `next()` call. csv.reader is
+    LAZY — verified empirically: neither "a field larger than the size
+    limit" nor "an unbalanced quote runs to the end of the file" raises
+    `csv.Error` at `csv.reader(...)` construction, only while actually
+    ITERATING it (each `next()` call parses one more row's worth of the
+    underlying text). This function is the tightest boundary that still
+    catches the failure: the caller's own row-processing (the `if row`
+    filter, format_cell/format_row) stays entirely outside this function and
+    its try block, reached only via the rows this generator yields — a bug
+    in that logic can never be caught here and relabeled "corrupt CSV"."""
+    while True:
+        try:
+            row = next(reader)
+        except StopIteration:
+            return
+        except csv.Error as e:
+            raise ParseFailed(
+                f"{source.name} could not be parsed as a CSV — a field is "
+                f"larger than the {_CSV_FIELD_SIZE_LIMIT_MB}MB limit, or an "
+                "unbalanced quote runs to the end of the file; ask the user "
+                "to resend it or export a narrower/cleaner version") from e
+        yield row
+
+
 def _convert_csv(source: Path) -> str:
     text = _read_text(source)
     # csv.reader needs a real line iterator, not pre-split lines: a quoted
     # field may legitimately contain an embedded newline (RFC 4180), and
     # text.splitlines() would break that field's content across two "rows"
     # before csv.reader ever gets a chance to see the surrounding quotes.
-    rows = [row for row in csv.reader(io.StringIO(text)) if row]
+    reader = csv.reader(io.StringIO(text))
+    rows = [row for row in _safe_csv_rows(reader, source) if row]
     if not rows:
         return ""
 
@@ -144,9 +179,25 @@ def _convert_csv(source: Path) -> str:
 
 def _convert_json(source: Path) -> str:
     text = _read_text(source)
+    # Both json.loads AND json.dumps belong inside this one try: neither is
+    # lazy, and there is no rendering logic of OUR OWN in between them to
+    # accidentally shield — this is two adjacent stdlib calls performing one
+    # logical "parse, then re-format for display" step. Verified empirically
+    # that BOTH can raise RecursionError for the identical root cause (a
+    # document nested far deeper than any hand-authored file would be, ~1000
+    # levels): json.loads's C accelerator has enough headroom to parse a
+    # depth that json.dumps's pure-Python encoder (forced by `indent=2`,
+    # which has no C-accelerated path) then fails to re-serialize — so a
+    # document exists that loads cleanly but still blows the recursion limit
+    # one line later. Catching RecursionError only around loads() would
+    # leave that real, reachable case leaking a raw RecursionError.
     try:
         parsed = json.loads(text)
         pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
+    except RecursionError as e:
+        raise ParseFailed(
+            f"{source.name} is nested too deeply to parse as JSON; ask the "
+            "user to resend a flatter export") from e
     except ValueError:
         # Invalid JSON: hand back the raw text rather than raising — the
         # agent can still read it (and tell the user what's wrong with it),
