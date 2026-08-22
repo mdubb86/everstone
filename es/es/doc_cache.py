@@ -10,16 +10,49 @@ import os
 import shutil
 import time
 from pathlib import Path
+from typing import Optional
 
 DOC_ID_LEN = 12
 ES_NAMESPACE = ".es"
 TTL_SECONDS = 24 * 3600
 
 
-def doc_id(source: Path) -> str:
-    """Content hash of the source file. Stable, so re-extracting the same
-    document is a cache hit rather than a re-conversion."""
+def doc_id(source: Path, ext: Optional[str] = None) -> str:
+    """Content-AND-format hash of the source file. Stable for the same input,
+    so re-extracting the same document (same bytes, same format) is a cache
+    hit rather than a re-conversion.
+
+    `ext` folds the format into the identity, not just the file's bytes —
+    deliberately, not merely for convenience. With eight converters keyed by
+    extension, identical bytes read as two different formats (a real PDF
+    that happens to have once been uploaded and read as `.csv`) produce two
+    entirely different, independently CORRECT documents: different `kind`,
+    different markdown, different page_count. Those are not "the same
+    document read twice" — collapsing them onto one id caches whichever
+    format got extracted first and silently returns that garbage for every
+    later request of the other format, for the full 24h TTL (the bug this
+    fixes). And since `doc_id` is handed back to the agent and is meant to
+    become an addressable handle (`doc:<id>`, a later phase), two
+    representations of the same bytes SHOULD be different ids: the agent's
+    mental model is "one id = one document I can address", and a `.csv`
+    reading and a `.pdf` reading of the same bytes are two different
+    documents by any definition that matters to it (different content,
+    different kind, different affordances — a PDF has pages/render, a CSV
+    doesn't). Folding the extension into the HASH (rather than nesting the
+    artifact directory by extension under an unchanged content-only id) keeps
+    that "one id = one document" property literal instead of merely
+    structural, and needs no change to `artifact_dir`/`page_image_path`/the
+    rest of this module's directory layout.
+
+    Defaults to `source.suffix.lower()` when not given explicitly, so every
+    existing caller/test that only ever hashes one extension per Path
+    continues to work unchanged.
+    """
+    if ext is None:
+        ext = source.suffix.lower()
     h = hashlib.sha256()
+    h.update(ext.encode("utf-8"))
+    h.update(b"\0")
     with open(source, "rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)

@@ -208,6 +208,182 @@ def test_truncation_when_even_page_one_alone_exceeds_the_limit(text_pdf, tmp_pat
     assert 'pages="' not in out["markdown"]
 
 
+# --- outer 40k marker must not name an impossible remedy on flat formats ---
+# (item 4: the marker must not mention "page"/es_doc_render for a format
+# that has no pages and for which es_doc_render always raises
+# UnsupportedDocument by design.) Each fixture below builds a SINGLE
+# indivisible block (one CSV header row / one calendar event / one paragraph
+# / one spreadsheet row) that alone exceeds MAX_MARKDOWN_CHARS — every one of
+# these converters unconditionally keeps its first block regardless of size
+# (mirroring doc_pdf's own "page 1 alone" case), so none of them self-
+# truncates first; docs.py's own outer cap is what fires here.
+
+def _assert_flat_format_overflow_marker(markdown: str) -> None:
+    assert "es_doc_render" not in markdown
+    assert 'pages="' not in markdown
+    assert "page " not in markdown.lower()
+    assert "no narrower view to fall back to" in markdown
+
+
+def test_outer_truncation_marker_is_format_aware_for_csv(tmp_path):
+    """8000-column CSV: the header row alone is a single indivisible block
+    far over the 40k limit, with no earlier row boundary to cut at."""
+    header = ",".join(f"col_{i:05d}" for i in range(8000))
+    p = tmp_path / "wide.csv"
+    p.write_text(header + "\n", encoding="utf-8")
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert out["truncated"] is True
+    assert out["page_count"] is None
+    _assert_flat_format_overflow_marker(out["markdown"])
+
+
+def test_outer_truncation_marker_is_format_aware_for_ics(tmp_path):
+    """One VEVENT with a giant DESCRIPTION: a single event is doc_ics's
+    indivisible block, and it alone exceeds the limit."""
+    huge = "x" * 45_000
+    p = tmp_path / "huge_event.ics"
+    p.write_text(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n"
+        "BEGIN:VEVENT\r\nUID:1\r\nSUMMARY:Huge event\r\n"
+        "DTSTART:20260905T140000Z\r\n"
+        f"DESCRIPTION:{huge}\r\n"
+        "END:VEVENT\r\nEND:VCALENDAR\r\n", encoding="utf-8")
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert out["truncated"] is True
+    assert out["page_count"] is None
+    _assert_flat_format_overflow_marker(out["markdown"])
+
+
+def test_outer_truncation_marker_is_format_aware_for_docx(tmp_path):
+    """One giant paragraph: a single paragraph is doc_office's indivisible
+    block for .docx, and it alone exceeds the limit."""
+    from docx import Document
+
+    p = tmp_path / "huge_paragraph.docx"
+    d = Document()
+    d.add_paragraph("word " * 10_000)
+    d.save(str(p))
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert out["truncated"] is True
+    assert out["page_count"] is None
+    _assert_flat_format_overflow_marker(out["markdown"])
+
+
+def test_outer_truncation_marker_is_format_aware_for_xlsx(tmp_path):
+    """One giant row: a single row is doc_office's indivisible block for
+    .xlsx, and it alone exceeds the limit. A wide row of many COLUMNS would
+    be capped at XLSX_MAX_COLS (256) before ever reaching this size, and a
+    single CELL is capped at Excel's own real 32,767-character limit
+    (enforced by openpyxl itself on save) — so this uses two near-max cells
+    in one row instead — still one row, one indivisible block, well under
+    the 256-column cap, comfortably over the 40k character limit combined."""
+    from openpyxl import Workbook
+
+    p = tmp_path / "huge_row.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["x" * 32_000, "y" * 32_000])
+    wb.save(str(p))
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert out["truncated"] is True
+    assert out["page_count"] is None
+    _assert_flat_format_overflow_marker(out["markdown"])
+
+
+# --- truncated must be True whenever a converter self-truncated, even when ---
+# --- the RESULT stays under the outer 40k cap (item 2) ----------------------
+# Every converter below truncates ITSELF at its own smaller budget (~30k) and
+# says so in-band; before this fix, docs.py's `truncated` flag only ever
+# reflected its OWN 40k outer cap, so it stayed False even though the agent
+# was handed less than the full document.
+
+def test_self_truncation_is_reported_for_csv(tmp_path):
+    rows = "\n".join(f"{i},value-{i}" for i in range(6000))
+    p = tmp_path / "many_rows.csv"
+    p.write_text("id,value\n" + rows + "\n", encoding="utf-8")
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS  # outer cap never fired
+    assert out["truncated"] is True
+    assert "truncated after" in out["markdown"]
+
+
+def test_self_truncation_is_reported_for_json(tmp_path):
+    import json as jsonlib
+    data = [{"i": i, "note": "padding text to grow each entry a bit"} for i in range(1200)]
+    p = tmp_path / "big.json"
+    p.write_text(jsonlib.dumps(data), encoding="utf-8")
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS
+    assert out["truncated"] is True
+    assert "truncated after" in out["markdown"]
+
+
+def test_self_truncation_is_reported_for_txt(tmp_path):
+    line = "x" * 39 + "\n"
+    p = tmp_path / "big.txt"
+    p.write_text(line * 1000, encoding="utf-8")
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS
+    assert out["truncated"] is True
+    assert "truncated after" in out["markdown"]
+
+
+def test_self_truncation_is_reported_for_md(tmp_path):
+    line = "x" * 39 + "\n"
+    p = tmp_path / "big.md"
+    p.write_text(line * 1000, encoding="utf-8")
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS
+    assert out["truncated"] is True
+    assert "truncated after" in out["markdown"]
+
+
+def test_self_truncation_is_reported_for_ics(tmp_path):
+    events = []
+    for i in range(500):
+        events.append(
+            "BEGIN:VEVENT\r\nUID:{n}\r\nSUMMARY:Game {n} vs Team {n}\r\n"
+            "DTSTART:202609{d:02d}T140000Z\r\nLOCATION:Field {n}\r\n"
+            "END:VEVENT\r\n".format(n=i, d=(i % 28) + 1))
+    p = tmp_path / "many_events.ics"
+    p.write_text(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n"
+        + "".join(events) + "END:VCALENDAR\r\n", encoding="utf-8")
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS
+    assert out["truncated"] is True
+    assert "truncated after" in out["markdown"]
+
+
+def test_self_truncation_is_reported_for_docx(tmp_path):
+    from docx import Document
+
+    p = tmp_path / "many_paragraphs.docx"
+    d = Document()
+    for i in range(1200):
+        d.add_paragraph(f"Paragraph number {i} with some filler text to pad it out.")
+    d.save(str(p))
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS
+    assert out["truncated"] is True
+    assert "truncated after" in out["markdown"]
+
+
+def test_self_truncation_is_reported_for_xlsx(tmp_path):
+    from openpyxl import Workbook
+
+    p = tmp_path / "many_rows.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    for i in range(3000):
+        ws.append([f"row{i:05d}", f"val-{i:05d}", f"val-{i:05d}"])
+    wb.save(str(p))
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS
+    assert out["truncated"] is True
+    assert "truncated after" in out["markdown"]
+
+
 def test_extract_purges_stale_artifacts(text_pdf, tmp_path):
     from es import doc_cache
     stale = doc_cache.artifact_dir(tmp_path, "stale0000000")
@@ -660,8 +836,13 @@ def test_every_format_returns_the_stable_shape(
 
 
 def test_no_converter_leaks_a_raw_library_exception(tmp_path):
-    """Every supported extension, fed garbage bytes, must produce an es_code
-    from our catalogue — never a library's exception class name."""
+    """Coarse fuzz pass: every supported extension, fed garbage bytes, must
+    produce an es_code from our catalogue — never a library's exception
+    class name. A converter that happens to SUCCEED on this input also
+    passes trivially; see
+    test_realistic_malformed_documents_do_not_leak_a_raw_library_exception
+    below for inputs that are guaranteed to actually fail, built from real
+    library behavior rather than 30 bytes of noise."""
     from es.capabilities import docs
     allowed = {"doc_unreadable", "doc_encrypted", "doc_unsupported"}
     for ext in sorted(docs.SUPPORTED):
@@ -672,6 +853,117 @@ def test_no_converter_leaks_a_raw_library_exception(tmp_path):
         except Exception as e:
             code = getattr(e, "es_code", type(e).__name__)
             assert code in allowed, f"{ext} leaked {code}: {e}"
+
+
+# --- realistic malformed inputs must not leak a raw library exception -------
+# (item 3) Each case here is a real, verified-empirically failure mode of
+# python-docx/openpyxl/csv/json against an ordinary-mistake-shaped input (a
+# renamed file, a partial download) — not adversarial fuzzing. Every one of
+# these previously surfaced to the agent as the literal library exception
+# class name (OSError, ValueError, ParseError, XMLSyntaxError, "Error",
+# RecursionError, KeyError, AttributeError).
+
+def _rezip_replacing(src_path, dest_path, filename, new_content):
+    """Copy the zip at `src_path` to `dest_path`, replacing one member's
+    bytes. Used to build a real .docx/.xlsx with one internal XML part
+    corrupted/truncated/removed, which is what a partial download or a
+    renamed-extension file actually looks like on disk — not something a
+    from-scratch synthetic fixture can approximate."""
+    import zipfile
+    with zipfile.ZipFile(src_path) as zin, zipfile.ZipFile(dest_path, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == filename:
+                if new_content is None:
+                    continue  # drop this member entirely
+                data = new_content
+            zout.writestr(item, data)
+    return dest_path
+
+
+def test_realistic_malformed_documents_do_not_leak_a_raw_library_exception(tmp_path):
+    from docx import Document
+    from openpyxl import Workbook
+
+    from es.capabilities import docs
+
+    real_docx = tmp_path / "_real.docx"
+    d = Document()
+    d.add_paragraph("hello world, this is a real paragraph of real text")
+    d.save(str(real_docx))
+
+    real_xlsx = tmp_path / "_real.xlsx"
+    wb = Workbook()
+    wb.active.append(["a", "b"])
+    wb.save(str(real_xlsx))
+
+    cases = {}
+
+    # 1. real .docx renamed .xlsx -> OSError (openpyxl)
+    p = tmp_path / "docx_as_xlsx.xlsx"
+    p.write_bytes(real_docx.read_bytes())
+    cases["docx renamed .xlsx"] = p
+
+    # 2. real .xlsx renamed .docx -> ValueError (python-docx)
+    p = tmp_path / "xlsx_as_docx.docx"
+    p.write_bytes(real_xlsx.read_bytes())
+    cases["xlsx renamed .docx"] = p
+
+    # 3. .xlsx with truncated sheet xml -> xml.etree.ElementTree.ParseError
+    p = tmp_path / "truncated_sheet.xlsx"
+    import zipfile
+    with zipfile.ZipFile(real_xlsx) as zin:
+        sheet = zin.read("xl/worksheets/sheet1.xml")
+    _rezip_replacing(real_xlsx, p, "xl/worksheets/sheet1.xml", sheet[: len(sheet) // 2])
+    cases[".xlsx truncated sheet xml"] = p
+
+    # 4. .docx with truncated document.xml -> lxml.etree.XMLSyntaxError
+    p = tmp_path / "truncated_document.docx"
+    with zipfile.ZipFile(real_docx) as zin:
+        document_xml = zin.read("word/document.xml")
+    _rezip_replacing(real_docx, p, "word/document.xml", document_xml[: len(document_xml) // 2])
+    cases[".docx truncated document.xml"] = p
+
+    # 5. .csv with a field > the (raised) field-size limit
+    p = tmp_path / "long_field.csv"
+    p.write_text("a,b\n" + ("x" * (docs.CSV_FIELD_SIZE_LIMIT + 1000)) + ",y\n", encoding="utf-8")
+    cases[".csv field over the size limit"] = p
+
+    # 6. .csv with one unbalanced quote that swallows the rest of a large file
+    #    into a single field past the size limit — same underlying csv.Error
+    #    as case 5, different root cause.
+    p = tmp_path / "unbalanced_quote.csv"
+    p.write_text('a,b\n"' + ("y" * (docs.CSV_FIELD_SIZE_LIMIT + 1000)) + "\n", encoding="utf-8")
+    cases[".csv unbalanced quote"] = p
+
+    # 7. .json nested deeper than ~1000 levels -> RecursionError
+    p = tmp_path / "deep.json"
+    p.write_text("[" * 3000 + "]" * 3000, encoding="utf-8")
+    cases[".json nested too deeply"] = p
+
+    # 8. valid zip, no [Content_Types].xml -> KeyError
+    p = tmp_path / "no_content_types.xlsx"
+    _rezip_replacing(real_xlsx, p, "[Content_Types].xml", None)
+    cases["valid zip, no [Content_Types].xml"] = p
+
+    # 9. valid zip, [Content_Types].xml with no default namespace (python-docx
+    #    never upgrades it to its own CT_Types wrapper class, so the next
+    #    attribute access on it raises) -> AttributeError
+    p = tmp_path / "empty_content_types.docx"
+    _rezip_replacing(real_docx, p, "[Content_Types].xml", b"<?xml version='1.0'?><Types></Types>")
+    cases["docx with a namespace-less [Content_Types].xml"] = p
+
+    allowed = {"doc_unreadable", "doc_encrypted"}
+    leaked_class_names = {
+        "OSError", "ValueError", "ParseError", "XMLSyntaxError", "Error",
+        "RecursionError", "KeyError", "AttributeError",
+    }
+    for label, path in cases.items():
+        with pytest.raises(Exception) as e:
+            docs.extract(str(path), roots=[tmp_path], cache_root=tmp_path)
+        code = getattr(e.value, "es_code", type(e.value).__name__)
+        assert code not in leaked_class_names, f"{label}: leaked raw {code}: {e.value}"
+        assert code in allowed, f"{label}: unexpected es_code {code}: {e.value}"
 
 
 # --- encrypted .docx / .xlsx -------------------------------------------------
@@ -706,3 +998,83 @@ def test_ole2_xlsx_is_reported_as_encrypted_not_generic_corruption(tmp_path):
     with pytest.raises(docs.EncryptedDocument) as e:
         docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
     assert "password" in str(e.value).lower()
+
+
+# --- cross-format cache collision (doc_id must include the format) ---------
+
+def test_cross_format_cache_collision_is_fixed(text_pdf, tmp_path):
+    """The exact repro from the review: a real PDF's bytes, saved once under
+    a .csv extension and once under a .pdf extension, must NOT share a
+    doc_id/artifact — each is read as its OWN format (a .csv reading of PDF
+    bytes is garbage-but-real CSV output, not the PDF's actual content), so
+    unifying their cache entries would silently hand back whichever format
+    was converted first for the full 24h TTL."""
+    from es.capabilities import docs
+    content = text_pdf.read_bytes()
+    as_csv = tmp_path / "same.csv"
+    as_pdf = tmp_path / "same.pdf"
+    as_csv.write_bytes(content)
+    as_pdf.write_bytes(content)
+
+    csv_out = docs.extract(str(as_csv), roots=[tmp_path], cache_root=tmp_path)
+    pdf_out = docs.extract(str(as_pdf), roots=[tmp_path], cache_root=tmp_path)
+
+    assert csv_out["doc_id"] != pdf_out["doc_id"]
+    assert csv_out["kind"] == "csv"
+    assert pdf_out["kind"] == "pdf"
+    assert pdf_out["page_count"] == 2
+    assert "Fall Season Schedule" in pdf_out["markdown"]
+    assert "Fall Season Schedule" not in csv_out["markdown"]
+
+    # Each format landed in its own artifact directory, keyed by its own id.
+    assert (tmp_path / ".es" / csv_out["doc_id"] / "doc.md").is_file()
+    assert (tmp_path / ".es" / pdf_out["doc_id"] / "doc.md").is_file()
+
+    # Order independence: read .pdf first, THEN .csv, and re-check both are
+    # still correct — the bug reproduced in either order.
+    other_root = tmp_path / "reversed"
+    other_root.mkdir()
+    as_pdf2 = other_root / "same.pdf"
+    as_csv2 = other_root / "same.csv"
+    as_pdf2.write_bytes(content)
+    as_csv2.write_bytes(content)
+    pdf_out2 = docs.extract(str(as_pdf2), roots=[other_root], cache_root=tmp_path)
+    csv_out2 = docs.extract(str(as_csv2), roots=[other_root], cache_root=tmp_path)
+    assert pdf_out2["kind"] == "pdf" and "Fall Season Schedule" in pdf_out2["markdown"]
+    assert csv_out2["kind"] == "csv" and "Fall Season Schedule" not in csv_out2["markdown"]
+
+
+def test_cross_format_cache_collision_is_fixed_for_zero_byte_files(tmp_path):
+    """Reproduced in the review specifically for zero-byte files too — an
+    empty .csv and an empty .txt must not collide either."""
+    from es.capabilities import docs
+    as_csv = tmp_path / "empty.csv"
+    as_txt = tmp_path / "empty.txt"
+    as_csv.write_bytes(b"")
+    as_txt.write_bytes(b"")
+
+    csv_out = docs.extract(str(as_csv), roots=[tmp_path], cache_root=tmp_path)
+    txt_out = docs.extract(str(as_txt), roots=[tmp_path], cache_root=tmp_path)
+    assert csv_out["doc_id"] != txt_out["doc_id"]
+
+
+def test_extract_same_extension_repeat_is_still_a_cache_hit(csv_file, tmp_path, monkeypatch):
+    """Guard against the format-aware doc_id fix regressing the ORIGINAL
+    cache-hit property for the common case: the same file, same extension,
+    extracted twice must still convert only once."""
+    from es.capabilities import docs
+    calls = []
+    original = docs.doc_text.convert
+
+    def spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(docs.doc_text, "convert", spy)
+
+    first = docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
+    second = docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
+
+    assert len(calls) == 1
+    assert first["doc_id"] == second["doc_id"]
+    assert first["markdown"] == second["markdown"]
