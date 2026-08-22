@@ -61,6 +61,40 @@ def format_row(cells: List[str], width: int) -> str:
     return "| " + " | ".join(padded) + " |"
 
 
+# The fixed opening every converter's self-truncation marker starts with —
+# owned here, once, so docs.py can tell "this converter already cut real
+# content and said so" apart from ordinary document text with a plain
+# substring check instead of a regex that has to parse the free-form prose
+# after it. That regex used to require NO parentheses between "*(" and the
+# closing ")*" — reasonable until a converter's message legitimately needed
+# a nested parenthetical aside (e.g. "...could not be determined (its XML
+# has no declared dimension)"), at which point the regex silently stopped
+# matching and the whole marker went undetected. Anchoring on this fixed,
+# converter-agnostic PREFIX instead means a converter's own detail text
+# after it can say anything — including its own nested parens — without
+# ever being able to change the boolean docs.py derives from it. See
+# docs.py's `_converter_self_truncated`, the sole reader of this constant.
+TRUNCATION_SENTINEL = "*(truncated"
+
+
+def truncation_marker(detail: str) -> str:
+    """Build one converter's self-truncation marker: `detail` (the specific
+    reason/counts, e.g. "after 12 of 30 events — the 30000-character limit
+    was reached") is wrapped in the "*(truncated ...)*" convention every
+    converter's marker follows, always starting with the shared
+    TRUNCATION_SENTINEL so docs.py's detection never depends on parsing
+    `detail`'s own text — `detail` is free to contain nested parentheses,
+    get reworded, add more counts, etc. without ever breaking detection.
+
+    Returns the marker text alone, NOT prefixed with "\\n\\n" — callers
+    differ on how it's joined to the rest of their markdown (most append
+    "\\n\\n" + this to their final string; doc_office's per-sheet note
+    instead appends it as its own already-blank-line-separated list item),
+    so joining is left to each call site rather than assumed here.
+    """
+    return f"{TRUNCATION_SENTINEL} {detail})*"
+
+
 def table_to_markdown(table: List[List[Optional[str]]]) -> str:
     """Render one extracted table (a list of rows, each a list of cells) as
     a Markdown pipe table with a header separator. Returns "" for an

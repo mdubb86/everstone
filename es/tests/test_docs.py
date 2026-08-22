@@ -384,6 +384,86 @@ def test_self_truncation_is_reported_for_xlsx(tmp_path):
     assert "truncated after" in out["markdown"]
 
 
+def test_self_truncation_is_reported_for_write_only_xlsx_with_no_dimension(tmp_path):
+    """Regression guard for a LIVE bug: `openpyxl.Workbook(write_only=True)`
+    never writes a `<dimension>` element to a sheet's XML (see doc_office's
+    module docstring), so this sheet's true row count can never be
+    determined without a full scan — the exact case
+    doc_office._sheet_truncation_note's "total_rows is None" branch exists
+    for. That branch's marker embeds a NESTED parenthetical aside ("...could
+    not be determined (its XML has no declared dimension)"), and before this
+    fix docs.py detected self-truncation with a regex that required NO
+    parentheses at all between "*(" and the closing ")*" — so this exact
+    marker was never detected, and `truncated` came back False.
+
+    Verified live in the running container before this fix: a 5,000-row
+    write_only workbook rendered only 856 rows (the rest silently dropped)
+    and the es_doc_extract envelope reported `truncated: false` — the worst
+    failure mode for this tool, a successful-looking result with wrong
+    content. This is the test that would have caught it.
+    """
+    from openpyxl import Workbook
+
+    p = tmp_path / "write_only_many_rows.xlsx"
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("Sheet")
+    for i in range(5000):
+        ws.append([f"row{i:05d}", f"val-{i:05d}", f"val-{i:05d}"])
+    wb.save(str(p))
+
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS  # outer cap never fired
+    assert out["truncated"] is True
+    assert "truncated after" in out["markdown"]
+    assert "no declared dimension" in out["markdown"]
+
+
+def test_small_write_only_xlsx_with_no_dimension_is_not_falsely_truncated(tmp_path):
+    """The other half of the write_only regression above: a small
+    dimension-less sheet must report `truncated: False`. Found while
+    manually verifying this fix — `doc_office._sheet_truncation_note` used
+    to infer "was this cut short?" from `kept < capped_rows`, where
+    `capped_rows` was silently the bare XLSX_MAX_ROWS fallback ceiling (not
+    this sheet's real size) whenever the dimension was unknown, so even a
+    2-row write_only sheet satisfied that comparison and was falsely
+    reported as truncated. Fixed alongside the detection bug since both
+    live in the same code path this task touches."""
+    from openpyxl import Workbook
+
+    p = tmp_path / "tiny_write_only.xlsx"
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("Sheet")
+    ws.append(["a", "b"])
+    ws.append(["c", "d"])
+    wb.save(str(p))
+
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert out["truncated"] is False
+    assert "truncated" not in out["markdown"].lower()
+
+
+def test_self_truncation_detection_is_a_sentinel_check_not_a_regex(tmp_path):
+    """The structural fix for the write_only-xlsx bug above: detection must
+    not depend on parsing a converter's own prose at all. Build a marker
+    (via the same doc_support.truncation_marker every converter now uses)
+    whose detail text contains deeply nested parentheses far beyond what any
+    real converter emits today — proving detection is a plain check for
+    doc_support.TRUNCATION_SENTINEL, not a regex reconstructing balanced
+    parens around free-form text that could break again the next time a
+    converter's message is reworded."""
+    from es.capabilities import doc_support
+
+    markdown = "some real document content\n\n" + doc_support.truncation_marker(
+        "after 1 (of an unknown total (nested (again) for good measure)) rows")
+    assert docs._converter_self_truncated(markdown) is True
+
+    # And the inverse: ordinary content that merely contains the word
+    # "truncated" (no marker, no sentinel) must NOT be mistaken for one —
+    # the fix must not trade a false negative for a false positive.
+    assert docs._converter_self_truncated(
+        "the report was truncated by the printer, not by us") is False
+
+
 def test_extract_purges_stale_artifacts(text_pdf, tmp_path):
     from es import doc_cache
     stale = doc_cache.artifact_dir(tmp_path, "stale0000000")

@@ -419,16 +419,17 @@ def _safe_hard_cut(text: str, limit: int) -> int:
 # ...)*" convention this module's own PDF marker uses (see each module's own
 # MAX_CHARS/MAX_ICS_CHARS comments), because none of them can rely on
 # _truncate_markdown below to do it for them — that function only knows
-# "## Page N" PDF-style boundaries. Anchored on the literal "*(...)* "
-# wrapper plus the word "truncated" inside it (not just the bare word, which
-# could coincidentally appear in real document content) to keep false
-# positives effectively impossible without requiring every converter module
-# to change its (markdown, images) return contract just to also hand back a
-# flag — a change that would reach into doc_office.py/doc_ics.py, files this
-# fix does not own.
-_SELF_TRUNCATION_MARKER_RE = re.compile(r"\*\([^()]*\btruncated\b[^()]*\)\*")
-
-
+# "## Page N" PDF-style boundaries. Detection used to be a regex requiring NO
+# parentheses between "*(" and the closing ")*" — that broke the moment a
+# converter's own detail text legitimately needed a nested parenthetical
+# aside (verified live: a write_only .xlsx sheet with no <dimension> element
+# emits "...could not be determined (its XML has no declared dimension)",
+# which the regex silently stopped matching, so `truncated` came back False
+# on a document missing most of its rows). Detection now anchors on
+# doc_support.TRUNCATION_SENTINEL, a fixed prefix every converter's marker is
+# built through (doc_support.truncation_marker) — a plain substring check,
+# not a regex trying to parse prose that four independently-maintained
+# converter modules are free to reword.
 def _converter_self_truncated(markdown: str) -> bool:
     """True if a converter already truncated ITS OWN output (before this
     module's outer MAX_MARKDOWN_CHARS cap ever ran) and said so in-band.
@@ -440,7 +441,7 @@ def _converter_self_truncated(markdown: str) -> bool:
     otherwise reports `truncated: False` even though real content was
     genuinely cut, contradicting es_doc_extract's own docstring that
     `truncated` is the agent's signal to look for more."""
-    return bool(_SELF_TRUNCATION_MARKER_RE.search(markdown))
+    return doc_support.TRUNCATION_SENTINEL in markdown
 
 
 def _truncate_markdown(markdown: str, total_pages: Optional[int]) -> Tuple[str, bool]:
@@ -477,9 +478,10 @@ def _truncate_markdown(markdown: str, total_pages: Optional[int]) -> Tuple[str, 
     if candidates:
         cut_pos, next_page = max(candidates)
         stopped_after = next_page - 1
-        marker = (f"\n\n*(truncated after page {stopped_after} of {total_pages} "
-                   f"— call es_doc_extract again with pages=\"{stopped_after + 1}-"
-                   f"{total_pages}\" to continue)*")
+        marker = "\n\n" + doc_support.truncation_marker(
+            f"after page {stopped_after} of {total_pages} "
+            f"— call es_doc_extract again with pages=\"{stopped_after + 1}-"
+            f"{total_pages}\" to continue")
         return markdown[:cut_pos] + marker, True
 
     cut_pos = _safe_hard_cut(markdown, MAX_MARKDOWN_CHARS)
@@ -492,20 +494,22 @@ def _truncate_markdown(markdown: str, total_pages: Optional[int]) -> Tuple[str, 
         # The honest answer is that one indivisible block (a row, a
         # paragraph, an event) is simply too large, with no narrower view
         # available at all.
-        marker = (f"\n\n*(truncated — a single block of content exceeds the "
-                   f"{MAX_MARKDOWN_CHARS}-character limit with no earlier "
-                   "boundary to stop at, and this format has no narrower "
-                   "view to fall back to; ask the user for a smaller/"
-                   "narrower version of this document)*")
+        marker = "\n\n" + doc_support.truncation_marker(
+            f"— a single block of content exceeds the "
+            f"{MAX_MARKDOWN_CHARS}-character limit with no earlier "
+            "boundary to stop at, and this format has no narrower "
+            "view to fall back to; ask the user for a smaller/"
+            "narrower version of this document")
         return markdown[:cut_pos] + marker, True
 
     first_match = _FIRST_PAGE_RE.match(markdown)
     first_page = int(first_match.group(1)) if first_match else 1
-    marker = (f"\n\n*(truncated inside page {first_page} — its content alone "
-              f"exceeds the {MAX_MARKDOWN_CHARS}-character limit, so there is "
-              "no earlier page boundary to stop at; narrowing pages won't "
-              f"help since page {first_page} alone is already too large — try "
-              "es_doc_render on this page instead)*")
+    marker = "\n\n" + doc_support.truncation_marker(
+        f"inside page {first_page} — its content alone "
+        f"exceeds the {MAX_MARKDOWN_CHARS}-character limit, so there is "
+        "no earlier page boundary to stop at; narrowing pages won't "
+        f"help since page {first_page} alone is already too large — try "
+        "es_doc_render on this page instead")
     return markdown[:cut_pos] + marker, True
 
 

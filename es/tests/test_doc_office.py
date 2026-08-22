@@ -125,6 +125,39 @@ def test_xlsx_write_only_workbook_rows_are_not_lost(tmp_path):
     assert "| row49 | 49 |" in md
     # must not be mistaken for the genuinely-empty-sheet case
     assert "no data" not in md.lower()
+    # nor mistaken for a truncated one — see
+    # test_xlsx_small_write_only_sheet_is_not_falsely_reported_truncated for
+    # the regression this guards (a fallback ceiling used in place of the
+    # sheet's unknown true size used to look exactly like a budget cut).
+    assert "truncated" not in md.lower()
+
+
+def test_xlsx_small_write_only_sheet_is_not_falsely_reported_truncated(tmp_path):
+    """Regression guard: `_sheet_truncation_note` used to infer "was this
+    sheet cut short?" by comparing `kept` against a returned "capped_rows"
+    value that meant "min(real total, XLSX_MAX_ROWS)" when the sheet's
+    dimension was known, but just the bare XLSX_MAX_ROWS fallback ceiling
+    (a safety bound for iteration, not a real count) when it was not — e.g.
+    every `openpyxl.Workbook(write_only=True)` sheet. A tiny write_only
+    sheet (2 real rows, well under both the character budget and
+    XLSX_MAX_ROWS) satisfied `kept < capped_rows` (2 < 5000) purely because
+    of that fallback value, and was reported as "truncated after 2 of 5000
+    rows" even though nothing was cut at all. `_render_sheet_rows` now
+    returns the actual reason (`hit_row_cap`/`hit_budget`) directly instead
+    of leaving the caller to reconstruct it from an overloaded count."""
+    from openpyxl import Workbook
+
+    p = tmp_path / "tiny_write_only.xlsx"
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("Data")
+    ws.append(["a", "b"])
+    ws.append(["c", "d"])
+    wb.save(str(p))
+
+    md, _ = doc_office.convert(p, tmp_path)
+    assert "| a | b |" in md
+    assert "| c | d |" in md
+    assert "truncated" not in md.lower()
 
 
 def test_xlsx_dimension_stripped_sheet_rows_are_not_lost(tmp_path):
@@ -305,6 +338,6 @@ def test_docx_single_enormous_table_is_capped(tmp_path):
     md, _ = doc_office.convert(p, tmp_path)
     elapsed = time.time() - t0
 
-    assert "table truncated" in md.lower()
+    assert "truncated after" in md.lower()
     assert len(md) < 35_000
     assert elapsed < 5.0, f"conversion took {elapsed:.2f}s — should be a small fraction of a second"

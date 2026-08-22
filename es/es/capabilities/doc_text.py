@@ -28,7 +28,8 @@ import json
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from es.capabilities.doc_support import ParseFailed, format_cell, format_row
+from es.capabilities.doc_support import (ParseFailed, format_cell, format_row,
+                                          truncation_marker)
 
 # Mirrors docs.CSV_FIELD_SIZE_LIMIT (10 MiB) — used ONLY for this module's own
 # ParseFailed message wording below, not to configure the csv module itself
@@ -91,14 +92,16 @@ def _truncate_at_line_boundary(text: str, limit: int) -> Tuple[str, bool, int, i
 
 def _line_truncation_marker(kept_lines: int, total_lines: int, kind: str) -> str:
     if kept_lines == 0:
-        return (f"\n\n*(truncated inside the first line — it alone exceeds "
-                 f"the {MAX_CHARS}-character limit, so there is no earlier "
-                 f"line boundary to cut at; this {kind} file {_NO_RESUME}, "
-                 "so ask for a narrower excerpt if the rest is needed)*")
-    return (f"\n\n*(truncated after {kept_lines} of {total_lines} lines — "
-             f"the {MAX_CHARS}-character limit was reached; this {kind} "
-             f"file {_NO_RESUME}, so ask for a narrower excerpt, or the "
-             "rest of the file, if more is needed)*")
+        return "\n\n" + truncation_marker(
+            f"inside the first line — it alone exceeds "
+            f"the {MAX_CHARS}-character limit, so there is no earlier "
+            f"line boundary to cut at; this {kind} file {_NO_RESUME}, "
+            "so ask for a narrower excerpt if the rest is needed")
+    return "\n\n" + truncation_marker(
+        f"after {kept_lines} of {total_lines} lines — "
+        f"the {MAX_CHARS}-character limit was reached; this {kind} "
+        f"file {_NO_RESUME}, so ask for a narrower excerpt, or the "
+        "rest of the file, if more is needed")
 
 
 def _read_text(source: Path) -> str:
@@ -170,10 +173,11 @@ def _convert_csv(source: Path) -> str:
 
     md = "\n".join(lines)
     if kept < len(data_rows):
-        md += (f"\n\n*(truncated after {kept} of {len(data_rows)} data rows "
-               f"— the {MAX_CHARS}-character limit was reached; this CSV "
-               f"{_NO_RESUME}, so ask for a narrower export, or filter it, "
-               "if the rest is needed)*")
+        md += "\n\n" + truncation_marker(
+            f"after {kept} of {len(data_rows)} data rows "
+            f"— the {MAX_CHARS}-character limit was reached; this CSV "
+            f"{_NO_RESUME}, so ask for a narrower export, or filter it, "
+            "if the rest is needed")
     return md
 
 

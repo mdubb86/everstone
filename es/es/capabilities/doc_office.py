@@ -96,7 +96,8 @@ from lxml.etree import XMLSyntaxError
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
-from es.capabilities.doc_support import ParseFailed, format_cell, format_row
+from es.capabilities.doc_support import (ParseFailed, format_cell, format_row,
+                                          truncation_marker)
 
 # Shared by both formats — see module docstring.
 MAX_CHARS = 30_000
@@ -313,11 +314,13 @@ def _table_block(table: Table, budget: int) -> Optional[str]:
 
     md = "\n".join(lines)
     if row_cap_hit:
-        md += (f"\n\n*(table truncated after {kept} rows — this table "
-               f"exceeds the {DOCX_MAX_TABLE_ROWS}-row-per-table limit)*")
+        md += "\n\n" + truncation_marker(
+            f"after {kept} rows — this table "
+            f"exceeds the {DOCX_MAX_TABLE_ROWS}-row-per-table limit")
     elif budget_hit:
-        md += (f"\n\n*(table truncated after {kept} rows — the character "
-               "limit for this document was reached)*")
+        md += "\n\n" + truncation_marker(
+            f"after {kept} rows — the character "
+            "limit for this document was reached")
     return md
 
 
@@ -387,11 +390,12 @@ def _convert_docx(source: Path) -> str:
         # knowing it would require walking the rest of the document after
         # all, which is exactly the O(document size) cost this function
         # exists to avoid (see the module docstring).
-        md += (f"\n\n*(truncated after {kept} section"
-               f"{'s' if kept != 1 else ''} — the {MAX_CHARS}-character "
-               "limit was reached; this document has no page range to "
-               "resume from, so ask for a narrower excerpt if more is "
-               "needed)*")
+        md += "\n\n" + truncation_marker(
+            f"after {kept} section"
+            f"{'s' if kept != 1 else ''} — the {MAX_CHARS}-character "
+            "limit was reached; this document has no page range to "
+            "resume from, so ask for a narrower excerpt if more is "
+            "needed")
     return md
 
 
@@ -399,11 +403,26 @@ def _convert_docx(source: Path) -> str:
 # .xlsx
 # --------------------------------------------------------------------------
 
-def _render_sheet_rows(ws, budget: int, source: Path) -> Tuple[str, int, Optional[int], int]:
+def _render_sheet_rows(ws, budget: int, source: Path) -> Tuple[str, int, Optional[int], bool, bool]:
     """Render up to XLSX_MAX_ROWS x XLSX_MAX_COLS of `ws` as one pipe table
     (first row as the header), stopping early if the running character
     `budget` is exhausted first. Returns (markdown, kept_rows, total_rows,
-    capped_rows).
+    hit_row_cap, hit_budget).
+
+    `hit_row_cap`/`hit_budget` say explicitly WHY iteration stopped short
+    (mutually exclusive by construction: the loop below checks the
+    structural cap before ever pricing a row against `budget`, so at most
+    one of them is ever True for a single call) — `_sheet_truncation_note`
+    used to reconstruct this by comparing `kept` against a returned
+    "capped_rows" value that meant two different things depending on
+    whether the sheet's dimension was known (min(known_rows,
+    XLSX_MAX_ROWS) when known, but just the bare XLSX_MAX_ROWS fallback
+    ceiling when not — NOT the same thing as "how many rows this sheet
+    actually has"). That mismatch was a real bug: a tiny write_only sheet
+    (1 real row, no <dimension>) was reported as "truncated after 1 of
+    5000 rows" even though nothing was cut, because `kept < capped_rows`
+    (1 < 5000) looked exactly like a budget cut. Returning the actual
+    reason directly removes the need to infer it at all.
 
     `ws.max_row`/`ws.max_column` are `None` (not `0`) when the sheet's XML
     has no `<dimension>` element at all — e.g. every sheet written by
@@ -486,7 +505,7 @@ def _render_sheet_rows(ws, budget: int, source: Path) -> Tuple[str, int, Optiona
         kept += 1
 
     if not saw_any:
-        return "", 0, 0, 0
+        return "", 0, 0, False, False
 
     if known_rows is not None:
         total_rows: Optional[int] = known_rows
@@ -497,38 +516,53 @@ def _render_sheet_rows(ws, budget: int, source: Path) -> Tuple[str, int, Optiona
     else:
         total_rows = idx  # generator ran to completion at/under the cap — that IS the true count
 
-    return "\n".join(lines), kept, total_rows, row_cap
+    hit_row_cap = idx > row_cap
+    return "\n".join(lines), kept, total_rows, hit_row_cap, stopped_on_budget
 
 
-def _sheet_truncation_note(kept: int, capped_rows: int,
-                            total_rows: Optional[int]) -> Optional[str]:
-    if total_rows == 0:
-        return None  # genuinely empty sheet — nothing was truncated
-    if total_rows is not None and kept >= capped_rows and capped_rows == total_rows:
-        return None  # every real row was rendered — nothing to note
-    if kept < capped_rows:
-        # the character budget cut this sheet short before even its
-        # structural row cap was reached
-        if total_rows is not None and total_rows > capped_rows:
-            # both limits are in play — say so, rather than reporting
-            # `capped_rows` as if it were the sheet's real size (that hid
-            # the true row count behind the structural cap's denominator).
-            return (f"truncated after {kept} of {total_rows} rows — the "
+def _sheet_truncation_note(kept: int, total_rows: Optional[int],
+                            hit_row_cap: bool, hit_budget: bool) -> Optional[str]:
+    """Returns the marker's DETAIL text only — no "truncated" prefix, no
+    "*(...)*" wrapping — so _convert_xlsx can wrap it through
+    doc_support.truncation_marker without duplicating the shared sentinel
+    word by hand. None means nothing was truncated at all.
+
+    `hit_row_cap`/`hit_budget` come straight from `_render_sheet_rows` (see
+    its docstring) rather than being re-derived from `kept` vs. a "capped
+    rows" count here — that reconstruction used to be wrong for a
+    dimension-less sheet smaller than XLSX_MAX_ROWS (every real row
+    rendered, nothing cut) because the value standing in for "this sheet's
+    expected size" was actually just the structural cap's fallback
+    ceiling, not this sheet's real size. `XLSX_MAX_ROWS` is read directly
+    from the module constant rather than threaded through as a parameter,
+    since it is the same fixed number in every case where `hit_row_cap` is
+    True (see `_render_sheet_rows`'s docstring: reaching the row cap only
+    ever means XLSX_MAX_ROWS was the binding limit)."""
+    if not hit_row_cap and not hit_budget:
+        return None  # nothing was cut short by either limit
+    if hit_budget:
+        if total_rows is not None and total_rows > XLSX_MAX_ROWS:
+            # both limits are in play — say so, rather than reporting the
+            # row-per-sheet cap as if it were this sheet's real size (that
+            # would hide the true row count behind the structural cap).
+            return (f"after {kept} of {total_rows} rows — the "
                     "character limit for this document was reached first; "
                     f"this sheet also exceeds the {XLSX_MAX_ROWS}-row-per-"
                     "sheet limit")
         if total_rows is None:
-            return (f"truncated after {kept} rows shown — the character "
+            return (f"after {kept} rows shown — the character "
                     "limit for this document was reached; this sheet's "
                     "total row count could not be determined (its XML has "
                     "no declared dimension)")
-        return (f"truncated after {kept} of {capped_rows} rows shown — the "
+        return (f"after {kept} of {total_rows} rows shown — the "
                 "character limit for this document was reached")
+    # hit_row_cap and not hit_budget: the structural cap is always what was
+    # actually hit here (XLSX_MAX_ROWS — see _render_sheet_rows's docstring).
     if total_rows is None:
-        return (f"truncated after {capped_rows} rows — this sheet exceeds "
+        return (f"after {XLSX_MAX_ROWS} rows — this sheet exceeds "
                 f"the {XLSX_MAX_ROWS}-row-per-sheet limit (its exact total "
                 "is unknown: this sheet's XML has no declared dimension)")
-    return (f"truncated after {capped_rows} of {total_rows} rows — this "
+    return (f"after {XLSX_MAX_ROWS} of {total_rows} rows — this "
             f"sheet exceeds the {XLSX_MAX_ROWS}-row-per-sheet limit")
 
 
@@ -558,19 +592,20 @@ def _convert_xlsx(source: Path) -> str:
             used += header_cost
             sheets_rendered += 1
 
-            table_md, kept, total_rows, capped_rows = _render_sheet_rows(
+            table_md, kept, total_rows, hit_row_cap, hit_budget = _render_sheet_rows(
                 ws, MAX_CHARS - used, source)
             if table_md:
                 lines.append("")
                 lines.append(table_md)
                 used += len(table_md) + 2
 
-            note = _sheet_truncation_note(kept, capped_rows, total_rows)
+            note = _sheet_truncation_note(kept, total_rows, hit_row_cap, hit_budget)
             if note:
                 lines.append("")
-                marker = f"*({note} — this file has no page range to resume " \
-                          "from, so ask for a narrower export if the rest is " \
-                          "needed)*"
+                marker = truncation_marker(
+                    f"{note} — this file has no page range to resume "
+                    "from, so ask for a narrower export if the rest is "
+                    "needed")
                 lines.append(marker)
                 used += len(marker) + 2
                 # A per-sheet character-budget cut means the shared budget is
@@ -583,11 +618,12 @@ def _convert_xlsx(source: Path) -> str:
     md = "\n".join(lines)
     if sheets_rendered < len(worksheets):
         remaining = len(worksheets) - sheets_rendered
-        md += (f"\n\n*(truncated after {sheets_rendered} of {len(worksheets)} "
-               f"sheets — the {MAX_CHARS}-character limit was reached; this "
-               "workbook has no page range to resume from, so ask for a "
-               f"narrower export if the remaining {remaining} sheet"
-               f"{'s' if remaining != 1 else ''} are needed)*")
+        md += "\n\n" + truncation_marker(
+            f"after {sheets_rendered} of {len(worksheets)} "
+            f"sheets — the {MAX_CHARS}-character limit was reached; this "
+            "workbook has no page range to resume from, so ask for a "
+            f"narrower export if the remaining {remaining} sheet"
+            f"{'s' if remaining != 1 else ''} are needed")
     return md
 
 

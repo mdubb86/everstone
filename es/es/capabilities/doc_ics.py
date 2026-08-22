@@ -73,6 +73,7 @@ from zoneinfo import ZoneInfo
 from icalendar import Calendar
 
 from es.capabilities import cal_support
+from es.capabilities.doc_support import truncation_marker
 
 # Character budget for the rendered feed, enforced by truncating at a whole
 # EVENT boundary (never mid-event). Mirrors doc_text.MAX_CHARS's
@@ -255,11 +256,12 @@ def _build_markdown(events, calname: Optional[str], tz_name: str,
     md = "\n".join(lines)
     if kept < total:
         remaining = total - kept
-        md += (f"\n\n*(truncated after {kept} of {total} events — the "
-               f"{MAX_ICS_CHARS}-character limit was reached; a calendar "
-               "feed has no page range to resume from, so ask for a "
-               f"narrower date range or a smaller export if the remaining "
-               f"{remaining} event{'s' if remaining != 1 else ''} are needed)*")
+        md += "\n\n" + truncation_marker(
+            f"after {kept} of {total} events — the "
+            f"{MAX_ICS_CHARS}-character limit was reached; a calendar "
+            "feed has no page range to resume from, so ask for a "
+            f"narrower date range or a smaller export if the remaining "
+            f"{remaining} event{'s' if remaining != 1 else ''} are needed")
     return md
 
 
