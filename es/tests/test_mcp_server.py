@@ -461,6 +461,7 @@ def test_es_web_fetch_non_html_skips_extract(monkeypatch):
                         lambda u: _fake_resp(ctype="application/pdf", text="%PDF..."))
     out = mcp_server.es_web_fetch("https://ex.com/a.pdf")
     assert out["ok"] is True and out["data"]["text"] == "" and out["data"]["thin"] is True
+    assert "application/pdf" in out["data"]["note"]
 
 
 def test_web_fetch_blocks_internal_url_end_to_end():
@@ -558,7 +559,7 @@ def test_es_contacts_search_warms_cache(fake_people):
     assert calls[0].kwargs["query"] == ""
 
 
-# ── es_web_fetch: content-type dispatch / text passthrough ─────────────────
+# ── es_web_fetch: content-type dispatch ─────────────────────────────────────
 
 ICS_BODY = (
     "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
@@ -570,29 +571,34 @@ ICS_BODY = (
 )
 
 
-def test_web_fetch_returns_calendar_body(monkeypatch):
+def test_web_fetch_non_html_feed_is_not_extracted(monkeypatch):
+    """A calendar feed is not HTML, so it's no longer read inline — that path
+    (raw text bodies returned to the agent) was removed in favor of the
+    pageable document reader. Confirms the not-extracted note + thin=true."""
     monkeypatch.setattr("es.mcp_server._http_get",
                         lambda u: _fake_resp(ctype="text/calendar; charset=utf-8",
                                              text=ICS_BODY))
     out = mcp_server.es_web_fetch("https://ex.com/cal.ics")
     assert out["ok"] is True
     d = out["data"]
-    assert "BEGIN:VCALENDAR" in d["text"]
-    assert d["text"].count("BEGIN:VEVENT") == 2
-    assert d["thin"] is False
+    assert d["text"] == ""
+    assert d["thin"] is True
     assert d["content_type"].startswith("text/calendar")
+    assert "text/calendar" in d["note"]
 
 
 @pytest.mark.parametrize("ctype", [
     "text/plain", "text/csv", "text/markdown",
     "application/json", "application/xml", "application/atom+xml",
 ])
-def test_web_fetch_returns_text_ish_bodies(ctype, monkeypatch):
+def test_web_fetch_non_html_bodies_not_extracted(ctype, monkeypatch):
     body = "hello " * 100
     monkeypatch.setattr("es.mcp_server._http_get",
                         lambda u: _fake_resp(ctype=ctype, text=body))
     out = mcp_server.es_web_fetch("https://ex.com/a")
-    assert out["ok"] is True and "hello" in out["data"]["text"]
+    assert out["ok"] is True
+    assert out["data"]["text"] == ""
+    assert out["data"]["thin"] is True
 
 
 def test_web_fetch_html_still_uses_trafilatura(monkeypatch):
@@ -602,44 +608,20 @@ def test_web_fetch_html_still_uses_trafilatura(monkeypatch):
     assert "<html>" not in d["text"] and "word" in d["text"]
 
 
-def test_web_fetch_empty_text_body_is_thin(monkeypatch):
-    monkeypatch.setattr("es.mcp_server._http_get",
-                        lambda u: _fake_resp(ctype="text/plain", text=""))
-    assert mcp_server.es_web_fetch("https://ex.com/a")["data"]["thin"] is True
-
-
-def test_web_fetch_short_but_complete_feed_is_not_thin(monkeypatch):
-    """A 40-line ICS is useful. thin must mean 'empty' for feeds, not 'short'."""
-    monkeypatch.setattr("es.mcp_server._http_get",
-                        lambda u: _fake_resp(ctype="text/calendar", text="BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"))
-    assert mcp_server.es_web_fetch("https://ex.com/a")["data"]["thin"] is False
-
-
-def test_web_fetch_text_body_is_capped(monkeypatch):
-    """The text-ish branch is capped by its own constant, _WEB_FETCH_TEXT_MAX_CHARS
-    (context-window-sized), not by _WEB_FETCH_MAX_BYTES (the HTML/lxml input
-    cap) — the two are deliberately different orders of magnitude."""
-    monkeypatch.setattr(mcp_server, "_WEB_FETCH_TEXT_MAX_CHARS", 50)
-    monkeypatch.setattr("es.mcp_server._http_get",
-                        lambda u: _fake_resp(ctype="text/plain", text="x" * 500))
-    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
-    assert d["text"].split("\n\n")[0] == "x" * 50
-    assert d["truncated"] is True
-
-
 def test_web_fetch_binary_still_thin_until_phase_2(monkeypatch):
-    """PDFs are Phase 2. Until then they keep today's behavior."""
+    """PDFs are Phase 2 (the pageable reader). Until then they keep today's
+    behavior: not extracted, thin, with a note explaining why."""
     monkeypatch.setattr("es.mcp_server._http_get",
                         lambda u: _fake_resp(ctype="application/pdf", text="%PDF-1.4"))
     d = mcp_server.es_web_fetch("https://ex.com/a.pdf")["data"]
     assert d["text"] == "" and d["thin"] is True
+    assert d["note"]
 
 
 def test_web_fetch_return_shape_is_stable(monkeypatch):
     """Every branch returns the same keys, so the agent never reasons about
-    which are present. cached_path/doc are filled in Phase 2."""
-    expected = {"url", "title", "text", "status", "thin", "content_type",
-                "cached_path", "doc", "truncated"}
+    which are present."""
+    expected = {"url", "title", "text", "status", "thin", "content_type", "note"}
     for ctype, body in [("text/html", "<html><body>hi</body></html>"),
                         ("text/calendar", ICS_BODY),
                         ("application/pdf", "%PDF-1.4")]:
@@ -648,60 +630,39 @@ def test_web_fetch_return_shape_is_stable(monkeypatch):
         assert set(mcp_server.es_web_fetch("https://ex.com/a")["data"]) == expected
 
 
-# ── review fixups: content-type parsing, redirect-hop mutation coverage,
-#    text-branch truncation ───────────────────────────────────────────────
+# ── review fixups: content-type parsing, redirect-hop mutation coverage ────
 
-@pytest.mark.parametrize("ctype,body,expect_extracted", [
+@pytest.mark.parametrize("ctype,body", [
     # A JSON body whose Content-Type happens to mention "text/html" in a
     # parameter must NOT be routed to trafilatura — the old substring check
-    # ("text/html" in ctype) matched this and silently lost the JSON.
-    ('application/json; profile="text/html"', '{"a": 1}', False),
-    # Same trap for a feed: a fallback param naming text/html must not steal
-    # an ICS body away from the text-ish branch.
-    ("text/calendar; fallback=text/html", "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", False),
-    # A binary type that merely mentions text/html in a parameter must stay
-    # in the thin/binary branch, not get fed to trafilatura as HTML.
-    ("application/octet-stream; foo=text/html", "\x89PNG\r\n", False),
+    # ("text/html" in ctype) matched this and silently ran extraction on JSON.
+    ('application/json; profile="text/html"', '{"a": 1}'),
+    # Same trap for a feed: a fallback param naming text/html must not fool
+    # the dispatch into treating an ICS body as HTML.
+    ("text/calendar; fallback=text/html", "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"),
+    # A binary type that merely mentions text/html in a parameter must not
+    # get fed to trafilatura as HTML.
+    ("application/octet-stream; foo=text/html", "\x89PNG\r\n"),
 ])
-def test_web_fetch_content_type_base_not_substring_matched(monkeypatch, ctype, body, expect_extracted):
+def test_web_fetch_content_type_base_not_substring_matched(monkeypatch, ctype, body):
     monkeypatch.setattr("es.mcp_server._http_get",
                         lambda u: _fake_resp(ctype=ctype, text=body))
     d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
-    # None of these are real HTML, so trafilatura must never have run on them:
-    # the raw body (or nothing, for the octet-stream case) must come back
-    # untouched by extraction, never coerced to "".
-    if ctype.startswith("application/json") or ctype.startswith("text/calendar"):
-        assert d["text"] == body
-    else:
-        assert d["text"] == ""  # binary stays thin/empty, same as today
+    # None of these are real HTML, so trafilatura must never have run on them
+    # — the substring match would have coerced ["text"] to whatever
+    # trafilatura.extract() returns for garbage input, rather than "".
+    assert d["text"] == ""
+    assert d["thin"] is True
 
 
-def test_web_fetch_json_with_charset_param_is_still_text_ish(monkeypatch):
-    """application/json; charset=utf-8 is one of the most common headers on
-    the web — the base-type split must not choke on it."""
-    monkeypatch.setattr("es.mcp_server._http_get",
-                        lambda u: _fake_resp(ctype="application/json; charset=utf-8",
-                                             text='{"ok": true}'))
-    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
-    assert d["text"] == '{"ok": true}' and d["thin"] is False
-
-
-def test_web_fetch_xml_plus_suffix_with_charset_is_text_ish(monkeypatch):
-    monkeypatch.setattr("es.mcp_server._http_get",
-                        lambda u: _fake_resp(ctype="application/atom+xml; charset=utf-8",
-                                             text="<feed>x</feed>"))
-    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
-    assert d["text"] == "<feed>x</feed>"
-
-
-def test_web_fetch_missing_content_type_is_not_text_ish(monkeypatch):
+def test_web_fetch_missing_content_type_is_not_extracted(monkeypatch):
     monkeypatch.setattr("es.mcp_server._http_get",
                         lambda u: _fake_resp(ctype="", text="whatever"))
     d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
     assert d["text"] == "" and d["thin"] is True
 
 
-def test_web_fetch_malformed_content_type_is_not_text_ish(monkeypatch):
+def test_web_fetch_malformed_content_type_is_not_extracted(monkeypatch):
     """A header that's just parameters with no base type at all."""
     monkeypatch.setattr("es.mcp_server._http_get",
                         lambda u: _fake_resp(ctype="; charset=utf-8", text="whatever"))
@@ -753,22 +714,3 @@ def test_http_get_reguards_every_redirect_hop_via_real_client(monkeypatch):
         "https://hop1.example.com/start",   # hook, initial request
         "https://hop2.example.com/internal",  # hook, redirect hop -> raises
     ]
-
-
-def test_web_fetch_text_body_over_cap_is_truncated_with_marker(monkeypatch):
-    monkeypatch.setattr(mcp_server, "_WEB_FETCH_TEXT_MAX_CHARS", 100)
-    monkeypatch.setattr("es.mcp_server._http_get",
-                        lambda u: _fake_resp(ctype="text/calendar", text="x" * 500))
-    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
-    assert d["truncated"] is True
-    assert len(d["text"]) > 100  # cut text (100) + appended marker
-    assert "truncated" in d["text"] and "no" in d["text"]  # in-band, honest-remedy marker
-    assert d["text"].startswith("x" * 100)
-
-
-def test_web_fetch_normal_size_feed_is_not_truncated(monkeypatch):
-    monkeypatch.setattr("es.mcp_server._http_get",
-                        lambda u: _fake_resp(ctype="text/calendar", text=ICS_BODY))
-    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
-    assert d["truncated"] is False
-    assert d["text"] == ICS_BODY

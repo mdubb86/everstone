@@ -386,15 +386,6 @@ _WEB_FETCH_THIN_CHARS = 300
 # Input cap for the HTML branch, sized for what's reasonable to hand lxml/
 # trafilatura to parse — NOT an output limit (its output is a few KB of prose).
 _WEB_FETCH_MAX_BYTES = 3_000_000
-# Output cap for the text-ish branch (feeds/plain text returned verbatim, no
-# extraction step to shrink them). Sized for the agent's context window, same
-# convention as es_doc_extract's MAX_MARKDOWN_CHARS — deliberately a different,
-# much smaller number than _WEB_FETCH_MAX_BYTES above.
-_WEB_FETCH_TEXT_MAX_CHARS = 40_000
-
-# Content types whose raw body is useful to the agent as-is. Anything textual
-# that isn't HTML: calendar feeds, CSV exports, JSON/XML APIs, plain text.
-_TEXT_ISH_EXACT = {"application/json", "application/xml", "application/xhtml+xml"}
 
 
 def _content_type_base(ctype: str) -> str:
@@ -405,30 +396,6 @@ def _content_type_base(ctype: str) -> str:
     param naming text/html, silently routing the wrong body through the wrong
     branch. Parsed once here so both dispatch checks agree."""
     return ctype.split(";", 1)[0].strip()
-
-
-def _is_text_ish(base: str) -> bool:
-    """base must already be the parsed base type (see _content_type_base) —
-    not the raw header, or a charset param defeats the endswith/exact checks."""
-    return (base.startswith("text/") or base in _TEXT_ISH_EXACT
-            or base.endswith("+xml") or base.endswith("+json"))
-
-
-def _truncate_text_body(body: str) -> tuple:
-    """Cut a text-ish body (feed/plain text; the HTML branch has its own cap)
-    to at most _WEB_FETCH_TEXT_MAX_CHARS and say so in-band, like
-    es_doc_extract's truncation marker. Unlike es_doc_extract there is no
-    `pages` parameter and no page-boundary structure to resume from — a feed
-    is not paginated by this tool — so the marker states plainly that there
-    is no narrower re-fetch available, rather than implying a remedy (a
-    pages=... retry) that doesn't exist here. Returns (body, truncated)."""
-    if len(body) <= _WEB_FETCH_TEXT_MAX_CHARS:
-        return body, False
-    cut = body[:_WEB_FETCH_TEXT_MAX_CHARS]
-    marker = (f"\n\n*(truncated at {_WEB_FETCH_TEXT_MAX_CHARS} characters — "
-              "es_web_fetch has no pagination for feeds, so there is no "
-              "narrower way to fetch the rest of this URL through this tool)*")
-    return cut + marker, True
 
 
 def _guard_request_hook(request) -> None:
@@ -450,21 +417,17 @@ def _http_get(url: str):
 @mcp.tool()
 @mcp_envelope
 def es_web_fetch(url: str) -> dict:
-    """Fetch a URL (light; no browser, no key). For web pages, returns readable
-    text extracted from the HTML. For text feeds (calendar, CSV, JSON, XML,
-    plain text) returns the raw body as-is, capped and marked truncated=true
-    if cut (no narrower re-fetch exists for a feed). Returns {url, title,
-    text, status, thin, content_type, truncated}. thin=true means either a web
-    page couldn't be read lightly (escalate to browser_*) or a feed came back
-    empty — same flag, different cause. Internal/private addresses are refused."""
+    """Fetch a URL (light; no browser, no key). Returns readable text
+    extracted from web pages; other content types are not extracted
+    (thin=true, see note). Returns {url, title, text, status, thin,
+    content_type, note}. Internal/private addresses are refused."""
     resp = _http_get(url)
     resp.raise_for_status()
     ctype = str(resp.headers.get("content-type", "")).lower()
     ctype_base = _content_type_base(ctype)
     final_url = str(resp.url)
     out = {"url": final_url, "title": "", "text": "", "status": resp.status_code,
-           "thin": True, "content_type": ctype, "cached_path": "", "doc": None,
-           "truncated": False}
+           "thin": True, "content_type": ctype, "note": ""}
 
     if ctype_base == "text/html":
         html = resp.text[:_WEB_FETCH_MAX_BYTES]
@@ -475,14 +438,7 @@ def es_web_fetch(url: str) -> dict:
         out["thin"] = len(text) < _WEB_FETCH_THIN_CHARS
         return out
 
-    if _is_text_ish(ctype_base):
-        body, out["truncated"] = _truncate_text_body(resp.text)
-        out["text"] = body
-        # A feed is not prose: judge emptiness, not length. A 40-line ICS is
-        # perfectly useful and must not be reported as thin.
-        out["thin"] = not body.strip()
-        return out
-
+    out["note"] = f"non-HTML content ({ctype or 'unknown'}); not extracted"
     return out
 
 
