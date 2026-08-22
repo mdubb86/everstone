@@ -16,6 +16,7 @@ import httpx
 import trafilatura
 
 from es import config
+from es import url_guard
 from es.deeplink import build_deeplink
 from es.google_auth import calendar_service, people_service
 from es.tasks_client import TasksClient
@@ -385,10 +386,19 @@ _WEB_FETCH_THIN_CHARS = 300
 _WEB_FETCH_MAX_BYTES = 3_000_000
 
 
+def _guard_request_hook(request) -> None:
+    """httpx request event hook — runs for the initial request AND for every
+    redirect httpx follows, so a public URL that redirects to an internal one
+    is refused at the hop rather than after the fact."""
+    url_guard.check_url(str(request.url))
+
+
 def _http_get(url: str):
     """Single seam for the HTTP GET (monkeypatched in tests)."""
+    url_guard.check_url(url)     # explicit, so the refusal is not hook-dependent
     with httpx.Client(follow_redirects=True, timeout=_WEB_FETCH_TIMEOUT,
-                      headers={"User-Agent": _WEB_FETCH_UA}) as client:
+                      headers={"User-Agent": _WEB_FETCH_UA},
+                      event_hooks={"request": [_guard_request_hook]}) as client:
         return client.get(url)
 
 

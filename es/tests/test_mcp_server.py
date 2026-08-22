@@ -462,6 +462,27 @@ def test_es_web_fetch_non_html_skips_extract(monkeypatch):
     assert out["ok"] is True and out["data"]["text"] == "" and out["data"]["thin"] is True
 
 
+def test_web_fetch_blocks_internal_url_end_to_end():
+    """No monkeypatch of _http_get — exercises the real wiring. Must fail
+    BEFORE any connection is attempted."""
+    out = mcp_server.es_web_fetch("http://127.0.0.1:5984/_all_dbs")
+    assert out["ok"] is False
+    assert out["error"]["code"] == "url_blocked"
+    assert "internal" in out["error"]["message"].lower()
+
+
+def test_http_get_hook_checks_each_redirect_hop(monkeypatch):
+    """The guard must run per-request, not once — a public URL redirecting to
+    an internal one must still be refused."""
+    seen = []
+    monkeypatch.setattr("es.mcp_server.url_guard.check_url",
+                        lambda u: seen.append(u))
+    hook = mcp_server._guard_request_hook
+    hook(SimpleNamespace(url="https://public.example.com/a"))
+    hook(SimpleNamespace(url="http://127.0.0.1/internal"))
+    assert seen == ["https://public.example.com/a", "http://127.0.0.1/internal"]
+
+
 @pytest.fixture
 def fake_people(monkeypatch):
     svc = MagicMock()
