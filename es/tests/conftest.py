@@ -183,3 +183,32 @@ def ics_file(tmp_path):
         "LOCATION:Old Settlers Park - Field 1\r\nEND:VEVENT\r\n"
         "END:VCALENDAR\r\n", encoding="utf-8")
     return p
+
+
+@pytest.fixture
+def docx_file(tmp_path):
+    from docx import Document
+    p = tmp_path / "letter.docx"
+    d = Document()
+    d.add_heading("Season Overview", level=1)
+    d.add_paragraph("Practices are Tuesdays and Thursdays.")
+    d.add_heading("Fees", level=2)
+    d.add_paragraph("Club dues are due Sep 1.")
+    t = d.add_table(rows=2, cols=2)
+    t.cell(0, 0).text = "Item"; t.cell(0, 1).text = "Cost"
+    t.cell(1, 0).text = "Kit";  t.cell(1, 1).text = "$65"
+    d.save(str(p))
+    return p
+
+
+@pytest.fixture
+def xlsx_file(tmp_path):
+    from openpyxl import Workbook
+    p = tmp_path / "roster.xlsx"
+    wb = Workbook()
+    ws = wb.active; ws.title = "Roster"
+    ws.append(["Name", "Number"]); ws.append(["Alice", 9]); ws.append(["Bob", 1])
+    ws2 = wb.create_sheet("Fees")
+    ws2.append(["Item", "Cost"]); ws2.append(["Kit", 65])
+    wb.save(str(p))
+    return p
