@@ -78,3 +78,47 @@ def test_allows_benchmark_range(monkeypatch):
     `is_private` but not actually internal to anything. Must be allowed."""
     monkeypatch.setattr(url_guard, "_resolve", lambda host: ["198.18.0.1"])
     url_guard.check_url("https://example.com/a")   # must not raise
+
+
+@pytest.mark.parametrize("addr", [
+    "::ffff:127.0.0.1",         # IPv4-mapped loopback, dotted-quad suffix
+    "::ffff:7f00:1",            # IPv4-mapped loopback, hex suffix (same address)
+    "0:0:0:0:0:ffff:127.0.0.1",  # IPv4-mapped loopback, fully expanded
+    "::ffff:10.0.0.5",          # IPv4-mapped RFC1918
+    "::ffff:169.254.169.254",   # IPv4-mapped cloud-metadata address
+    "2002:7f00:1::1",           # 6to4 encoding of 127.0.0.1
+    "64:ff9b::7f00:1",          # NAT64 encoding of 127.0.0.1
+])
+def test_rejects_ipv4_mapped_and_translated_ipv6(addr, monkeypatch):
+    """Verified live bypass: an earlier version of this guard matched the raw
+    IPv6 literal against IPv4-only ranges (or vice versa), which never
+    matches, so `http://[::ffff:127.0.0.1]/x` sailed through and reached a
+    real loopback listener that `http://127.0.0.1/x` correctly blocked — a
+    live read of, e.g., CouchDB via `http://[::ffff:127.0.0.1]:5984/_all_dbs`.
+    These addresses must all be blocked."""
+    monkeypatch.setattr(url_guard, "_resolve", lambda host: [addr])
+    with pytest.raises(url_guard.BlockedAddress):
+        url_guard.check_url("https://evil.example.com/a")
+
+
+def test_rejects_cgnat_tailscale_range(monkeypatch):
+    """100.64.0.0/10 is CGNAT space and also Tailscale's default range — on a
+    tailnet-connected host this reaches every peer. Must be blocked."""
+    monkeypatch.setattr(url_guard, "_resolve", lambda host: ["100.64.0.1"])
+    with pytest.raises(url_guard.BlockedAddress):
+        url_guard.check_url("https://evil.example.com/a")
+
+
+def test_rejects_when_resolver_returns_no_addresses(monkeypatch):
+    """Fail closed: an empty address list must not read as 'nothing internal
+    was found'. Real getaddrinfo raises rather than returning empty, but the
+    module's stated contract is fail-closed everywhere, including here."""
+    monkeypatch.setattr(url_guard, "_resolve", lambda host: [])
+    with pytest.raises(url_guard.BlockedAddress):
+        url_guard.check_url("https://empty.example.com/a")
+
+
+@pytest.mark.parametrize("bad", [None, 12345, b"http://example.com/"])
+def test_rejects_non_string_input(bad):
+    with pytest.raises(url_guard.BlockedAddress):
+        url_guard.check_url(bad)
