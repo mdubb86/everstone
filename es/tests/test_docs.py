@@ -601,3 +601,23 @@ def test_unsupported_extension_names_the_supported_list(tmp_path):
     with pytest.raises(docs.UnsupportedDocument) as e:
         docs.extract(str(f), roots=[tmp_path], cache_root=tmp_path)
     assert ".pdf" in str(e.value)
+
+
+def test_extract_dispatches_a_csv_to_doc_text_with_no_page_count(csv_file, tmp_path):
+    """End-to-end through docs.extract (not doc_text.convert directly): a
+    flat format must report kind + doc_id like any other converter, but
+    page_count stays None — that's the signal (see docs._page_count) that
+    this format has no pages at all, not "zero" or "one"."""
+    out = docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
+    assert out["kind"] == "csv"
+    assert out["page_count"] is None
+    assert out["images"] == []
+    assert "| Name | Position | Number |" in out["markdown"]
+
+
+def test_extract_rejects_pages_argument_for_a_flat_format(csv_file, tmp_path):
+    """`pages` presumes pagination; a flat format has none, so an explicit
+    pages= is a loud InvalidPageRange, not a silent no-op."""
+    with pytest.raises(docs.InvalidPageRange):
+        docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path,
+                     pages="1")

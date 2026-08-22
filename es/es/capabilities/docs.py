@@ -4,10 +4,11 @@ The only module the MCP layer imports for es_doc_*. Keeps doc_pdf free of
 cache and confinement concerns, and doc_cache free of parsing concerns.
 
 Dispatch is a table, CONVERTERS, keyed by lowercased extension; SUPPORTED is
-derived from it so the two can't drift apart. Today CONVERTERS holds only
-".pdf" — adding a new format later is meant to be a pure addition (a new
-converter module + one new table entry), not a change to extract()/render()
-themselves.
+derived from it so the two can't drift apart. CONVERTERS holds ".pdf" (via
+doc_pdf, the reference/paginated converter) plus ".txt"/".md"/".csv"/".json"
+(all four via doc_text, the flat/non-paginated converter) — adding a new
+format is meant to be a pure addition (a new converter module + one new
+table entry), not a change to extract()/render() themselves.
 """
 import json
 import os
@@ -19,7 +20,7 @@ from pdfminer.pdfdocument import PDFEncryptionError
 from pdfplumber.utils.exceptions import PdfminerException
 
 from es import config, doc_cache, paths
-from es.capabilities import doc_pdf
+from es.capabilities import doc_pdf, doc_text
 
 MAX_MARKDOWN_CHARS = 40_000
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
@@ -34,12 +35,20 @@ MAX_RENDER_PAGES = doc_pdf.MAX_AUTO_RENDER_PAGES
 # reference): `convert(source, adir, pages=None) -> (markdown, images)` is
 # REQUIRED; `page_count(source) -> int` and `render(source, adir, pages) ->
 # images` are OPTIONAL — their presence is how the rest of this module tells
-# a paginated/renderable format (PDF today) apart from a flat one (txt/csv/
-# json/... arriving later) without hardcoding a format list anywhere else.
-# SUPPORTED is DERIVED from this table rather than hand-maintained alongside
-# it, so the two can never drift apart: an entry here is automatically
-# "supported", and nothing can claim to be supported without a converter.
-CONVERTERS = {".pdf": doc_pdf}
+# a paginated/renderable format (PDF, via doc_pdf) apart from a flat one
+# (txt/md/csv/json, via doc_text — none of the four have pages, so that
+# module implements neither attribute) without hardcoding a format list
+# anywhere else. SUPPORTED is DERIVED from this table rather than
+# hand-maintained alongside it, so the two can never drift apart: an entry
+# here is automatically "supported", and nothing can claim to be supported
+# without a converter.
+CONVERTERS = {
+    ".pdf": doc_pdf,
+    ".txt": doc_text,
+    ".md": doc_text,
+    ".csv": doc_text,
+    ".json": doc_text,
+}
 SUPPORTED = set(CONVERTERS)
 
 # Cache filenames within a doc_id's artifact dir. Both are written ONLY for a
@@ -123,8 +132,9 @@ def _reraise_pdf_error(real: Path, exc: PdfminerException):
 
 
 def _page_count(mod, real: Path) -> Optional[int]:
-    """None means "this format has no concept of pages" (a future flat
-    format like .csv/.txt/.json) — kept a distinct value from 0 or 1:
+    """None means "this format has no concept of pages" (a flat format like
+    .csv/.txt/.json/.md, all served by doc_text) — kept a distinct value
+    from 0 or 1:
 
     - NOT 0: for a format that DOES paginate, _page_count already treats a
       report of zero pages as an error below (a PDF that opens but claims no
@@ -452,9 +462,9 @@ def render(source: str, roots, cache_root: Path, pages: Optional[str] = None) ->
     ext = real.suffix.lower()
     mod = CONVERTERS[ext]
     # Rasterizing pages only means something for a format that HAS pages to
-    # rasterize — a converter without `render` (every flat future format:
-    # csv/txt/json/...) can't support this call at all, independent of
-    # whatever `pages` was passed, so the capability check comes first and
+    # rasterize — a converter without `render` (every flat format: txt/md/
+    # csv/json, all via doc_text) can't support this call at all, independent
+    # of whatever `pages` was passed, so the capability check comes first and
     # names the actual reason rather than failing confusingly deeper down
     # (e.g. inside parse_pages against a page_count that doesn't exist).
     # hasattr is enough: it mirrors the same "presence of the optional

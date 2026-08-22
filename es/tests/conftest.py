@@ -146,3 +146,25 @@ def scanned_pdf(tmp_path):
     c.showPage()
     c.save()
     return p
+
+
+@pytest.fixture
+def csv_file(tmp_path):
+    p = tmp_path / "roster.csv"
+    p.write_text("Name,Position,Number\nAlice,Forward,9\nBob,Goalie,1\n", encoding="utf-8")
+    return p
+
+
+@pytest.fixture
+def json_file(tmp_path):
+    p = tmp_path / "data.json"
+    p.write_text('{"team": "Thunder U10", "games": [{"opp": "Fury"}, {"opp": "SC"}]}',
+                 encoding="utf-8")
+    return p
+
+
+@pytest.fixture
+def txt_file(tmp_path):
+    p = tmp_path / "notes.txt"
+    p.write_text("Practice moved to Thursday.\nBring the blue kit.\n", encoding="utf-8")
+    return p
