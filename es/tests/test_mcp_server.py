@@ -555,3 +555,88 @@ def test_es_contacts_search_warms_cache(fake_people):
     calls = fake_people.people.return_value.searchContacts.call_args_list
     assert len(calls) >= 2
     assert calls[0].kwargs["query"] == ""
+
+
+# ── es_web_fetch: content-type dispatch / text passthrough ─────────────────
+
+ICS_BODY = (
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
+    "BEGIN:VEVENT\r\nSUMMARY:Game 1 vs Cedar Park Fury\r\n"
+    "DTSTART:20260905T140000Z\r\nEND:VEVENT\r\n"
+    "BEGIN:VEVENT\r\nSUMMARY:Game 2 vs Round Rock SC\r\n"
+    "DTSTART:20260912T160000Z\r\nEND:VEVENT\r\n"
+    "END:VCALENDAR\r\n"
+)
+
+
+def test_web_fetch_returns_calendar_body(monkeypatch):
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="text/calendar; charset=utf-8",
+                                             text=ICS_BODY))
+    out = mcp_server.es_web_fetch("https://ex.com/cal.ics")
+    assert out["ok"] is True
+    d = out["data"]
+    assert "BEGIN:VCALENDAR" in d["text"]
+    assert d["text"].count("BEGIN:VEVENT") == 2
+    assert d["thin"] is False
+    assert d["content_type"].startswith("text/calendar")
+
+
+@pytest.mark.parametrize("ctype", [
+    "text/plain", "text/csv", "text/markdown",
+    "application/json", "application/xml", "application/atom+xml",
+])
+def test_web_fetch_returns_text_ish_bodies(ctype, monkeypatch):
+    body = "hello " * 100
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype=ctype, text=body))
+    out = mcp_server.es_web_fetch("https://ex.com/a")
+    assert out["ok"] is True and "hello" in out["data"]["text"]
+
+
+def test_web_fetch_html_still_uses_trafilatura(monkeypatch):
+    html = "<html><head><title>T</title></head><body>" + ("word " * 200) + "</body></html>"
+    monkeypatch.setattr("es.mcp_server._http_get", lambda u: _fake_resp(text=html))
+    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
+    assert "<html>" not in d["text"] and "word" in d["text"]
+
+
+def test_web_fetch_empty_text_body_is_thin(monkeypatch):
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="text/plain", text=""))
+    assert mcp_server.es_web_fetch("https://ex.com/a")["data"]["thin"] is True
+
+
+def test_web_fetch_short_but_complete_feed_is_not_thin(monkeypatch):
+    """A 40-line ICS is useful. thin must mean 'empty' for feeds, not 'short'."""
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="text/calendar", text="BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"))
+    assert mcp_server.es_web_fetch("https://ex.com/a")["data"]["thin"] is False
+
+
+def test_web_fetch_text_body_is_capped(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_WEB_FETCH_MAX_BYTES", 50)
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="text/plain", text="x" * 500))
+    assert len(mcp_server.es_web_fetch("https://ex.com/a")["data"]["text"]) <= 50
+
+
+def test_web_fetch_binary_still_thin_until_phase_2(monkeypatch):
+    """PDFs are Phase 2. Until then they keep today's behavior."""
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="application/pdf", text="%PDF-1.4"))
+    d = mcp_server.es_web_fetch("https://ex.com/a.pdf")["data"]
+    assert d["text"] == "" and d["thin"] is True
+
+
+def test_web_fetch_return_shape_is_stable(monkeypatch):
+    """Every branch returns the same keys, so the agent never reasons about
+    which are present. cached_path/doc are filled in Phase 2."""
+    expected = {"url", "title", "text", "status", "thin", "content_type",
+                "cached_path", "doc"}
+    for ctype, body in [("text/html", "<html><body>hi</body></html>"),
+                        ("text/calendar", ICS_BODY),
+                        ("application/pdf", "%PDF-1.4")]:
+        monkeypatch.setattr("es.mcp_server._http_get",
+                            lambda u, c=ctype, b=body: _fake_resp(ctype=c, text=b))
+        assert set(mcp_server.es_web_fetch("https://ex.com/a")["data"]) == expected

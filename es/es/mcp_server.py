@@ -385,6 +385,16 @@ _WEB_FETCH_TIMEOUT = 12.0
 _WEB_FETCH_THIN_CHARS = 300
 _WEB_FETCH_MAX_BYTES = 3_000_000
 
+# Content types whose raw body is useful to the agent as-is. Anything textual
+# that isn't HTML: calendar feeds, CSV exports, JSON/XML APIs, plain text.
+_TEXT_ISH_EXACT = {"application/json", "application/xml", "application/xhtml+xml"}
+
+
+def _is_text_ish(ctype: str) -> bool:
+    base = ctype.split(";", 1)[0].strip()
+    return (base.startswith("text/") or base in _TEXT_ISH_EXACT
+            or base.endswith("+xml") or base.endswith("+json"))
+
 
 def _guard_request_hook(request) -> None:
     """httpx request event hook — runs for the initial request AND for every
@@ -405,22 +415,36 @@ def _http_get(url: str):
 @mcp.tool()
 @mcp_envelope
 def es_web_fetch(url: str) -> dict:
-    """Fetch a URL and return its readable text (light; no browser, no key).
-    Returns {url, title, text, status, thin}. An error or thin=true means the
-    page couldn't be read lightly — escalate to the browser_* tools."""
+    """Fetch a URL (light; no browser, no key). For web pages, returns readable
+    text extracted from the HTML. For text feeds (calendar, CSV, JSON, XML,
+    plain text) returns the raw body as-is. Returns {url, title, text, status,
+    thin, content_type}. thin=true means the page couldn't be read lightly —
+    escalate to the browser_* tools. Internal/private addresses are refused."""
     resp = _http_get(url)
     resp.raise_for_status()
     ctype = str(resp.headers.get("content-type", "")).lower()
     final_url = str(resp.url)
-    if "text/html" not in ctype:
-        return {"url": final_url, "title": "", "text": "", "status": resp.status_code,
-                "thin": True, "note": f"non-HTML content ({ctype or 'unknown'}); not extracted"}
-    html = resp.text[:_WEB_FETCH_MAX_BYTES]
-    text = trafilatura.extract(html) or ""
-    meta = trafilatura.extract_metadata(html)
-    title = (getattr(meta, "title", "") or "") if meta else ""
-    return {"url": final_url, "title": title, "text": text, "status": resp.status_code,
-            "thin": len(text) < _WEB_FETCH_THIN_CHARS}
+    out = {"url": final_url, "title": "", "text": "", "status": resp.status_code,
+           "thin": True, "content_type": ctype, "cached_path": "", "doc": None}
+
+    if "text/html" in ctype:
+        html = resp.text[:_WEB_FETCH_MAX_BYTES]
+        text = trafilatura.extract(html) or ""
+        meta = trafilatura.extract_metadata(html)
+        out["title"] = (getattr(meta, "title", "") or "") if meta else ""
+        out["text"] = text
+        out["thin"] = len(text) < _WEB_FETCH_THIN_CHARS
+        return out
+
+    if _is_text_ish(ctype):
+        body = resp.text[:_WEB_FETCH_MAX_BYTES]
+        out["text"] = body
+        # A feed is not prose: judge emptiness, not length. A 40-line ICS is
+        # perfectly useful and must not be reported as thin.
+        out["thin"] = not body.strip()
+        return out
+
+    return out
 
 
 def _doc_cache_root() -> Path:
