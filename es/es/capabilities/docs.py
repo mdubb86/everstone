@@ -3,9 +3,11 @@
 The only module the MCP layer imports for es_doc_*. Keeps doc_pdf free of
 cache and confinement concerns, and doc_cache free of parsing concerns.
 
-Today this only understands PDFs — there is no real format dispatch yet
-(`kind` is hardcoded "pdf"). Dispatch on extension/content-type arrives with
-Phase 2's other document formats; SUPPORTED is the seam that will grow.
+Dispatch is a table, CONVERTERS, keyed by lowercased extension; SUPPORTED is
+derived from it so the two can't drift apart. Today CONVERTERS holds only
+".pdf" — adding a new format later is meant to be a pure addition (a new
+converter module + one new table entry), not a change to extract()/render()
+themselves.
 """
 import json
 import os
@@ -26,7 +28,19 @@ MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
 # (rasterizing into Hermes's shared upload cache), so one call site owning the
 # limit and the other pointing at it keeps them from drifting apart.
 MAX_RENDER_PAGES = doc_pdf.MAX_AUTO_RENDER_PAGES
-SUPPORTED = {".pdf"}
+
+# Maps a supported extension to its converter module. Each converter is
+# expected to implement a shared per-format contract (doc_pdf.py is the
+# reference): `convert(source, adir, pages=None) -> (markdown, images)` is
+# REQUIRED; `page_count(source) -> int` and `render(source, adir, pages) ->
+# images` are OPTIONAL — their presence is how the rest of this module tells
+# a paginated/renderable format (PDF today) apart from a flat one (txt/csv/
+# json/... arriving later) without hardcoding a format list anywhere else.
+# SUPPORTED is DERIVED from this table rather than hand-maintained alongside
+# it, so the two can never drift apart: an entry here is automatically
+# "supported", and nothing can claim to be supported without a converter.
+CONVERTERS = {".pdf": doc_pdf}
+SUPPORTED = set(CONVERTERS)
 
 # Cache filenames within a doc_id's artifact dir. Both are written ONLY for a
 # full-document extract (pages=None) — see the comment in extract().
@@ -108,9 +122,34 @@ def _reraise_pdf_error(real: Path, exc: PdfminerException):
         "truncated, or not actually a PDF; ask the user to resend it") from exc
 
 
-def _page_count(real: Path) -> int:
+def _page_count(mod, real: Path) -> Optional[int]:
+    """None means "this format has no concept of pages" (a future flat
+    format like .csv/.txt/.json) — kept a distinct value from 0 or 1:
+
+    - NOT 0: for a format that DOES paginate, _page_count already treats a
+      report of zero pages as an error below (a PDF that opens but claims no
+      pages is corrupt/empty, not legitimately "paginated with nothing" — an
+      indistinguishable value here would erase that distinction and make a
+      flat format look broken).
+    - NOT 1: a page count of 1 would suggest page-range/render semantics
+      apply ("page 1 of 1"), which is false for something that isn't
+      paginated at all.
+
+    The dispatch signal is simply whether the converter module exposes
+    `page_count` — a flat converter that never implements it is, by
+    construction, a format with no pages.
+
+    The exception mapping below (PdfminerException -> the PDF-specific
+    encrypted/unreadable errors) is deliberately PDF-specific and today only
+    ever fires for doc_pdf (the only converter with a page_count). A future
+    paginated converter with its own failure modes gets its own mapping at
+    its own call site — this function does not try to generalize that part
+    ahead of need.
+    """
+    if not hasattr(mod, "page_count"):
+        return None
     try:
-        total = doc_pdf.page_count(real)
+        total = mod.page_count(real)
     except PdfminerException as e:
         _reraise_pdf_error(real, e)
     if total <= 0:
@@ -337,7 +376,20 @@ def _truncate_markdown(markdown: str, total_pages: int) -> Tuple[str, bool]:
 def extract(source: str, roots, cache_root: Path,
             pages: Optional[str] = None) -> dict:
     real, did, adir = _prepare(source, roots, cache_root)
-    total = _page_count(real)
+    ext = real.suffix.lower()
+    mod = CONVERTERS[ext]
+    total = _page_count(mod, real)
+
+    # `pages` on a format with no pages (total is None) is a loud error, not
+    # a silent no-op — same philosophy as render()'s explicit-out-of-range
+    # behavior below: an argument that cannot mean anything for this
+    # document is more likely a mistaken assumption about its format than an
+    # intentional "give me everything" request (which is already spelled by
+    # omitting pages entirely).
+    if pages is not None and total is None:
+        raise InvalidPageRange(
+            f"{ext} documents do not have pages — omit the pages argument "
+            "to extract the whole document")
     wanted = parse_pages(pages, total) if pages is not None else None
 
     if wanted is None:
@@ -353,7 +405,7 @@ def extract(source: str, roots, cache_root: Path,
             images = _read_images_manifest(adir)
         else:
             try:
-                markdown, image_paths = doc_pdf.convert(real, adir, pages=None)
+                markdown, image_paths = mod.convert(real, adir, pages=None)
             except PdfminerException as e:
                 _reraise_pdf_error(real, e)
             _write_full_extract(adir, markdown, image_paths)
@@ -368,14 +420,16 @@ def extract(source: str, roots, cache_root: Path,
         # subsets always convert fresh and are simply never persisted; only
         # the full-document result is cached.
         try:
-            markdown, image_paths = doc_pdf.convert(real, adir, pages=wanted)
+            markdown, image_paths = mod.convert(real, adir, pages=wanted)
         except PdfminerException as e:
             _reraise_pdf_error(real, e)
         doc_cache.touch(adir)
         images = [str(i) for i in image_paths]
 
     markdown, truncated = _truncate_markdown(markdown, total)
-    return {"doc_id": did, "kind": "pdf", "page_count": total,
+    # kind is trivially the extension without its dot ("pdf" for ".pdf") —
+    # correct today and requires no per-format table of its own.
+    return {"doc_id": did, "kind": ext.lstrip("."), "page_count": total,
             "markdown": markdown, "images": images, "truncated": truncated}
 
 
@@ -395,7 +449,22 @@ def render(source: str, roots, cache_root: Path, pages: Optional[str] = None) ->
     number than an intentional "give me what you can" request.
     """
     real, did, adir = _prepare(source, roots, cache_root)
-    total = _page_count(real)
+    ext = real.suffix.lower()
+    mod = CONVERTERS[ext]
+    # Rasterizing pages only means something for a format that HAS pages to
+    # rasterize — a converter without `render` (every flat future format:
+    # csv/txt/json/...) can't support this call at all, independent of
+    # whatever `pages` was passed, so the capability check comes first and
+    # names the actual reason rather than failing confusingly deeper down
+    # (e.g. inside parse_pages against a page_count that doesn't exist).
+    # hasattr is enough: it mirrors the same "presence of the optional
+    # attribute IS the capability" convention _page_count already uses for
+    # page_count, so a reader only has to learn the pattern once.
+    if not hasattr(mod, "render"):
+        raise UnsupportedDocument(
+            f"{ext} cannot be rendered to images — es_doc_render can only "
+            "render pages of a PDF; try es_doc_extract instead")
+    total = _page_count(mod, real)
     spec = pages if pages is not None else f"1-{min(DEFAULT_RENDER_PAGES_HI, total)}"
     wanted = parse_pages(spec, total)
     if len(wanted) > MAX_RENDER_PAGES:
@@ -403,7 +472,7 @@ def render(source: str, roots, cache_root: Path, pages: Optional[str] = None) ->
             f"cannot render {len(wanted)} pages in one call — the limit is "
             f"{MAX_RENDER_PAGES}; narrow the range (or call es_doc_render "
             "again for the rest)")
-    images = doc_pdf.render(real, adir, wanted)
+    images = mod.render(real, adir, wanted)
     doc_cache.touch(adir)
     return {"doc_id": did, "page_count": total,
             "images": [str(i) for i in images]}

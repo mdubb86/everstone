@@ -583,3 +583,21 @@ def test_forbidden_message_identical_whether_file_exists_or_not(text_pdf, tmp_pa
     msg_missing = str(e_missing.value).replace(str(missing), "<PATH>")
     assert msg_exists == msg_missing
     assert "exist" not in msg_missing.lower()
+
+
+# --- dispatch table ---------------------------------------------------------
+
+def test_dispatch_table_covers_every_supported_extension():
+    """SUPPORTED and the dispatch table must not drift apart — a format listed
+    as supported with no converter would fail at call time, not import time."""
+    from es.capabilities import docs
+    assert set(docs.CONVERTERS) == docs.SUPPORTED
+
+
+def test_unsupported_extension_names_the_supported_list(tmp_path):
+    from es.capabilities import docs
+    f = tmp_path / "x.rtf"
+    f.write_text("x")
+    with pytest.raises(docs.UnsupportedDocument) as e:
+        docs.extract(str(f), roots=[tmp_path], cache_root=tmp_path)
+    assert ".pdf" in str(e.value)
