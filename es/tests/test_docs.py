@@ -621,3 +621,88 @@ def test_extract_rejects_pages_argument_for_a_flat_format(csv_file, tmp_path):
     with pytest.raises(docs.InvalidPageRange):
         docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path,
                      pages="1")
+
+
+# --- non-PDF error mapping --------------------------------------------------
+
+def test_corrupt_docx_maps_to_doc_unreadable(tmp_path):
+    from es.capabilities import docs
+    p = tmp_path / "bad.docx"
+    p.write_bytes(b"not a zip")
+    with pytest.raises(docs.UnreadableDocument):
+        docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+
+
+def test_corrupt_xlsx_maps_to_doc_unreadable(tmp_path):
+    from es.capabilities import docs
+    p = tmp_path / "bad.xlsx"
+    p.write_bytes(b"not a zip")
+    with pytest.raises(docs.UnreadableDocument):
+        docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+
+
+def test_render_rejects_a_non_pdf_with_a_clear_reason(csv_file, tmp_path):
+    from es.capabilities import docs
+    with pytest.raises(docs.UnsupportedDocument) as e:
+        docs.render(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
+    assert "pdf" in str(e.value).lower()
+
+
+def test_every_format_returns_the_stable_shape(
+        csv_file, json_file, txt_file, ics_file, docx_file, xlsx_file, text_pdf, tmp_path):
+    from es.capabilities import docs
+    expected = {"doc_id", "kind", "page_count", "markdown", "images", "truncated"}
+    for f in (csv_file, json_file, txt_file, ics_file, docx_file, xlsx_file, text_pdf):
+        out = docs.extract(str(f), roots=[f.parent], cache_root=tmp_path)
+        assert set(out) == expected, f.name
+        assert out["markdown"].strip(), f.name
+        assert out["kind"] == f.suffix.lstrip("."), f.name
+
+
+def test_no_converter_leaks_a_raw_library_exception(tmp_path):
+    """Every supported extension, fed garbage bytes, must produce an es_code
+    from our catalogue — never a library's exception class name."""
+    from es.capabilities import docs
+    allowed = {"doc_unreadable", "doc_encrypted", "doc_unsupported"}
+    for ext in sorted(docs.SUPPORTED):
+        p = tmp_path / f"garbage{ext}"
+        p.write_bytes(b"\x00\x01\x02 not a real document \xff\xfe")
+        try:
+            docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+        except Exception as e:
+            code = getattr(e, "es_code", type(e).__name__)
+            assert code in allowed, f"{ext} leaked {code}: {e}"
+
+
+# --- encrypted .docx / .xlsx -------------------------------------------------
+# Neither python-docx nor openpyxl exposes a distinct "needs a password"
+# exception type — a real password-protected .docx/.xlsx is stored as an
+# OLE2/CFBF container (the same legacy container .doc/.xls used), never as a
+# zip, so both libraries just fail to open it as a zip — indistinguishable
+# by exception type alone from ordinary corruption (verified empirically
+# against real python-docx/openpyxl behavior while building this feature).
+# There is no dependency in this project (e.g. msoffcrypto-tool) to build a
+# byte-perfect real encrypted Office document for a fixture, so these use the
+# OLE2 magic-byte header alone — the same synthetic-bytes style already used
+# by corrupt_pdf/empty_pdf above — which is sufficient to prove the detector
+# actually fires, since those magic bytes are the entire signal it uses.
+
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def test_ole2_docx_is_reported_as_encrypted_not_generic_corruption(tmp_path):
+    from es.capabilities import docs
+    p = tmp_path / "protected.docx"
+    p.write_bytes(_OLE2_MAGIC + b"\x00" * 500)
+    with pytest.raises(docs.EncryptedDocument) as e:
+        docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert "password" in str(e.value).lower()
+
+
+def test_ole2_xlsx_is_reported_as_encrypted_not_generic_corruption(tmp_path):
+    from es.capabilities import docs
+    p = tmp_path / "protected.xlsx"
+    p.write_bytes(_OLE2_MAGIC + b"\x00" * 500)
+    with pytest.raises(docs.EncryptedDocument) as e:
+        docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert "password" in str(e.value).lower()

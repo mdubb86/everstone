@@ -19,7 +19,10 @@ import os
 import re
 from pathlib import Path
 from typing import List, Optional, Tuple
+from zipfile import BadZipFile
 
+from docx.opc.exceptions import PackageNotFoundError
+from openpyxl.utils.exceptions import InvalidFileException
 from pdfminer.pdfdocument import PDFEncryptionError
 from pdfplumber.utils.exceptions import PdfminerException
 
@@ -136,6 +139,91 @@ def _reraise_pdf_error(real: Path, exc: PdfminerException):
     raise UnreadableDocument(
         f"{real.name} could not be read as a PDF — it may be corrupt, "
         "truncated, or not actually a PDF; ask the user to resend it") from exc
+
+
+# The OLE2/CFBF container signature (MS-CFB) — every legitimate, unencrypted
+# .docx/.xlsx is a zip archive; a password-protected one is instead stored in
+# this legacy container format (the same one .doc/.xls used), which is how
+# real Office password-protection actually works, not a guess. Neither
+# python-docx nor openpyxl exposes a distinct "needs a password" exception —
+# both simply fail to open the file as a zip, indistinguishable by exception
+# type alone from ordinary corruption (verified empirically against both
+# libraries) — so this sniffs the file's own magic bytes instead, the same
+# first-principles move _reraise_pdf_error makes by inspecting pdfminer's
+# real cause rather than trusting a single generic exception type.
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _is_ole2_container(real: Path) -> bool:
+    try:
+        with open(real, "rb") as f:
+            return f.read(len(_OLE2_MAGIC)) == _OLE2_MAGIC
+    except OSError:
+        return False
+
+
+def _reraise_office_error(real: Path, exc: Exception):
+    """python-docx and openpyxl each raise their OWN exception type for a
+    parse failure — PackageNotFoundError (python-docx, which itself
+    normalizes a bad/missing zip into this one type), BadZipFile (openpyxl,
+    which does NOT normalize it), and InvalidFileException (openpyxl's own
+    filename-extension guard — included for defense in depth even though
+    docs.py's dispatch already only ever routes a real .xlsx path here, so
+    it should never actually fire in practice). All three collapse to the
+    same UnreadableDocument, EXCEPT when the file is an OLE2 container (see
+    _is_ole2_container above) — that one case is password-protection, not
+    corruption, and gets its own EncryptedDocument message."""
+    if _is_ole2_container(real):
+        raise EncryptedDocument(
+            f"{real.name} is password-protected — es cannot open encrypted "
+            "Word/Excel documents; ask the user for an unlocked copy") from exc
+    raise UnreadableDocument(
+        f"{real.name} could not be read as a Word/Excel document — it may "
+        "be corrupt, truncated, or not actually a .docx/.xlsx file; ask the "
+        "user to resend it") from exc
+
+
+# Per-converter-module exception mapping: each module's OWN underlying
+# library raises its own exception type on a parse failure, and this table
+# names exactly those types so the two call sites in extract() below can
+# catch precisely them — never a bare `except Exception`, which would just
+# as happily swallow a genuine bug in OUR code (a TypeError from a mistake in
+# this module, say) and misreport it to the agent as "your file is corrupt".
+# A module with no entry here (doc_text, doc_ics) means its converter is
+# expected to never raise for bad input — doc_text decodes with
+# errors="replace" and doc_ics already catches its own parse failures
+# internally (see doc_ics._read_calendar) — so `.get(mod, ())` below yields
+# an empty tuple, i.e. "catch nothing", for those.
+#
+# This lives here, keyed by module, rather than each converter module raising
+# docs.py's own exception classes itself: docs.py already imports every
+# converter module to populate CONVERTERS, so a converter importing back
+# from docs.py to raise UnreadableDocument/EncryptedDocument would be a
+# circular import. A converter module knowing its own library's exception
+# TYPES is unavoidable (only that module imports that library) but deciding
+# what those types MEAN in es's shared error catalogue is policy that
+# belongs in one auditable place — the same reason _reraise_pdf_error already
+# lived here before this feature added a second format family.
+_CONVERSION_ERRORS = {
+    doc_pdf: (PdfminerException,),
+    doc_office: (PackageNotFoundError, InvalidFileException, BadZipFile),
+}
+
+
+def _reraise_conversion_error(mod, real: Path, exc: Exception) -> None:
+    """Always raises. Dispatches to the format-family-specific mapping for
+    `mod` — the one place a converter's raw library exception is translated
+    into the shared {EncryptedDocument, UnreadableDocument} catalogue."""
+    if mod is doc_pdf:
+        _reraise_pdf_error(real, exc)
+    if mod is doc_office:
+        _reraise_office_error(real, exc)
+    # Defensive fallback, not expected to fire today: every module currently
+    # in _CONVERSION_ERRORS is handled by name above. Kept so a future module
+    # added to that table without a matching branch here still fails safe
+    # (a catalogue code) instead of leaking whatever it raised.
+    raise UnreadableDocument(
+        f"{real.name} could not be read; ask the user to resend it") from exc
 
 
 def _page_count(mod, real: Path) -> Optional[int]:
@@ -423,8 +511,8 @@ def extract(source: str, roots, cache_root: Path,
         else:
             try:
                 markdown, image_paths = mod.convert(real, adir, pages=None)
-            except PdfminerException as e:
-                _reraise_pdf_error(real, e)
+            except _CONVERSION_ERRORS.get(mod, ()) as e:
+                _reraise_conversion_error(mod, real, e)
             _write_full_extract(adir, markdown, image_paths)
             doc_cache.touch(adir)
             images = [str(i) for i in image_paths]
@@ -438,8 +526,8 @@ def extract(source: str, roots, cache_root: Path,
         # the full-document result is cached.
         try:
             markdown, image_paths = mod.convert(real, adir, pages=wanted)
-        except PdfminerException as e:
-            _reraise_pdf_error(real, e)
+        except _CONVERSION_ERRORS.get(mod, ()) as e:
+            _reraise_conversion_error(mod, real, e)
         doc_cache.touch(adir)
         images = [str(i) for i in image_paths]
 
