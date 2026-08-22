@@ -41,10 +41,49 @@ real content (a single stray value at, say, ZZ10000 reports a 10000-row x
 702-column used range for what is, in substance, two cells of data), and
 that must be bounded before the character budget ever gets a chance to look
 at it, or a single pathological sheet could force iterating tens of
-thousands of all-blank rows for no reason.
+thousands of all-blank rows for no reason. DOCX_MAX_TABLE_ROWS is the .docx
+analogue: it bounds the cost of rendering a SINGLE table block, independent
+of MAX_CHARS, for the same reason (see `_table_block`).
+
+.docx conversion is deliberately LAZY end to end (`_iter_body_blocks` is a
+generator; `_convert_docx` stops pulling from it the moment MAX_CHARS is
+spent) rather than "collect every block, then truncate": this was a verified
+unbounded-cost bug, not a style preference. Measured before the fix, walking
+`document.element.body` fully and formatting every block before truncating
+cost ~0.4ms/paragraph — 3.7s at 10,000 paragraphs, 111.65s at 300,000 (a
+plain 0.84 MB .docx, well inside MAX_DOCUMENT_BYTES) — because
+`Paragraph.style` does a linear style-collection lookup on every call, and
+that cost was paid for every block in the document even though only a small
+prefix of the OUTPUT ever survives the character budget. After the fix the
+same 300,000-paragraph document converts in well under a second: cost is
+O(kept blocks), not O(document size). A `.docx` is a zip, so
+MAX_DOCUMENT_BYTES only bounds the COMPRESSED size (a zip bomb can inflate
+far past it) — this lazy walk plus the per-table row cap below are the real
+defence, not the byte ceiling.
+
+.xlsx: `ws.max_row`/`ws.max_column` in `read_only` mode come from the sheet
+XML's `<dimension>` element — and are `None`, not `0`, when that element is
+absent. This is not exotic: `openpyxl.Workbook(write_only=True)` (a
+mainstream way tools generate large spreadsheets — pandas/ETL exports
+included) never writes `<dimension>` at all. A prior version of this module
+read `total_rows = ws.max_row or 0`, so `None or 0` produced `0`, which was
+then read as "genuinely empty sheet" and short-circuited before a single row
+was ever iterated — a verified DATA-LOSS bug: a 300,000-row write_only
+workbook converted to a bare `"## Sheet"` heading with no error, no
+truncation marker, and `{ok: true}`. `_render_sheet_rows` below never trusts
+`ws.max_row`/`ws.max_column` as a presence signal any more — only actually
+iterating and observing a row (`saw_any`) proves a sheet has content, dimension
+or no dimension. `ws.calculate_dimension(force=True)` was considered as a fix
+and measured at ~7.9s / a full read-only pass over a 300,000-row sheet (it
+walks every row to find the true extent) — paying that cost just to print an
+accurate row count would reintroduce the same O(sheet size) cost this module
+otherwise avoids by rendering read_only rows lazily, so it is deliberately
+never called here. When the sheet's true dimension is unknown, this module
+reports what it can prove (rows actually rendered, and whether more exist
+past the structural cap) without fabricating an exact total.
 """
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 from docx import Document
 from docx.oxml.ns import qn
@@ -52,7 +91,7 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 from openpyxl import load_workbook
 
-from es.capabilities.doc_support import format_cell, format_row, table_to_markdown
+from es.capabilities.doc_support import format_cell, format_row
 
 # Shared by both formats — see module docstring.
 MAX_CHARS = 30_000
@@ -60,6 +99,13 @@ MAX_CHARS = 30_000
 # Per-sheet structural caps — see module docstring. Independent of MAX_CHARS.
 XLSX_MAX_ROWS = 5000
 XLSX_MAX_COLS = 256
+
+# Per-table structural cap for .docx — see module docstring. A single
+# pathological table (e.g. a 20,000-row spreadsheet paste) would otherwise be
+# rendered in full as ONE block before the character budget ever gets a
+# chance to reject it wholesale; this bounds that cost independent of
+# MAX_CHARS, mirroring XLSX_MAX_ROWS.
+DOCX_MAX_TABLE_ROWS = 2000
 
 _HEADING_LEVELS = {f"Heading {n}": n for n in range(1, 7)}
 
@@ -87,43 +133,123 @@ def _paragraph_block(paragraph: Paragraph) -> Optional[str]:
     return text
 
 
-def _table_block(table: Table) -> Optional[str]:
-    rows = [[cell.text for cell in row.cells] for row in table.rows]
-    return table_to_markdown(rows) or None
+# Reserved headroom subtracted from the budget handed to `_table_block`, so
+# that a table's own truncation marker (appended after its internal budget
+# check) can never itself push the block's total length past what the
+# OUTER loop in `_convert_docx` is willing to accept — see `_table_block`.
+_TABLE_MARKER_RESERVE = 300
 
 
-def _iter_body_blocks(document: Document) -> List[str]:
-    """Walk `document.element.body`'s direct children IN ORDER, mapping each
-    `<w:p>` to a Paragraph and each `<w:tbl>` to a Table — see the module
-    docstring for why this, and not `document.paragraphs`/`document.tables`,
-    is the only way to keep the source's true interleaving. Anything else
-    under `<w:body>` (e.g. the trailing `<w:sectPr>` section-properties
-    element) is silently skipped — it carries no displayable content."""
-    blocks: List[str] = []
+def _table_block(table: Table, budget: int) -> Optional[str]:
+    """Render `table` as a pipe table, bounded by BOTH DOCX_MAX_TABLE_ROWS
+    (a structural per-table row cap) AND `budget` (the character budget
+    still available in the document at the point this table was reached) —
+    mirroring `_render_sheet_rows`'s dual cap for the same reason: a single
+    pathological table must never cost O(its own size) before the
+    document-level budget ever gets a chance to reject it wholesale.
+    Measured before this cap existed: a single 20,000x6 table rendered
+    whole, unconditionally, in ~4.4s / +52MB RSS — regardless of MAX_CHARS.
+
+    Built incrementally with `format_cell`/`format_row` (not
+    `table_to_markdown`, which needs the WHOLE table materialized up front
+    to compute one shared column width) so this function can stop the
+    instant either cap is hit, without ever having extracted text from a
+    row beyond that point — `row.cells` is what actually walks a row's XML,
+    so skipping it (not just discarding its output) is what keeps this
+    bounded. Column width is taken from the table's own FIRST row and
+    applied to every row after: a python-docx `Table` is rectangular by
+    construction (row-level cell merging aside), so this is exact — unlike
+    the analogous first-row-width guess this module makes for a
+    dimension-less .xlsx sheet, which is a heuristic because a spreadsheet
+    has no such guarantee.
+    """
+    lines: List[str] = []
+    used = 0
+    kept = 0
+    width: Optional[int] = None
+    row_cap_hit = False
+    budget_hit = False
+    for i, row in enumerate(table.rows):
+        if i >= DOCX_MAX_TABLE_ROWS:
+            row_cap_hit = True
+            break
+        cells = [format_cell(cell.text) for cell in row.cells]
+        if width is None:
+            width = len(cells)
+        pieces = [format_row(cells, width)]
+        if kept == 0:
+            pieces.append("|" + "|".join([" --- "] * width) + "|")
+        cost = sum(len(p) + 1 for p in pieces)
+        if kept > 0 and used + cost > budget:
+            budget_hit = True
+            break
+        lines.extend(pieces)
+        used += cost
+        kept += 1
+
+    if not lines:
+        return None
+
+    md = "\n".join(lines)
+    if row_cap_hit:
+        md += (f"\n\n*(table truncated after {kept} rows — this table "
+               f"exceeds the {DOCX_MAX_TABLE_ROWS}-row-per-table limit)*")
+    elif budget_hit:
+        md += (f"\n\n*(table truncated after {kept} rows — the character "
+               "limit for this document was reached)*")
+    return md
+
+
+def _iter_body_blocks(document: Document, remaining_budget) -> Iterator[str]:
+    """Yield blocks from `document.element.body`'s direct children IN ORDER,
+    LAZILY — mapping each `<w:p>` to a Paragraph and each `<w:tbl>` to a
+    Table — see the module docstring for why walking the body directly (and
+    not `document.paragraphs`/`document.tables`) is the only way to keep the
+    source's true interleaving. Anything else under `<w:body>` (e.g. the
+    trailing `<w:sectPr>` section-properties element) is silently skipped —
+    it carries no displayable content.
+
+    This is a generator, not a list, on purpose: `_paragraph_block` (via
+    `Paragraph.style`) and `_table_block` are the expensive steps in this
+    module — see the module docstring's measured numbers — so `_convert_docx`
+    must be able to stop asking this generator for more the moment its
+    character budget is spent, without this function having formatted a
+    single block beyond that point. `document.element.body.iterchildren()`
+    is itself already a lazy walk over the (already-parsed-in-memory) XML
+    tree, so nothing upstream of this loop is re-done by stopping early.
+
+    `remaining_budget` is a zero-arg callable read fresh each time a
+    `<w:tbl>` is reached (not a snapshot taken once up front), so a table's
+    own internal cap always sees how much of MAX_CHARS is actually left at
+    that point in the walk, not how much was left when iteration started.
+    """
     for child in document.element.body.iterchildren():
         if child.tag == _W_P:
             block = _paragraph_block(Paragraph(child, document))
         elif child.tag == _W_TBL:
-            block = _table_block(Table(child, document))
+            budget = max(0, remaining_budget() - _TABLE_MARKER_RESERVE)
+            block = _table_block(Table(child, document), budget)
         else:
             continue
         if block:
-            blocks.append(block)
-    return blocks
+            yield block
 
 
 def _convert_docx(source: Path) -> str:
     document = Document(str(source))
-    blocks = _iter_body_blocks(document)
-    if not blocks:
-        return "*(this document has no readable text or tables)*"
 
     lines: List[str] = []
     used = 0
     kept = 0
-    for block in blocks:
+    truncated = False
+
+    def remaining_budget() -> int:
+        return MAX_CHARS - used
+
+    for block in _iter_body_blocks(document, remaining_budget):
         cost = len(block) + (2 if kept > 0 else 0)  # blank line before it
         if kept > 0 and used + cost > MAX_CHARS:
+            truncated = True
             break
         if kept > 0:
             lines.append("")
@@ -131,14 +257,20 @@ def _convert_docx(source: Path) -> str:
         used += cost
         kept += 1
 
+    if kept == 0:
+        return "*(this document has no readable text or tables)*"
+
     md = "\n".join(lines)
-    if kept < len(blocks):
-        remaining = len(blocks) - kept
-        md += (f"\n\n*(truncated after {kept} of {len(blocks)} sections — the "
-               f"{MAX_CHARS}-character limit was reached; this document has "
-               "no page range to resume from, so ask for a narrower excerpt "
-               f"if the remaining {remaining} section"
-               f"{'s' if remaining != 1 else ''} are needed)*")
+    if truncated:
+        # The true total section count is deliberately NOT reported here:
+        # knowing it would require walking the rest of the document after
+        # all, which is exactly the O(document size) cost this function
+        # exists to avoid (see the module docstring).
+        md += (f"\n\n*(truncated after {kept} section"
+               f"{'s' if kept != 1 else ''} — the {MAX_CHARS}-character "
+               "limit was reached; this document has no page range to "
+               "resume from, so ask for a narrower excerpt if more is "
+               "needed)*")
     return md
 
 
@@ -146,42 +278,80 @@ def _convert_docx(source: Path) -> str:
 # .xlsx
 # --------------------------------------------------------------------------
 
-def _render_sheet_rows(ws, budget: int) -> Tuple[str, int, int, int]:
+def _render_sheet_rows(ws, budget: int) -> Tuple[str, int, Optional[int], int]:
     """Render up to XLSX_MAX_ROWS x XLSX_MAX_COLS of `ws` as one pipe table
     (first row as the header), stopping early if the running character
     `budget` is exhausted first. Returns (markdown, kept_rows, total_rows,
     capped_rows).
 
-    total_rows == 0 is the signal for "this sheet has no data at all" —
-    distinct from a genuinely empty sheet reporting `ws.max_row == 1`
-    (openpyxl's default dimension for a sheet with zero cells ever assigned):
-    iterating such a sheet yields NO rows at all, whereas a sheet with real
-    (even sparse) content yields a row entry — all-blank cells included — for
-    every row up to its true extent. `saw_any` below is what tells the two
-    apart; trusting `ws.max_row` alone would misreport the empty case as "1
-    of 1 rows truncated".
+    `ws.max_row`/`ws.max_column` are `None` (not `0`) when the sheet's XML
+    has no `<dimension>` element at all — e.g. every sheet written by
+    `openpyxl.Workbook(write_only=True)`. This function NEVER treats that
+    metadata as proof of anything: only actually iterating and observing a
+    row (`saw_any` below) proves the sheet has content. A sheet that DOES
+    declare a dimension but has zero real cells (openpyxl's default
+    `max_row == max_col == 1` for a brand new empty sheet) still yields no
+    rows when iterated — `saw_any` is what tells that case apart from "one
+    row of real, if blank, content" too.
+
+    `total_rows` in the return value is `None` when the sheet's true row
+    count could not be determined without a full scan (dimension unknown,
+    and iteration was cut short by either the structural row cap or the
+    character budget before reaching the sheet's actual end) — see the
+    module docstring for why this function deliberately never calls
+    `ws.calculate_dimension(force=True)` to resolve that. Callers must
+    handle `total_rows is None` rather than assume an int.
     """
-    total_rows = ws.max_row or 0
-    total_cols = ws.max_column or 0
-    if total_rows == 0 or total_cols == 0:
-        return "", 0, 0, 0
-    capped_cols = min(total_cols, XLSX_MAX_COLS)
-    capped_rows = min(total_rows, XLSX_MAX_ROWS)
+    known_rows = ws.max_row
+    known_cols = ws.max_column
+    # Fall back to the row structural cap itself as the iteration bound when
+    # the dimension is unknown (or, degenerately, reported as 0) — this
+    # keeps the read_only parser's own early-stop (it never reads past
+    # max_row) doing the bounding, instead of this function ever attempting
+    # to iterate an unbounded sheet.
+    row_cap = min(known_rows, XLSX_MAX_ROWS) if known_rows else XLSX_MAX_ROWS
+    if known_cols:
+        capped_cols = min(known_cols, XLSX_MAX_COLS)
+    else:
+        # Column count unknown too. Forcing every row to XLSX_MAX_COLS wide
+        # (256) here would be its own budget-exhausting bug: every row,
+        # including ones with two real cells, would be padded out to 256
+        # pipe-table columns, so the FIRST such row alone could burn most of
+        # the character budget and starve every row after it — that's not
+        # hypothetical, it's what happened before this fallback existed.
+        # Peeking at row 1's own actual width is a light, bounded probe (one
+        # single-row read, not a full-sheet scan) and is representative for
+        # the common case this guards against (a write_only/no-<dimension>
+        # workbook whose rows are written with a consistent shape, e.g. via
+        # repeated `ws.append([...])` calls). A later row genuinely wider
+        # than row 1 will have its extra columns dropped, same as any sheet
+        # whose real width exceeds XLSX_MAX_COLS today.
+        first_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+        capped_cols = min(len(first_row), XLSX_MAX_COLS) if first_row else XLSX_MAX_COLS
 
     lines: List[str] = []
     used = 0
     kept = 0
     saw_any = False
-    for row in ws.iter_rows(min_row=1, max_row=capped_rows,
-                             min_col=1, max_col=capped_cols,
-                             values_only=True):
+    idx = 0
+    stopped_on_budget = False
+    # Ask for one row PAST row_cap purely to detect "does more content exist
+    # beyond the structural cap" — cheap, because the read_only parser stops
+    # as soon as it sees a row index past this bound, so this never costs a
+    # full-sheet scan even when the dimension is unknown.
+    for idx, row in enumerate(ws.iter_rows(min_row=1, max_row=row_cap + 1,
+                                            min_col=1, max_col=capped_cols,
+                                            values_only=True), start=1):
         saw_any = True
+        if idx > row_cap:
+            break
         cells = [format_cell("" if v is None else str(v)) for v in row]
         pieces = [format_row(cells, capped_cols)]
         if kept == 0:
             pieces.append("|" + "|".join([" --- "] * capped_cols) + "|")
         cost = sum(len(p) + 1 for p in pieces)
         if kept > 0 and used + cost > budget:
+            stopped_on_budget = True
             break
         lines.extend(pieces)
         used += cost
@@ -189,19 +359,47 @@ def _render_sheet_rows(ws, budget: int) -> Tuple[str, int, int, int]:
 
     if not saw_any:
         return "", 0, 0, 0
-    return "\n".join(lines), kept, total_rows, capped_rows
+
+    if known_rows is not None:
+        total_rows: Optional[int] = known_rows
+    elif stopped_on_budget:
+        total_rows = None  # cut short by the budget; true extent still unknown
+    elif idx > row_cap:
+        total_rows = None  # more than row_cap rows exist; exact count unknown
+    else:
+        total_rows = idx  # generator ran to completion at/under the cap — that IS the true count
+
+    return "\n".join(lines), kept, total_rows, row_cap
 
 
-def _sheet_truncation_note(kept: int, capped_rows: int, total_rows: int) -> Optional[str]:
+def _sheet_truncation_note(kept: int, capped_rows: int,
+                            total_rows: Optional[int]) -> Optional[str]:
     if total_rows == 0:
         return None  # genuinely empty sheet — nothing was truncated
-    if kept >= capped_rows and capped_rows == total_rows:
+    if total_rows is not None and kept >= capped_rows and capped_rows == total_rows:
         return None  # every real row was rendered — nothing to note
     if kept < capped_rows:
         # the character budget cut this sheet short before even its
         # structural row cap was reached
+        if total_rows is not None and total_rows > capped_rows:
+            # both limits are in play — say so, rather than reporting
+            # `capped_rows` as if it were the sheet's real size (that hid
+            # the true row count behind the structural cap's denominator).
+            return (f"truncated after {kept} of {total_rows} rows — the "
+                    "character limit for this document was reached first; "
+                    f"this sheet also exceeds the {XLSX_MAX_ROWS}-row-per-"
+                    "sheet limit")
+        if total_rows is None:
+            return (f"truncated after {kept} rows shown — the character "
+                    "limit for this document was reached; this sheet's "
+                    "total row count could not be determined (its XML has "
+                    "no declared dimension)")
         return (f"truncated after {kept} of {capped_rows} rows shown — the "
                 "character limit for this document was reached")
+    if total_rows is None:
+        return (f"truncated after {capped_rows} rows — this sheet exceeds "
+                f"the {XLSX_MAX_ROWS}-row-per-sheet limit (its exact total "
+                "is unknown: this sheet's XML has no declared dimension)")
     return (f"truncated after {capped_rows} of {total_rows} rows — this "
             f"sheet exceeds the {XLSX_MAX_ROWS}-row-per-sheet limit")
 
