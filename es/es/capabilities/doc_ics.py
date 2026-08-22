@@ -1,0 +1,204 @@
+"""iCalendar (.ics) feeds -> Markdown, one `##` heading per VEVENT.
+
+Why per-event headings, not per-day grouping: the reader this feature exists
+for (a later task) pages Markdown BY `##` heading. A real feed from a club
+scheduling tool (PlayMetrics, TeamSnap, ...) is commonly 100+ VEVENTs with no
+structure at all — rendered as prose that would be one giant section, which
+defeats paging entirely (see docs.py's CONVERTERS docstring / the design note
+this module was written against). Grouping by day ("## Sat Sep 5" with
+several games listed under it) was considered and rejected: it reads a little
+more naturally for a human skimming top-to-bottom, but it reintroduces the
+same problem at a smaller scale (a tournament Saturday can hold 4-6 games
+under one heading) AND makes the reader's per-page granularity depend on how
+many events happen to land on the same calendar day — an accident of the
+schedule, not a property the converter controls. One event per heading keeps
+every page the same predictable shape (one event, always) regardless of how
+the games happen to cluster.
+
+Timezone handling (the subtle part — read before changing):
+- DTSTART;VALUE=DATE (all-day) is a plain `datetime.date` with no time
+  component. Rendered as a bare date; never given a fabricated "00:00".
+- A naive DTSTART (no trailing 'Z', no TZID) parses as a tz-naive datetime.
+  RFC 5545 calls this a "floating" time with no fixed zone — there is no
+  correct zone to convert it TO, so it is displayed exactly as written rather
+  than inventing one.
+- A tz-aware DTSTART (the common case for real feeds: PlayMetrics/Google
+  export UTC with a trailing 'Z') is converted to the operator's configured
+  home zone via `cal_support.home_tz()` — the same convention es_cal/es_time
+  already use (config `timezone`, default "America/Chicago"). A raw UTC
+  timestamp read out of a converted Markdown document, with no per-line
+  timezone annotation, is easy to misread as already-local; for the
+  motivating case (a 9am Saturday game emitted as DTSTART 14:00Z) that
+  misreading is actively wrong, not just imprecise, so it is resolved once
+  here rather than left for whoever reads the Markdown to get wrong.
+  `es` cannot discover a *per-feed* zone (unlike Google Calendar, an .ics
+  file has no reliable per-calendar zone field it's safe to trust), so the
+  single operator-configured zone is the only zone available to convert to.
+"""
+from datetime import datetime, time
+from pathlib import Path
+from typing import List, Optional, Tuple
+from zoneinfo import ZoneInfo
+
+from icalendar import Calendar
+
+from es.capabilities import cal_support
+
+# Character budget for the rendered feed, enforced by truncating at a whole
+# EVENT boundary (never mid-event). Mirrors doc_text.MAX_CSV_CHARS's
+# reasoning and its distance under docs.MAX_MARKDOWN_CHARS (40_000): this
+# module truncates itself (docs._truncate_markdown only knows "## Page N"
+# PDF-style boundaries, not per-event ones), and 30_000 leaves enough margin
+# that docs.py's own outer truncation never has to fire a second time. A
+# realistic 117-event feed (the PlayMetrics case this module exists for)
+# comes in well under this — see the module's own manual size check in the
+# task report, not asserted here since a real feed isn't a unit-test fixture.
+MAX_ICS_CHARS = 30_000
+
+
+def _home_tz() -> str:
+    """cal_support.home_tz() already falls back to DEFAULT_TZ when config.yaml
+    is present but has no `timezone` key; this extends the same fallback to
+    the case where config.yaml is missing/unreadable entirely (e.g. no
+    /opt/config.yaml mounted at all) — config.load_config() raises
+    FileNotFoundError for that, uncaught by cal_support itself. A document
+    converter must never hard-fail a conversion over a config lookup when a
+    reasonable default (the same DEFAULT_TZ cal_support already uses) is
+    right there; this only changes WHEN the fallback applies, not what it
+    falls back to."""
+    try:
+        return cal_support.home_tz()
+    except FileNotFoundError:
+        return cal_support.DEFAULT_TZ
+
+
+def _read_calendar(source: Path) -> Optional[Calendar]:
+    """None means "could not be parsed as an .ics feed at all" — a malformed
+    file must never raise out of convert(); real feeds are exactly the kind
+    of hand-exported/third-party data most likely to be slightly broken."""
+    try:
+        return Calendar.from_ical(source.read_bytes())
+    except Exception:
+        return None
+
+
+def _to_display(value, tz_name: str):
+    """Normalize one DTSTART/DTEND value for display (see module docstring
+    for the reasoning per case). Returns a date, a naive datetime, or a
+    datetime localized to tz_name — never None (callers check for None
+    themselves before calling this)."""
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(ZoneInfo(tz_name))
+        return value
+    return value  # a plain date (all-day)
+
+
+def _sort_key(value):
+    """A single comparable key across the three shapes _to_display can
+    return (date / naive datetime / tz-aware-but-already-localized datetime),
+    so a feed mixing all-day and timed events still sorts consistently.
+    Events with no start at all sort last, not first — an undated event is
+    not "the earliest event", it's simply unordered."""
+    if value is None:
+        return datetime.max
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    return datetime.combine(value, time.min)
+
+
+def _format_when(value) -> str:
+    if value is None:
+        return "(no date)"
+    if isinstance(value, datetime):
+        return value.strftime("%a %b %-d, %-I:%M %p")
+    return value.strftime("%a %b %-d")
+
+
+def _format_time(value) -> Optional[str]:
+    if isinstance(value, datetime):
+        return value.strftime("%-I:%M %p")
+    return None
+
+
+def _event_block(ev, tz_name: str) -> str:
+    summary = str(ev.get("summary") or "(no summary)")
+    dtstart_prop = ev.get("dtstart")
+    start = _to_display(dtstart_prop.dt, tz_name) if dtstart_prop is not None else None
+    lines = [f"## {_format_when(start)} — {summary}"]
+
+    location = ev.get("location")
+    if location:
+        lines.append(str(location))
+
+    dtend_prop = ev.get("dtend")
+    if dtend_prop is not None:
+        end = _to_display(dtend_prop.dt, tz_name)
+        end_time = _format_time(end)
+        if end_time:
+            lines.append(f"Ends {end_time}")
+
+    description = ev.get("description")
+    if description:
+        lines.append(str(description))
+
+    return "\n".join(lines)
+
+
+def _build_markdown(events, calname: Optional[str], tz_name: str) -> str:
+    total = len(events)
+    count_bit = f"{total} event{'s' if total != 1 else ''}"
+    header = f"{calname} — {count_bit}" if calname else count_bit
+
+    lines = [header]
+    used = len(header)
+    kept = 0
+    for _, ev in events:
+        block = _event_block(ev, tz_name)
+        cost = len(block) + 2  # blank line separating it from the previous block
+        if kept > 0 and used + cost > MAX_ICS_CHARS:
+            break
+        lines.append("")
+        lines.append(block)
+        used += cost
+        kept += 1
+
+    md = "\n".join(lines)
+    if kept < total:
+        remaining = total - kept
+        md += (f"\n\n*(truncated after {kept} of {total} events — the "
+               f"{MAX_ICS_CHARS}-character limit was reached; a calendar "
+               "feed has no page range to resume from, so ask for a "
+               f"narrower date range or a smaller export if the remaining "
+               f"{remaining} event{'s' if remaining != 1 else ''} are needed)*")
+    return md
+
+
+def convert(source: Path, adir: Path,
+            pages: Optional[List[int]] = None, **_ignored) -> Tuple[str, List[Path]]:
+    """Return (markdown, []) — a calendar feed produces no images.
+
+    `pages` is accepted (matching every other converter's signature, which
+    docs.extract calls uniformly) but unused: this module implements neither
+    `page_count` nor `render`, so docs.py never lets an explicit `pages`
+    argument reach here (see docs.py's _page_count / extract()).
+    """
+    cal = _read_calendar(source)
+    if cal is None:
+        return (
+            "*(this file could not be read as an iCalendar (.ics) feed — it "
+            "may be corrupt or not actually an .ics file; ask the user to "
+            "resend it)*"
+        ), []
+
+    tz_name = _home_tz()
+    events = []
+    for ev in cal.walk("VEVENT"):
+        dtstart_prop = ev.get("dtstart")
+        start = _to_display(dtstart_prop.dt, tz_name) if dtstart_prop is not None else None
+        events.append((_sort_key(start), ev))
+    events.sort(key=lambda pair: pair[0])
+
+    calname = cal.get("X-WR-CALNAME")
+    markdown = _build_markdown(events, str(calname) if calname else None, tz_name)
+    return markdown, []

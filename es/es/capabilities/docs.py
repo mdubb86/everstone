@@ -5,10 +5,12 @@ cache and confinement concerns, and doc_cache free of parsing concerns.
 
 Dispatch is a table, CONVERTERS, keyed by lowercased extension; SUPPORTED is
 derived from it so the two can't drift apart. CONVERTERS holds ".pdf" (via
-doc_pdf, the reference/paginated converter) plus ".txt"/".md"/".csv"/".json"
-(all four via doc_text, the flat/non-paginated converter) — adding a new
-format is meant to be a pure addition (a new converter module + one new
-table entry), not a change to extract()/render() themselves.
+doc_pdf, the reference/paginated converter), ".txt"/".md"/".csv"/".json"
+(all four via doc_text, the flat/non-paginated converter), and ".ics" (via
+doc_ics, which synthesizes one "## " heading per VEVENT so a flat calendar
+feed still pages well) — adding a new format is meant to be a pure addition
+(a new converter module + one new table entry), not a change to
+extract()/render() themselves.
 """
 import json
 import os
@@ -20,7 +22,7 @@ from pdfminer.pdfdocument import PDFEncryptionError
 from pdfplumber.utils.exceptions import PdfminerException
 
 from es import config, doc_cache, paths
-from es.capabilities import doc_pdf, doc_text
+from es.capabilities import doc_ics, doc_pdf, doc_text
 
 MAX_MARKDOWN_CHARS = 40_000
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
@@ -48,6 +50,7 @@ CONVERTERS = {
     ".md": doc_text,
     ".csv": doc_text,
     ".json": doc_text,
+    ".ics": doc_ics,
 }
 SUPPORTED = set(CONVERTERS)
 

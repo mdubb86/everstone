@@ -168,3 +168,18 @@ def txt_file(tmp_path):
     p = tmp_path / "notes.txt"
     p.write_text("Practice moved to Thursday.\nBring the blue kit.\n", encoding="utf-8")
     return p
+
+
+@pytest.fixture
+def ics_file(tmp_path):
+    p = tmp_path / "schedule.ics"
+    p.write_text(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n"
+        "BEGIN:VEVENT\r\nUID:1\r\nSUMMARY:Game 1 vs Cedar Park Fury\r\n"
+        "DTSTART:20260905T140000Z\r\nDTEND:20260905T153000Z\r\n"
+        "LOCATION:Kelly Reeves Athletic Complex - Field 3\r\nEND:VEVENT\r\n"
+        "BEGIN:VEVENT\r\nUID:2\r\nSUMMARY:Game 2 vs Round Rock SC\r\n"
+        "DTSTART:20260912T160000Z\r\nDTEND:20260912T173000Z\r\n"
+        "LOCATION:Old Settlers Park - Field 1\r\nEND:VEVENT\r\n"
+        "END:VCALENDAR\r\n", encoding="utf-8")
+    return p
