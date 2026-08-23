@@ -8,7 +8,7 @@ import functools
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Generic, Optional, TypeVar
+from typing import Generic, List, Optional, Tuple, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
@@ -24,6 +24,7 @@ from es.vault_client import VaultClient
 from es.capabilities import cal as cal_cap
 from es.capabilities import cal_support
 from es.capabilities import clock as clock_cap
+from es.capabilities import doc_support
 from es.capabilities import docs as docs_cap
 from es.capabilities import maps as maps_cap
 from es.capabilities import maps_write
@@ -530,6 +531,112 @@ _WHOLE_DOCUMENT_CHAR_LIMIT = 4_000
 _WHOLE_NOTE_CHAR_LIMIT = 16_000
 
 
+# The hard cap on `content` — the ONE thing that stood between es_read and
+# Hermes's own house limit (DEFAULT_MCP_RESULT_SIZE_CHARS = 50_000, the size
+# past which a tool result is spilled to a file with only a preview kept in
+# context — a file this agent has no tool to open). Every path that returns
+# text (preamble/first-section, an explicit `section`, and a line `window`)
+# must run through this before it reaches the envelope.
+#
+# The design spec named 40,000 ("chosen to sit under Hermes's 50,000 house
+# limit with headroom for the envelope"), but that number priced in only
+# `content` plus a small fixed envelope — not `outline`, which can itself be
+# sizeable: a 100+-section document (the motivating case for the whole
+# outline-vs-whole design) serializes to several thousand characters of its
+# own ({id, title, level} per heading, JSON quoting included), and frontmatter
+# adds more still for a note. Reusing 40,000 here would let a large `content`
+# and a large `outline` add up past 50,000 in exactly the case (a big,
+# many-section document) where both are most likely to be large at once.
+# 32,000 keeps a deliberate ~18,000-character margin for outline + envelope +
+# frontmatter overhead, while still comfortably exceeding what a single
+# `es_read` call needs to be useful (the window default of 200 lines is
+# itself sized to well under this).
+_CONTENT_CHAR_CAP = 32_000
+
+
+def _cap_content(text: str, resume_hint: str) -> str:
+    """Cut `text` to at most _CONTENT_CHAR_CAP characters and say so in-band
+    — the same "*(truncated ...)*" convention es_doc_extract's own
+    docs._truncate_markdown uses (built through the shared
+    doc_support.truncation_marker, so detection/wording stays one
+    convention rather than a second, divergent one for es_read).
+
+    Cuts at the last newline at-or-before the cap so a huge but ordinarily-
+    line-broken text (the 112k-character, one-paragraph-per-line note this
+    fix exists for) never loses a partial line — falling back to a hard cut
+    only when no newline exists before the cap at all (e.g. one gigantic
+    unbroken paragraph). `resume_hint` names how the agent gets the rest;
+    callers here all point at the same escape hatch (`offset`), since a
+    single returned section/preview has no paging concept of its own.
+    Returns `text` unchanged when it's already within the cap.
+    """
+    if len(text) <= _CONTENT_CHAR_CAP:
+        return text
+    marker = "\n\n" + doc_support.truncation_marker(
+        f"at {_CONTENT_CHAR_CAP} characters — {resume_hint}")
+    # Reserve room for the marker itself: cutting AT the cap and appending
+    # the marker after it would push the total past _CONTENT_CHAR_CAP —
+    # exactly the bug this whole fix exists to close, just moved one line
+    # over. `limit` is where the KEPT text must end so text + marker still
+    # fits inside the cap.
+    limit = max(0, _CONTENT_CHAR_CAP - len(marker))
+    cut = text.rfind("\n", 0, limit)
+    if cut <= 0:
+        cut = limit
+    return text[:cut] + marker
+
+
+def _split_long_lines(md: str, limit: int) -> str:
+    """Break any single line longer than `limit` characters into limit-sized
+    chunks, each its own line. read_cap.window pages by LINE with no
+    character budget of its own (that's read.py's contract, owned
+    elsewhere) — a document that is one enormous unbroken line (an 800k-
+    character pasted transcript, verified live) is, from window()'s point of
+    view, exactly ONE line, so no amount of line-based paging can ever
+    return less than the whole thing. Pre-splitting on this side turns that
+    one line into many synthetic ones window() can page through normally,
+    without read.py ever needing a character budget of its own. Purely a
+    windowing aid — only ever fed to read_cap.window(), never used for
+    outline/section, which must keep seeing the document's real structure.
+    """
+    lines = md.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out: List[str] = []
+    for line in lines:
+        if len(line) <= limit:
+            out.append(line)
+        else:
+            out.extend(line[i:i + limit] for i in range(0, len(line), limit))
+    return "\n".join(out)
+
+
+def _char_bounded_window(md: str, offset: int) -> Tuple[str, Optional[int]]:
+    """read_cap.window(), trimmed to _CONTENT_CHAR_CAP: ask it for its
+    normal line-based window, then keep only as many of those lines as fit
+    the character cap, recomputing `next_offset` from what was ACTUALLY
+    kept rather than trusting window()'s own next_offset (which assumes
+    every line it returned is being kept). Getting this recomputation
+    right is the whole point — if a caller advances by window()'s original
+    next_offset after we silently dropped some of its lines, it skips the
+    content that got trimmed. The first line is always kept even if it
+    alone exceeds the cap (hard-cut to size), so a call always makes
+    forward progress and never returns an empty page while lines remain.
+    """
+    win = read_cap.window(_split_long_lines(md, _CONTENT_CHAR_CAP), offset)
+    lines = win["lines"]
+    kept: List[str] = []
+    used = 0
+    for line in lines:
+        cost = len(line) + (1 if kept else 0)
+        if kept and used + cost > _CONTENT_CHAR_CAP:
+            break
+        kept.append(line)
+        used += cost
+    if not kept and lines:
+        kept = [lines[0][:_CONTENT_CHAR_CAP]]
+    next_offset = (offset + len(kept)) if len(kept) < len(lines) else win["next_offset"]
+    return "\n".join(kept), next_offset
+
+
 @mcp.tool()
 @mcp_envelope
 def es_read(target: str, section: Optional[str] = None,
@@ -549,13 +656,23 @@ def es_read(target: str, section: Optional[str] = None,
     by the user, naturally bounded) than for a document es_doc_extract
     converted (arrives at whatever size its source happened to be) — an
     ordinary journal/topic note almost always comes back whole. query
-    full-text searches headings + bodies,
-    case-insensitively, and returns matching outline entries (not their
-    text) to follow up with `section`; no matches still returns ok, with
-    `content` naming what to try instead. offset pages by LINE, for content
-    with no headings at all (e.g. a .csv), and reports `next_offset` (null
-    once nothing is left); ignored when section is also given — section
-    wins.
+    full-text searches headings + bodies, case-insensitively, in `outline`
+    — the shape depends on whether the document has headings at all: WITH
+    headings, matches come back as outline entries ({id, title, level},
+    including a preamble hit if the text before the first heading matches)
+    to follow up with `section`; a document with NO headings (a .csv, a
+    flat prose note) instead returns line hits ({offset, line}) to follow
+    up with `offset=` — there is no section id to hand back for flat
+    content, and returning the whole thing just because a search term
+    matched somewhere inside it would defeat offset-paging's whole point.
+    Either way `content` stays null (the hits are what to act on); no
+    matches still returns ok, with `content` naming what to try instead.
+    offset pages by LINE, for content with no headings at all (e.g. a
+    .csv) or to page raw text regardless of headings, and reports
+    `next_offset` (null once nothing is left); ignored when section is
+    also given — section wins. `content` is capped per call — when cut,
+    it ends with an in-band marker naming how to get the rest (typically
+    `offset=0`).
 
     Always returns {kind, source, path, frontmatter, content, outline, more,
     next_offset} — the same keys regardless of mode, so you never have to
@@ -587,16 +704,18 @@ def es_read(target: str, section: Optional[str] = None,
                               "arguments to see the outline, or try a different word.")
         return out
 
+    _resume_hint = ("this is a single section with no paging of its own — "
+                     "call es_read with offset=0 to page through the whole "
+                     "document by line instead")
+
     if section is not None:
-        out["content"] = read_cap.section(md, section)
+        out["content"] = _cap_content(read_cap.section(md, section), _resume_hint)
         out["more"] = len(read_cap.outline(md)) > 1
         return out
 
     if offset is not None:
-        win = read_cap.window(md, offset)
-        out["content"] = "\n".join(win["lines"])
-        out["next_offset"] = win["next_offset"]
-        out["more"] = win["next_offset"] is not None
+        out["content"], out["next_offset"] = _char_bounded_window(md, offset)
+        out["more"] = out["next_offset"] is not None
         return out
 
     outline = read_cap.outline(md)
@@ -605,15 +724,24 @@ def es_read(target: str, section: Optional[str] = None,
     large = len(md) > whole_limit
     if outline and large:
         out["outline"] = outline
-        out["content"] = read_cap.section(md, read_cap.PREAMBLE_ID).strip() or None
+        # The spec calls this "an outline plus the first section" — the
+        # preamble (text before the first heading) IS that first section
+        # when one exists, but a document that starts AT a heading (no
+        # preamble text at all, verified live for a PDF and an .xlsx) has
+        # none, and returning null here regressed the spec's promise and
+        # left the agent with an outline and nothing to read without a
+        # second call. Falling back to the first heading's own body means
+        # `content` is only ever null when the document is genuinely empty.
+        preview = read_cap.section(md, read_cap.PREAMBLE_ID).strip()
+        if not preview:
+            preview = read_cap.section(md, outline[0]["id"]).strip()
+        out["content"] = _cap_content(preview, _resume_hint) or None
         out["more"] = True
         return out
 
     if large:  # no headings to outline (e.g. a .csv) — page by line instead
-        win = read_cap.window(md, 0)
-        out["content"] = "\n".join(win["lines"])
-        out["next_offset"] = win["next_offset"]
-        out["more"] = win["next_offset"] is not None
+        out["content"], out["next_offset"] = _char_bounded_window(md, 0)
+        out["more"] = out["next_offset"] is not None
         return out
 
     out["content"] = md

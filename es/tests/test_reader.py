@@ -7,11 +7,12 @@ purpose so these tests don't need a container.
 """
 import os
 import time
+from typing import List
 
 import pytest
 
 from es import doc_cache, mcp_server
-from es.capabilities import docs, reader
+from es.capabilities import doc_support, docs, reader
 from es.vault_client import NoteNotFound, VaultClient
 
 
@@ -132,6 +133,41 @@ def test_doc_handle_traversal_is_rejected_as_expired_not_a_path_error(cache_root
     outside cache_root."""
     with pytest.raises(reader.DocHandleExpired):
         reader.resolve("doc:../../../etc/passwd", vault=None, cache_root=cache_root)
+
+
+def test_doc_handle_hex_guard_is_what_rejects_traversal(tmp_path, cache_root):
+    """test_doc_handle_traversal_is_rejected_as_expired_not_a_path_error
+    (above) passes for a second reason that has nothing to do with the hex
+    guard: `doc:../../../etc/passwd` also fails because no doc.md happens to
+    live at that resolved path — so that test alone would keep passing even
+    if reader._DOC_ID_RE were weakened to `^.+$`, silently reopening the
+    escape. This test plants a REAL doc.md at a location a traversal would
+    land on if the hex check ever let a non-hex id through, proving the
+    regex itself — not luck — is what blocks it.
+    """
+    escaped = tmp_path / "escaped"
+    escaped.mkdir()
+    docs._write_full_extract(escaped, "# Secret\n\nShould never be reachable.", [])
+
+    # A doc_id crafted so that cache_root/ES_NAMESPACE/<doc_id> resolves to
+    # `escaped` once the OS follows the ".." components — exactly what an
+    # UNGUARDED path join would do. ES_NAMESPACE itself must actually exist
+    # on disk (real _resolve_doc always joins it in, real doc_id or not) —
+    # the kernel needs every intermediate component, including this one, to
+    # be a real directory before it can walk back out of it via "..".
+    ns_dir = cache_root / doc_cache.ES_NAMESPACE
+    ns_dir.mkdir(parents=True, exist_ok=True)
+    traversal_id = os.path.relpath(escaped, ns_dir)
+    assert not reader._DOC_ID_RE.match(traversal_id)  # contains '/' and '..'
+
+    with pytest.raises(reader.DocHandleExpired):
+        reader.resolve(f"doc:{traversal_id}", vault=None, cache_root=cache_root)
+
+    # Prove the traversal would genuinely have worked without the guard:
+    # joining the same id onto the cache root directly (bypassing resolve's
+    # regex) does find the planted file.
+    unguarded_path = ns_dir / traversal_id
+    assert docs.read_cached(unguarded_path) is not None
 
 
 def test_note_path_traversal_is_rejected_unchanged(vault):
@@ -424,3 +460,224 @@ def test_es_read_very_long_note_still_outlines(wired_vault):
     assert data["more"] is True
     assert data["next_offset"] is not None
     assert data["content"] != text
+
+
+# --- C1: content is bounded on every path that returns it ----------------
+#
+# es_read decided WHOLE-vs-OUTLINE using a threshold, but nothing capped the
+# text any path actually returned — verified live against a realistic
+# Obsidian topic note (150 paragraphs, one per line): note_chars=112348,
+# content_chars=74899 (~18,700 tokens), unbounded. Past Hermes's own
+# DEFAULT_MCP_RESULT_SIZE_CHARS house limit (50,000) a tool result is
+# spilled to a file with only a preview kept in context — and this agent has
+# no file tool to open the spillover. These tests pin `content` to
+# mcp_server._CONTENT_CHAR_CAP on every path (preamble/first-section, an
+# explicit `section`, and both `window` paths), each with an in-band marker
+# and the rest still reachable via the documented `offset` escape hatch.
+
+def _prose_lines(n: int, width: int = 500) -> str:
+    """`n` headingless prose lines, each padded to `width` characters — the
+    shape of an ordinary Obsidian topic note (one paragraph per line, no
+    hard wrap), at whatever total size a test needs to cross a threshold."""
+    filler = ("Practice went well today; the team worked on passing drills, "
+              "set pieces, and a short scrimmage to close things out. ")
+    line = (filler * (width // len(filler) + 1))[:width]
+    return "\n".join(line for _ in range(n))
+
+
+def test_es_read_long_note_preamble_is_capped_with_marker_and_remains_retrievable(wired_vault):
+    """The primary regression: a realistic topic note (~112k characters, one
+    paragraph per line, one heading partway through) used to return its
+    ENTIRE ~75,000-character preamble verbatim. Must now be capped, marked
+    in-band, and the rest still reachable by paging with `offset`."""
+    preamble = _prose_lines(150, width=500)  # ~75,000 chars, no headings
+    assert len(preamble) > mcp_server._CONTENT_CHAR_CAP
+    body = preamble + "\n\n## Later Section\n\nNotes added after the fact.\n"
+    wired_vault.write_topic("Season Log", body=body)
+
+    out = mcp_server.es_read("Season Log")
+    assert out["ok"] is True
+    data = out["data"]
+    assert data["more"] is True
+    assert len(data["content"]) <= mcp_server._CONTENT_CHAR_CAP
+    assert doc_support.TRUNCATION_SENTINEL in data["content"]
+    assert "Later Section" not in data["content"]  # cut well before the heading
+
+    # Fully retrievable: paging by line from the start reproduces the exact
+    # underlying markdown (not just "some more text").
+    resolved_md = reader.resolve("Season Log", vault=wired_vault, cache_root=None)["markdown"]
+    collected: List[str] = []
+    offset = 0
+    while offset is not None:
+        page = mcp_server.es_read("Season Log", offset=offset)["data"]
+        collected.append(page["content"])
+        offset = page["next_offset"]
+    assert "\n".join(collected) == resolved_md
+
+
+def test_es_read_five_megabyte_note_preamble_is_capped(wired_vault):
+    """Verified live: a 5MB note whose only heading ("## Footnotes") sits at
+    the very end returned its full 5,000,000-character preamble verbatim."""
+    preamble = "Long-form notes about the season. " * 150_000  # ~5.25MB
+    body = preamble + "\n\n## Footnotes\n\n[1] See appendix.\n"
+    wired_vault.write_topic("Huge Log", body=body)
+
+    out = mcp_server.es_read("Huge Log")
+    assert out["ok"] is True
+    data = out["data"]
+    assert len(data["outline"]) == 1
+    assert len(data["content"]) <= mcp_server._CONTENT_CHAR_CAP
+    assert doc_support.TRUNCATION_SENTINEL in data["content"]
+    assert data["more"] is True
+
+
+def test_es_read_single_giant_line_is_capped_and_fully_pageable(wired_cache):
+    """Verified live: an 800,000-character single-line document (a pasted
+    transcript with no line breaks at all) came back whole (more=false).
+    read_cap.window pages by LINE, so from its point of view this is
+    exactly one line — no amount of line-based paging alone could return
+    less than the whole thing. es_read must pre-split an oversized line
+    into cap-sized synthetic lines so it's still boundable and fully
+    retrievable by paging."""
+    text = "0123456789" * 80_000  # 800,000 chars, one line, no headings
+    target = _seed_doc(wired_cache, text, ext=".txt")
+
+    out = mcp_server.es_read(target)
+    assert out["ok"] is True
+    data = out["data"]
+    assert len(data["content"]) <= mcp_server._CONTENT_CHAR_CAP
+    assert data["more"] is True
+    assert data["next_offset"] is not None
+
+    collected = data["content"]
+    offset = data["next_offset"]
+    while offset is not None:
+        page = mcp_server.es_read(target, offset=offset)["data"]
+        collected += page["content"]
+        offset = page["next_offset"]
+    assert collected == text
+
+
+def test_es_read_docx_whose_only_heading_is_the_appendix_stays_within_cap(tmp_path, wired_cache):
+    """Verified live: a .docx whose only heading is an appendix at the very
+    end returned a 12,289-character preamble — 3x the 4,000-character
+    document whole-vs-outline threshold, with nothing capping it. Pins the
+    shape down as a regression guard (12,289 < the cap, so this doesn't
+    itself exercise truncation — see the 5MB/112k tests above for that)."""
+    from docx import Document
+
+    d = Document()
+    # Enough paragraphs to clear the 4,000-character document threshold but
+    # comfortably under doc_office's own 30,000-character conversion budget
+    # (MAX_CHARS) — the appendix heading must survive INTO the converted
+    # markdown for this to exercise the right bug; too many paragraphs and
+    # doc_office's own truncation cuts the document before ever reaching it.
+    for i in range(100):
+        d.add_paragraph(f"Paragraph {i}: ordinary body text about the season, "
+                        "practices, and logistics that goes on for a while.")
+    d.add_heading("Appendix", level=1)
+    d.add_paragraph("Reference material goes here.")
+    p = tmp_path / "manual.docx"
+    d.save(str(p))
+
+    extracted = docs.extract(str(p), roots=[p.parent], cache_root=wired_cache)
+    out = mcp_server.es_read(f"doc:{extracted['doc_id']}")
+    assert out["ok"] is True
+    data = out["data"]
+    assert len(data["outline"]) == 1
+    assert data["outline"][0]["title"] == "Appendix"
+    assert len(data["content"]) <= mcp_server._CONTENT_CHAR_CAP
+    assert data["content"]
+
+
+def test_es_read_section_content_is_capped_with_marker(wired_cache):
+    """The top-level preamble/window paths aren't the only ones that need
+    bounding — a single SECTION whose own body alone exceeds the cap (one
+    outsized event description in an otherwise ordinary calendar) must be
+    capped too."""
+    huge_body = "x" * 50_000
+    md = f"## Event 1\n\n{huge_body}\n\n## Event 2\n\nShort.\n"
+    target = _seed_doc(wired_cache, md, ext=".ics")
+
+    outline = mcp_server.es_read(target)["data"]["outline"]
+    sid = next(s["id"] for s in outline if s["title"] == "Event 1")
+
+    out = mcp_server.es_read(target, section=sid)
+    assert out["ok"] is True
+    data = out["data"]
+    assert len(data["content"]) <= mcp_server._CONTENT_CHAR_CAP
+    assert doc_support.TRUNCATION_SENTINEL in data["content"]
+
+
+def test_es_read_offset_paging_visits_every_line_exactly_once(wired_cache):
+    """The subtle part of bounding `window` by characters: when the char cap
+    forces fewer lines per page than read_cap.window's own 200-line
+    ceiling, `next_offset` must reflect what was ACTUALLY returned, or
+    paging silently skips content. 400 lines of ~500 characters each
+    (~200,000 total) — the character cap (32,000) binds well before the
+    200-line default, so this only passes if next_offset is recomputed from
+    the trimmed page rather than trusted from window()'s own idea of what
+    it returned."""
+    lines = [f"{i:05d} " + ("x" * 490) for i in range(400)]
+    body = "\n".join(lines)
+    target = _seed_doc(wired_cache, body, ext=".txt")
+
+    collected: List[str] = []
+    offset = 0
+    pages = 0
+    while offset is not None:
+        page = mcp_server.es_read(target, offset=offset)["data"]
+        assert len(page["content"]) <= mcp_server._CONTENT_CHAR_CAP
+        collected.extend(page["content"].split("\n"))
+        offset = page["next_offset"]
+        pages += 1
+        assert pages < 1000  # sanity bound against an infinite loop
+
+    assert collected == lines
+    assert pages > 1  # actually exercised more than one page
+
+
+# --- item 2: content must not be null in outline mode ---------------------
+#
+# Verified live: a 40-page PDF and a .xlsx workbook both returned
+# outline=N, content=None — the spec promised "an outline plus the first
+# section", but the implementation only ever returned the PREAMBLE, which is
+# empty whenever the document starts AT a heading (both formats do, always,
+# for .xlsx — every sheet begins with its own "## <sheet>" heading).
+
+def test_es_read_outline_mode_falls_back_to_first_section_when_preamble_empty(wired_cache):
+    md = ("## Section A\n\n" + ("Body text for section A. " * 200) +
+          "\n\n## Section B\n\n" + ("Body text for section B. " * 200))
+    target = _seed_doc(wired_cache, md, ext=".txt")
+
+    out = mcp_server.es_read(target)
+    assert out["ok"] is True
+    data = out["data"]
+    assert len(data["outline"]) == 2
+    assert data["content"] is not None
+    assert "Body text for section A" in data["content"]
+    assert "Section B" not in data["content"]  # first section only, not everything
+
+
+def test_es_read_xlsx_outline_mode_returns_first_sheet_content_not_null(tmp_path, wired_cache):
+    """Every .xlsx sheet starts with its own "## <sheet>" heading (no
+    preamble is ever possible for this format) — this is the exact shape
+    verified live to regress to content=None."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    for i in range(300):
+        ws.append([f"row{i}", i, "padding text to grow this sheet a bit"])
+    wb.create_sheet("Notes").append(["Remember to reconcile."])
+    p = tmp_path / "book.xlsx"
+    wb.save(str(p))
+
+    extracted = docs.extract(str(p), roots=[p.parent], cache_root=wired_cache)
+    out = mcp_server.es_read(f"doc:{extracted['doc_id']}")
+    assert out["ok"] is True
+    data = out["data"]
+    assert len(data["outline"]) == 2
+    assert data["content"] is not None
+    assert "row0" in data["content"]

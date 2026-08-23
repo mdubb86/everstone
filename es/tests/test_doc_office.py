@@ -71,7 +71,19 @@ def test_xlsx_later_sheets_reachable_when_first_sheet_exhausts_budget(tmp_path):
     "## Summary"/"## Notes" sheet that was never emitted in the first place.
     Every sheet must now get at least a heading, and (per
     _render_sheet_rows's own first-row-always-shown rule) at least one row
-    of real, independently-readable content."""
+    of real, independently-readable content.
+
+    Summary/Notes are deliberately MULTI-row (60 each), not the original
+    single-row sheets: with only one row apiece, the separate "always show
+    the first row regardless of budget" rule alone satisfies every
+    assertion below even with fair-share removed entirely (that row IS the
+    header, always shown) -- a prior task flagged this as a mutation the
+    suite couldn't see. Asserting a row deep into each sheet (40 of 60) is
+    only true when the fair-share split actually hands each later sheet a
+    real slice of the remaining budget (~9-10k characters here, verified
+    empirically) rather than the ~0 characters it would get if the first
+    sheet's own share were computed as "everything left" instead of "an
+    even split with the sheets still to come"."""
     from openpyxl import Workbook
     from es.capabilities import read as read_cap
 
@@ -82,9 +94,11 @@ def test_xlsx_later_sheets_reachable_when_first_sheet_exhausts_budget(tmp_path):
     for i in range(8000):
         ws.append([f"row{i}", i, "padding value here to burn the budget"])
     summary = wb.create_sheet("Summary")
-    summary.append(["Total", 8000])
+    for i in range(60):
+        summary.append([f"Metric {i}", i])
     notes = wb.create_sheet("Notes")
-    notes.append(["Remember to reconcile next quarter"])
+    for i in range(60):
+        notes.append([f"Note line {i}: remember to reconcile next quarter."])
     wb.save(str(p))
 
     md, _ = doc_office.convert(p, tmp_path)
@@ -95,12 +109,17 @@ def test_xlsx_later_sheets_reachable_when_first_sheet_exhausts_budget(tmp_path):
     outline = read_cap.outline(md)
     assert [s["title"] for s in outline] == ["Data", "Summary", "Notes"]
 
-    # And each later sheet is independently readable, not merely a bare
-    # heading with nothing behind it.
+    # And each later sheet is independently readable well past its own first
+    # row -- proving the fair-share budget, not just the "first row always
+    # shown" rule, is what's doing the work here.
     summary_id = next(s["id"] for s in outline if s["title"] == "Summary")
     notes_id = next(s["id"] for s in outline if s["title"] == "Notes")
-    assert "Total" in read_cap.section(md, summary_id)
-    assert "reconcile" in read_cap.section(md, notes_id)
+    summary_section = read_cap.section(md, summary_id)
+    notes_section = read_cap.section(md, notes_id)
+    assert "Metric 0" in summary_section
+    assert "Metric 40" in summary_section
+    assert "Note line 0" in notes_section
+    assert "Note line 40" in notes_section
 
 
 def test_xlsx_empty_workbook_does_not_raise(tmp_path):
