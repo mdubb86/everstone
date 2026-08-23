@@ -16,6 +16,7 @@ import httpx
 import trafilatura
 
 from es import config
+from es import url_guard
 from es.deeplink import build_deeplink
 from es.google_auth import calendar_service, people_service
 from es.tasks_client import TasksClient
@@ -382,35 +383,63 @@ _WEB_FETCH_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 _WEB_FETCH_TIMEOUT = 12.0
 _WEB_FETCH_THIN_CHARS = 300
+# Input cap for the HTML branch, sized for what's reasonable to hand lxml/
+# trafilatura to parse — NOT an output limit (its output is a few KB of prose).
 _WEB_FETCH_MAX_BYTES = 3_000_000
+
+
+def _content_type_base(ctype: str) -> str:
+    """The bare media type ("text/html"), stripping `; charset=...` and any
+    other parameters. Content-Type is a structured header, not a substring
+    bag — matching the raw header (e.g. "text/html" in ctype) also matches
+    "application/json; profile=\"text/html\"" or a server-chosen fallback
+    param naming text/html, silently routing the wrong body through the wrong
+    branch. Parsed once here so both dispatch checks agree."""
+    return ctype.split(";", 1)[0].strip()
+
+
+def _guard_request_hook(request) -> None:
+    """httpx request event hook — runs for the initial request AND for every
+    redirect httpx follows, so a public URL that redirects to an internal one
+    is refused at the hop rather than after the fact."""
+    url_guard.check_url(str(request.url))
 
 
 def _http_get(url: str):
     """Single seam for the HTTP GET (monkeypatched in tests)."""
+    url_guard.check_url(url)     # explicit, so the refusal is not hook-dependent
     with httpx.Client(follow_redirects=True, timeout=_WEB_FETCH_TIMEOUT,
-                      headers={"User-Agent": _WEB_FETCH_UA}) as client:
+                      headers={"User-Agent": _WEB_FETCH_UA},
+                      event_hooks={"request": [_guard_request_hook]}) as client:
         return client.get(url)
 
 
 @mcp.tool()
 @mcp_envelope
 def es_web_fetch(url: str) -> dict:
-    """Fetch a URL and return its readable text (light; no browser, no key).
-    Returns {url, title, text, status, thin}. An error or thin=true means the
-    page couldn't be read lightly — escalate to the browser_* tools."""
+    """Fetch a URL (light; no browser, no key). Returns readable text
+    extracted from web pages; other content types are not extracted
+    (thin=true, see note). Returns {url, title, text, status, thin,
+    content_type, note}. Internal/private addresses are refused."""
     resp = _http_get(url)
     resp.raise_for_status()
     ctype = str(resp.headers.get("content-type", "")).lower()
+    ctype_base = _content_type_base(ctype)
     final_url = str(resp.url)
-    if "text/html" not in ctype:
-        return {"url": final_url, "title": "", "text": "", "status": resp.status_code,
-                "thin": True, "note": f"non-HTML content ({ctype or 'unknown'}); not extracted"}
-    html = resp.text[:_WEB_FETCH_MAX_BYTES]
-    text = trafilatura.extract(html) or ""
-    meta = trafilatura.extract_metadata(html)
-    title = (getattr(meta, "title", "") or "") if meta else ""
-    return {"url": final_url, "title": title, "text": text, "status": resp.status_code,
-            "thin": len(text) < _WEB_FETCH_THIN_CHARS}
+    out = {"url": final_url, "title": "", "text": "", "status": resp.status_code,
+           "thin": True, "content_type": ctype, "note": ""}
+
+    if ctype_base == "text/html":
+        html = resp.text[:_WEB_FETCH_MAX_BYTES]
+        text = trafilatura.extract(html) or ""
+        meta = trafilatura.extract_metadata(html)
+        out["title"] = (getattr(meta, "title", "") or "") if meta else ""
+        out["text"] = text
+        out["thin"] = len(text) < _WEB_FETCH_THIN_CHARS
+        return out
+
+    out["note"] = f"non-HTML content ({ctype or 'unknown'}); not extracted"
+    return out
 
 
 def _doc_cache_root() -> Path:

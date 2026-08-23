@@ -2,6 +2,7 @@ from datetime import datetime
 from unittest.mock import MagicMock
 import pytest
 from es import mcp_server
+from es import url_guard
 from es.tasks_client import ParentNotFound, HasSubtasks
 
 
@@ -460,6 +461,28 @@ def test_es_web_fetch_non_html_skips_extract(monkeypatch):
                         lambda u: _fake_resp(ctype="application/pdf", text="%PDF..."))
     out = mcp_server.es_web_fetch("https://ex.com/a.pdf")
     assert out["ok"] is True and out["data"]["text"] == "" and out["data"]["thin"] is True
+    assert "application/pdf" in out["data"]["note"]
+
+
+def test_web_fetch_blocks_internal_url_end_to_end():
+    """No monkeypatch of _http_get — exercises the real wiring. Must fail
+    BEFORE any connection is attempted."""
+    out = mcp_server.es_web_fetch("http://127.0.0.1:5984/_all_dbs")
+    assert out["ok"] is False
+    assert out["error"]["code"] == "url_blocked"
+    assert "internal" in out["error"]["message"].lower()
+
+
+def test_http_get_hook_checks_each_redirect_hop(monkeypatch):
+    """The guard must run per-request, not once — a public URL redirecting to
+    an internal one must still be refused."""
+    seen = []
+    monkeypatch.setattr("es.mcp_server.url_guard.check_url",
+                        lambda u: seen.append(u))
+    hook = mcp_server._guard_request_hook
+    hook(SimpleNamespace(url="https://public.example.com/a"))
+    hook(SimpleNamespace(url="http://127.0.0.1/internal"))
+    assert seen == ["https://public.example.com/a", "http://127.0.0.1/internal"]
 
 
 @pytest.fixture
@@ -534,3 +557,160 @@ def test_es_contacts_search_warms_cache(fake_people):
     calls = fake_people.people.return_value.searchContacts.call_args_list
     assert len(calls) >= 2
     assert calls[0].kwargs["query"] == ""
+
+
+# ── es_web_fetch: content-type dispatch ─────────────────────────────────────
+
+ICS_BODY = (
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
+    "BEGIN:VEVENT\r\nSUMMARY:Game 1 vs Cedar Park Fury\r\n"
+    "DTSTART:20260905T140000Z\r\nEND:VEVENT\r\n"
+    "BEGIN:VEVENT\r\nSUMMARY:Game 2 vs Round Rock SC\r\n"
+    "DTSTART:20260912T160000Z\r\nEND:VEVENT\r\n"
+    "END:VCALENDAR\r\n"
+)
+
+
+def test_web_fetch_non_html_feed_is_not_extracted(monkeypatch):
+    """A calendar feed is not HTML, so it's no longer read inline — that path
+    (raw text bodies returned to the agent) was removed in favor of the
+    pageable document reader. Confirms the not-extracted note + thin=true."""
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="text/calendar; charset=utf-8",
+                                             text=ICS_BODY))
+    out = mcp_server.es_web_fetch("https://ex.com/cal.ics")
+    assert out["ok"] is True
+    d = out["data"]
+    assert d["text"] == ""
+    assert d["thin"] is True
+    assert d["content_type"].startswith("text/calendar")
+    assert "text/calendar" in d["note"]
+
+
+@pytest.mark.parametrize("ctype", [
+    "text/plain", "text/csv", "text/markdown",
+    "application/json", "application/xml", "application/atom+xml",
+])
+def test_web_fetch_non_html_bodies_not_extracted(ctype, monkeypatch):
+    body = "hello " * 100
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype=ctype, text=body))
+    out = mcp_server.es_web_fetch("https://ex.com/a")
+    assert out["ok"] is True
+    assert out["data"]["text"] == ""
+    assert out["data"]["thin"] is True
+
+
+def test_web_fetch_html_still_uses_trafilatura(monkeypatch):
+    html = "<html><head><title>T</title></head><body>" + ("word " * 200) + "</body></html>"
+    monkeypatch.setattr("es.mcp_server._http_get", lambda u: _fake_resp(text=html))
+    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
+    assert "<html>" not in d["text"] and "word" in d["text"]
+
+
+def test_web_fetch_binary_still_thin_until_phase_2(monkeypatch):
+    """PDFs are Phase 2 (the pageable reader). Until then they keep today's
+    behavior: not extracted, thin, with a note explaining why."""
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="application/pdf", text="%PDF-1.4"))
+    d = mcp_server.es_web_fetch("https://ex.com/a.pdf")["data"]
+    assert d["text"] == "" and d["thin"] is True
+    assert d["note"]
+
+
+def test_web_fetch_return_shape_is_stable(monkeypatch):
+    """Every branch returns the same keys, so the agent never reasons about
+    which are present."""
+    expected = {"url", "title", "text", "status", "thin", "content_type", "note"}
+    for ctype, body in [("text/html", "<html><body>hi</body></html>"),
+                        ("text/calendar", ICS_BODY),
+                        ("application/pdf", "%PDF-1.4")]:
+        monkeypatch.setattr("es.mcp_server._http_get",
+                            lambda u, c=ctype, b=body: _fake_resp(ctype=c, text=b))
+        assert set(mcp_server.es_web_fetch("https://ex.com/a")["data"]) == expected
+
+
+# ── review fixups: content-type parsing, redirect-hop mutation coverage ────
+
+@pytest.mark.parametrize("ctype,body", [
+    # A JSON body whose Content-Type happens to mention "text/html" in a
+    # parameter must NOT be routed to trafilatura — the old substring check
+    # ("text/html" in ctype) matched this and silently ran extraction on JSON.
+    ('application/json; profile="text/html"', '{"a": 1}'),
+    # Same trap for a feed: a fallback param naming text/html must not fool
+    # the dispatch into treating an ICS body as HTML.
+    ("text/calendar; fallback=text/html", "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"),
+    # A binary type that merely mentions text/html in a parameter must not
+    # get fed to trafilatura as HTML.
+    ("application/octet-stream; foo=text/html", "\x89PNG\r\n"),
+])
+def test_web_fetch_content_type_base_not_substring_matched(monkeypatch, ctype, body):
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype=ctype, text=body))
+    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
+    # None of these are real HTML, so trafilatura must never have run on them
+    # — the substring match would have coerced ["text"] to whatever
+    # trafilatura.extract() returns for garbage input, rather than "".
+    assert d["text"] == ""
+    assert d["thin"] is True
+
+
+def test_web_fetch_missing_content_type_is_not_extracted(monkeypatch):
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="", text="whatever"))
+    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
+    assert d["text"] == "" and d["thin"] is True
+
+
+def test_web_fetch_malformed_content_type_is_not_extracted(monkeypatch):
+    """A header that's just parameters with no base type at all."""
+    monkeypatch.setattr("es.mcp_server._http_get",
+                        lambda u: _fake_resp(ctype="; charset=utf-8", text="whatever"))
+    d = mcp_server.es_web_fetch("https://ex.com/a")["data"]
+    assert d["text"] == "" and d["thin"] is True
+
+
+def test_http_get_reguards_every_redirect_hop_via_real_client(monkeypatch):
+    """Drives the REAL _http_get (not just the hook function) through an
+    actual redirect chain via httpx.MockTransport. This is the test the
+    mutation review asked for: _http_get has two guard call sites (the
+    explicit url_guard.check_url(url) and the per-request event hook) that
+    mask each other when tested in isolation — deleting either one alone left
+    the old suite green. Here, deleting the explicit call changes the
+    recorded call sequence (asserted exactly below); deleting the event_hooks
+    registration means the redirect to the internal host is never re-checked,
+    so the request succeeds instead of raising — either mutation fails this
+    single test.
+    """
+    calls = []
+
+    def fake_check(u):
+        calls.append(u)
+        if "internal" in u:
+            raise url_guard.BlockedAddress("blocked")
+
+    monkeypatch.setattr("es.mcp_server.url_guard.check_url", fake_check)
+
+    def handler(request):
+        if request.url.path == "/start":
+            return _httpx.Response(
+                302, headers={"location": "https://hop2.example.com/internal"})
+        return _httpx.Response(200, text="ok")
+
+    transport = _httpx.MockTransport(handler)
+    real_client = _httpx.Client
+
+    def fake_client_ctor(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("es.mcp_server.httpx.Client", fake_client_ctor)
+
+    with pytest.raises(url_guard.BlockedAddress):
+        mcp_server._http_get("https://hop1.example.com/start")
+
+    assert calls == [
+        "https://hop1.example.com/start",   # explicit check_url(url) call
+        "https://hop1.example.com/start",   # hook, initial request
+        "https://hop2.example.com/internal",  # hook, redirect hop -> raises
+    ]
