@@ -27,6 +27,8 @@ from es.capabilities import clock as clock_cap
 from es.capabilities import docs as docs_cap
 from es.capabilities import maps as maps_cap
 from es.capabilities import maps_write
+from es.capabilities import read as read_cap
+from es.capabilities import reader
 from es.capabilities import weather as weather_cap
 
 mcp = FastMCP("everstone-es")
@@ -490,6 +492,104 @@ def es_doc_render(source: str, pages: Optional[str] = None) -> dict:
     the document's end is an error (it likely names the wrong page) — omit
     pages instead if you just want "as much as there is"."""
     return docs_cap.render(source, _doc_roots(), _doc_cache_root(), pages=pages)
+
+
+# es_read's own whole-vs-outline threshold. Deliberately smaller than
+# es_doc_extract's 40,000-character conversion cap, and smaller than
+# read.DEFAULT_WINDOW_LIMIT's own ~16,000-character "a window's worth of
+# lines" estimate — a document built from many SMALL units (the motivating
+# case: a 100+-event calendar where each event is only a couple dozen
+# characters) needs to cross this threshold reliably, and a bound sized only
+# for "large in total characters" would let exactly that document slip
+# through as "small enough to return whole", one heading at a time, 100+
+# times. Comfortably above what an ordinary hand-written journal entry or
+# topic note runs (a paragraph or two — a few hundred to low thousands of
+# characters), so those still come back whole in a single call.
+_WHOLE_DOCUMENT_CHAR_LIMIT = 4_000
+
+
+@mcp.tool()
+@mcp_envelope
+def es_read(target: str, section: Optional[str] = None,
+            query: Optional[str] = None, offset: Optional[int] = None) -> dict:
+    """Read a vault note or a document previously extracted by es_doc_extract,
+    paged by heading so a long one doesn't have to come back all at once.
+
+    target is a vault-relative path, a topic name (same convention as
+    es_notes_read), or a "doc:<id>" handle returned by es_doc_extract.
+
+    No arguments: a short document comes back WHOLE (more=false). A long one
+    instead comes back as `outline` — a list of {id, title, level} in
+    document order — with a short preview in `content` and more=true; pass
+    an outline id as `section` to read that piece in full (its own
+    subsections included). query full-text searches headings + bodies,
+    case-insensitively, and returns matching outline entries (not their
+    text) to follow up with `section`; no matches still returns ok, with
+    `content` naming what to try instead. offset pages by LINE, for content
+    with no headings at all (e.g. a .csv), and reports `next_offset` (null
+    once nothing is left); ignored when section is also given — section
+    wins.
+
+    Always returns {kind, source, path, frontmatter, content, outline, more,
+    next_offset} — the same keys regardless of mode, so you never have to
+    guess which ones exist. path/frontmatter are null for a doc:<id> target;
+    outline is null except where noted above.
+    """
+    # _notes_client() reads config.yaml — skip it for a doc: target, which
+    # never touches the vault, so a bare "doc:<id>" read doesn't require a
+    # configured vault at all.
+    vault = None if target.startswith(reader.DOC_PREFIX) else _notes_client()
+    resolved = reader.resolve(target, vault=vault, cache_root=_doc_cache_root())
+    md = resolved["markdown"]
+    out = {
+        "kind": resolved["kind"],
+        "source": resolved["source"],
+        "path": resolved.get("path"),
+        "frontmatter": resolved.get("frontmatter"),
+        "content": None,
+        "outline": None,
+        "more": False,
+        "next_offset": None,
+    }
+
+    if query is not None:
+        hits = read_cap.query(md, query)
+        out["outline"] = hits
+        if not hits:
+            out["content"] = (f"No section matched {query!r}. Call es_read with no "
+                              "arguments to see the outline, or try a different word.")
+        return out
+
+    if section is not None:
+        out["content"] = read_cap.section(md, section)
+        out["more"] = len(read_cap.outline(md)) > 1
+        return out
+
+    if offset is not None:
+        win = read_cap.window(md, offset)
+        out["content"] = "\n".join(win["lines"])
+        out["next_offset"] = win["next_offset"]
+        out["more"] = win["next_offset"] is not None
+        return out
+
+    outline = read_cap.outline(md)
+    large = len(md) > _WHOLE_DOCUMENT_CHAR_LIMIT
+    if outline and large:
+        out["outline"] = outline
+        out["content"] = read_cap.section(md, read_cap.PREAMBLE_ID).strip() or None
+        out["more"] = True
+        return out
+
+    if large:  # no headings to outline (e.g. a .csv) — page by line instead
+        win = read_cap.window(md, 0)
+        out["content"] = "\n".join(win["lines"])
+        out["next_offset"] = win["next_offset"]
+        out["more"] = win["next_offset"] is not None
+        return out
+
+    out["content"] = md
+    out["outline"] = outline or None
+    return out
 
 
 _CONTACTS_READ_MASK = "names,phoneNumbers,emailAddresses,addresses,organizations"
