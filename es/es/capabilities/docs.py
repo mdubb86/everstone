@@ -384,6 +384,31 @@ def _read_images_manifest(adir: Path) -> List[str]:
         return []
 
 
+def read_cached(adir: Path) -> Optional[dict]:
+    """Read a previously cached FULL-document extract (doc.md + its
+    images.json sidecar) from `adir`, or None if there isn't one — never
+    converted, purged, or an undecodable doc.md (treated as a miss, not an
+    error; see _read_cached_markdown).
+
+    The one shared accessor for reading a cached conversion: extract()'s own
+    cache-hit path below uses it, and so does es_read's `doc:<id>` resolution
+    (es/capabilities/reader.py) — neither re-reads doc.md/images.json on its
+    own, so there is exactly one place that knows a missing images.json
+    sidecar means "no images" rather than "cache broken" (_read_images_manifest
+    already tolerates that; a caller here inherits it for free instead of
+    re-deciding it).
+
+    Does NOT touch()/mkdir the directory — that's the caller's call: a
+    cache-hit inside extract() touches immediately (a hit there always means
+    a real access), but a lookup by doc_id that turns out to be a plain miss
+    (no directory at all) has nothing worth touching.
+    """
+    markdown = _read_cached_markdown(adir)
+    if markdown is None:
+        return None
+    return {"markdown": markdown, "images": _read_images_manifest(adir)}
+
+
 def _write_full_extract(adir: Path, markdown: str, images: List[Path]) -> None:
     (adir / DOC_MD_NAME).write_text(markdown, encoding="utf-8")
     (adir / DOC_IMAGES_MANIFEST).write_text(
@@ -536,13 +561,13 @@ def extract(source: str, roots, cache_root: Path,
         # Full-document extract: doc_id is a content hash, so a previous
         # conversion of this exact content is still correct — check the
         # cache before paying for another convert().
-        cached = _read_cached_markdown(adir)
+        cached = read_cached(adir)
         if cached is not None:
             doc_cache.touch(adir)  # TTL means "24h since last USE", not
                                     # "24h since conversion" — a cache hit is
                                     # a use.
-            markdown = cached
-            images = _read_images_manifest(adir)
+            markdown = cached["markdown"]
+            images = cached["images"]
         else:
             try:
                 markdown, image_paths = mod.convert(real, adir, pages=None)
