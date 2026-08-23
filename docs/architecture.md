@@ -340,18 +340,30 @@ vault note, and is *also* the only way it reads a document previously converted 
 `es_notes_journal`/`es_notes_topic` already use), or a `doc:<id>` handle returned by
 `es_doc_extract`. `reader.py` resolves whichever form `target` takes down to one Markdown
 string plus a `kind` (`"note"` or `"doc"`), and hands that string to `read.py`'s pure,
-format-agnostic primitives: `outline` (every `## ` heading, in order), `section` (one heading's
-body, its own subsections included), `window` (page by raw line, for structure-free content
-like a `.csv` that has no headings at all), and `query` (case-insensitive full-text search
-returning *matching outline entries* to follow up with `section` — not raw snippets, so the
-result is exactly the id a follow-up call needs). A short target comes back whole
-(`more=false`); a long one comes back as an outline plus a short preview and `more=true`.
-"Long" is a much higher bar for a note (16,000 characters — authored by a person, naturally
-bounded, and usually better served by an answer than an outline) than for a document (4,000
-characters — a converted document arrives at whatever size its source format happened to be,
-and the threshold has to stay tight enough that a 100-plus-event calendar, each event only a
-couple dozen characters, still crosses it rather than sliding through "small enough to return
-whole" one heading at a time).
+format-agnostic primitives: `outline` (every ATX heading `#` through `######`, in order — a
+converter's `## Page N` and a note's own `# Title`/`### Sub` are all entries), `section` (one
+heading's body, its own subsections included), `window` (page by raw line, for structure-free
+content like a `.csv` that has no headings at all), and `query` (case-insensitive full-text
+search). `query` returns *matching outline entries* — the id a follow-up `section` call needs,
+not raw snippets — except for content with no headings at all, where there is no section to
+name and it returns `{offset, line}` hits the agent pages to with `offset` instead.
+
+A short target comes back whole (`more=false`); a long one comes back as an outline, plus the
+preamble or, when the document opens straight onto a heading, its first section — and
+`more=true`. "Long" is a much higher bar for a note (16,000 characters — authored by a person,
+naturally bounded, and usually better served by an answer than an outline) than for a document
+(4,000 characters — a converted document arrives at whatever size its source format happened to
+be, and the threshold has to stay tight enough that a season's calendar feed crosses it rather
+than sliding through as "small enough to return whole"; the real 117-event feed measures ~8,200
+characters, so 4,000 catches it with room to spare).
+
+**Whatever mode is taken, `content` itself is capped at 32,000 characters** with an in-band
+marker, and that cap is not decoration. Hermes spills any MCP result past
+`DEFAULT_MCP_RESULT_SIZE_CHARS` (50,000) to a file, leaving only a preview in context — and
+this agent has no file tools, so it cannot open the spillover. An uncapped read of a large note
+would hand the agent a preview of content it is structurally unable to retrieve. 32,000 rather
+than the full 50,000 because `outline` shares the envelope, and a 117-entry outline is itself
+several thousand characters.
 
 **Why one read path — not a reader grown per capability — is the load-bearing decision here.**
 Before `es_read` existed, `es_web_fetch` grew its own inline branch for returning long text-ish
@@ -385,7 +397,8 @@ bypassed an earlier version of this guard for exactly that reason (checking the 
 against IPv4 ranges never matches unless it's unwrapped first). It fails **closed**: a host
 that won't resolve, resolves to nothing, or resolves to an address that can't be parsed is
 refused rather than attempted. `_http_get` calls `check_url` explicitly on the initial request
-*and* registers it as an httpx redirect event hook, so a public URL that redirects to an
+*and* registers it as an httpx **request** event hook — which httpx fires once per hop,
+including every redirect it follows — so a public URL that redirects to an
 internal one is caught at the hop, not just up front — the explicit call means the refusal
 isn't hook-dependent even before the first request goes out.
 
