@@ -181,6 +181,22 @@ def _big_markdown(n: int = 150) -> str:
     return "\n".join(parts)
 
 
+def _seed_doc(cache_root, markdown: str, ext: str = ".ics") -> str:
+    """Write `markdown` directly into the doc cache as if es_doc_extract had
+    already converted some external file — the fixture-of-choice for these
+    tests' "large multi-section DOCUMENT" cases (the 117-event-calendar case
+    they're modeled on is exactly a doc:<id>, never a vault note), without
+    needing a real multi-hundred-event .ics file to drive through doc_ics.
+    `ext` only seeds doc_cache.doc_id's hash namespace; the fake source
+    file's own bytes are never read back by anything under test."""
+    fake_source = cache_root / f"fake-{len(markdown)}{ext}"
+    fake_source.write_bytes(os.urandom(8))
+    did = doc_cache.doc_id(fake_source, ext)
+    adir = doc_cache.artifact_dir(cache_root, did)
+    docs._write_full_extract(adir, markdown, [])
+    return f"doc:{did}"
+
+
 def test_es_read_small_note_returns_whole_content(wired_vault):
     wired_vault.write_topic("Manual", body="# Manual\n\nRead me in full.")
     out = mcp_server.es_read("Manual")
@@ -192,15 +208,17 @@ def test_es_read_small_note_returns_whole_content(wired_vault):
     assert set(data.keys()) == ENVELOPE_KEYS
 
 
-def test_es_read_large_document_returns_outline_not_everything(wired_vault):
-    """The core behaviour: a large multi-section document (standing in for
-    the 117-event-calendar case) must not dump every section — it comes
-    back as an outline to choose from, plus a short preamble preview, with
-    more=true telling the agent there's content it hasn't seen yet."""
+def test_es_read_large_document_returns_outline_not_everything(wired_cache):
+    """The core behaviour: a large multi-section DOCUMENT (standing in for
+    the 117-event-calendar case — hence a doc:<id>, not a vault note; see
+    the note-vs-document threshold tests further down for why that distinction
+    matters) must not dump every section — it comes back as an outline to
+    choose from, plus a short preamble preview, with more=true telling the
+    agent there's content it hasn't seen yet."""
     big = _big_markdown(150)
-    wired_vault.write_topic("BigCal", body=big)
+    target = _seed_doc(wired_cache, big)
 
-    out = mcp_server.es_read("BigCal")
+    out = mcp_server.es_read(target)
     assert out["ok"] is True
     data = out["data"]
     assert len(data["outline"]) == 150
@@ -212,13 +230,13 @@ def test_es_read_large_document_returns_outline_not_everything(wired_vault):
     assert set(data.keys()) == ENVELOPE_KEYS
 
 
-def test_es_read_section_returns_only_that_section(wired_vault):
+def test_es_read_section_returns_only_that_section(wired_cache):
     big = _big_markdown(150)
-    wired_vault.write_topic("BigCal", body=big)
-    outline = mcp_server.es_read("BigCal")["data"]["outline"]
+    target = _seed_doc(wired_cache, big)
+    outline = mcp_server.es_read(target)["data"]["outline"]
     target_id = next(s["id"] for s in outline if s["title"] == "Event 7")
 
-    out = mcp_server.es_read("BigCal", section=target_id)
+    out = mcp_server.es_read(target, section=target_id)
     assert out["ok"] is True
     data = out["data"]
     assert "Details for event 7." in data["content"]
@@ -308,21 +326,101 @@ def test_es_read_doc_handle_reads_a_converted_document(text_pdf, wired_cache):
     assert set(data.keys()) == ENVELOPE_KEYS
 
 
-def test_es_read_envelope_key_set_is_identical_across_all_modes(wired_vault):
+def test_es_read_envelope_key_set_is_identical_across_all_modes(wired_vault, wired_cache):
     """The agent must not have to reason about which keys exist depending on
-    which mode it used — every mode returns exactly the same key set."""
+    which mode it used — every mode returns exactly the same key set,
+    across both kinds (note, doc) es_read can serve."""
     big = _big_markdown(150)
-    wired_vault.write_topic("BigCal", body=big)
+    big_cal = _seed_doc(wired_cache, big)
     wired_vault.write_topic("Small", body="# Small\n\nWhole thing.")
-    section_id = mcp_server.es_read("BigCal")["data"]["outline"][0]["id"]
+    section_id = mcp_server.es_read(big_cal)["data"]["outline"][0]["id"]
 
     modes = [
         mcp_server.es_read("Small"),
-        mcp_server.es_read("BigCal"),
-        mcp_server.es_read("BigCal", section=section_id),
-        mcp_server.es_read("BigCal", query="Event 3"),
-        mcp_server.es_read("BigCal", query="no-such-text-anywhere"),
+        mcp_server.es_read(big_cal),
+        mcp_server.es_read(big_cal, section=section_id),
+        mcp_server.es_read(big_cal, query="Event 3"),
+        mcp_server.es_read(big_cal, query="no-such-text-anywhere"),
     ]
     for out in modes:
         assert out["ok"] is True
         assert set(out["data"].keys()) == ENVELOPE_KEYS
+
+
+# --- note-vs-document whole-vs-outline threshold ------------------------
+#
+# A prior task flagged a gap: nothing exercised a genuinely long NOTE (as
+# opposed to _big_markdown's synthetic, document-shaped fixture above) through
+# the whole-vs-outline threshold — these tests close it, and pin down the
+# actual decision: a note gets a much larger "whole" allowance than a
+# document, because it's authored by the user (naturally bounded, and "what
+# did I write about the tournament" is usually better answered directly than
+# via a menu of section ids), while a document arrives from outside at
+# whatever size its source format happened to be.
+
+def _long_note_text(entries: int) -> str:
+    """Models a topic/journal note a user has appended to over time: short
+    dated paragraphs with NO `##` headings — the common shape of a running
+    note nobody bothered to section, unlike _big_markdown's many-small-
+    headings shape (which models a converted calendar, not a note). Each
+    entry spans two lines (not one), so a large-enough `entries` count also
+    crosses read.window's 200-*line* default page size, not just a character
+    count — needed by test_es_read_document_at_the_same_size_is_still_paged
+    below, which must observe actual partial content, not just a "large"
+    flag with nothing behind it."""
+    entry = ("Practice on day {i}: worked on passing drills and a short "
+             "scrimmage.\nCoach noted improvement in first touch and "
+             "off-ball movement. Weather was clear.")
+    return "\n\n".join(entry.format(i=i) for i in range(entries))
+
+
+def test_es_read_long_note_without_headings_still_returns_whole(wired_vault):
+    """~10,500 characters — comfortably over the DOCUMENT threshold
+    (_WHOLE_DOCUMENT_CHAR_LIMIT, 4,000) but under the NOTE threshold
+    (_WHOLE_NOTE_CHAR_LIMIT, 16,000): a year of ordinary appended journal
+    entries, not a converted document. Must come back whole — this is
+    exactly the case the previous task flagged as a regression (a long note
+    that used to return whole via es_notes_read now costing a second call)."""
+    text = _long_note_text(70)
+    assert 4_000 < len(text) < 16_000
+    wired_vault.write_topic("Season Log", body=text)
+
+    out = mcp_server.es_read("Season Log")
+    assert out["ok"] is True
+    data = out["data"]
+    assert data["content"].strip() == text
+    assert data["more"] is False
+    assert data["next_offset"] is None
+    assert data["outline"] is None  # no headings in this note at all
+    assert set(data.keys()) == ENVELOPE_KEYS
+
+
+def test_es_read_document_at_the_same_size_is_still_paged(wired_cache):
+    """The SAME text that comes back whole for a note (previous test) must
+    still be paged when read as a doc:<id> — proving the threshold actually
+    differs by `kind`, not by some property of the content itself."""
+    text = _long_note_text(70)
+    target = _seed_doc(wired_cache, text, ext=".txt")
+
+    out = mcp_server.es_read(target)
+    assert out["ok"] is True
+    data = out["data"]
+    assert data["more"] is True
+    assert data["next_offset"] is not None
+    assert data["content"] != text  # only a window's worth, not the whole thing
+
+
+def test_es_read_very_long_note_still_outlines(wired_vault):
+    """A note big enough to exceed even the generous NOTE threshold (~19,500
+    characters) must still page — the larger allowance is not "notes are
+    never paged", just a higher bar."""
+    text = _long_note_text(130)
+    assert len(text) > 16_000
+    wired_vault.write_topic("Long Season Log", body=text)
+
+    out = mcp_server.es_read("Long Season Log")
+    assert out["ok"] is True
+    data = out["data"]
+    assert data["more"] is True
+    assert data["next_offset"] is not None
+    assert data["content"] != text

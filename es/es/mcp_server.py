@@ -486,18 +486,48 @@ def es_doc_render(source: str, pages: Optional[str] = None) -> dict:
     return docs_cap.render(source, _doc_roots(), _doc_cache_root(), pages=pages)
 
 
-# es_read's own whole-vs-outline threshold. Deliberately smaller than
-# es_doc_extract's 40,000-character conversion cap, and smaller than
-# read.DEFAULT_WINDOW_LIMIT's own ~16,000-character "a window's worth of
+# es_read's own whole-vs-outline threshold — for a DOCUMENT (kind == "doc":
+# something es_doc_extract converted from outside the vault). Deliberately
+# smaller than es_doc_extract's 40,000-character conversion cap, and smaller
+# than read.DEFAULT_WINDOW_LIMIT's own ~16,000-character "a window's worth of
 # lines" estimate — a document built from many SMALL units (the motivating
 # case: a 100+-event calendar where each event is only a couple dozen
 # characters) needs to cross this threshold reliably, and a bound sized only
 # for "large in total characters" would let exactly that document slip
 # through as "small enough to return whole", one heading at a time, 100+
-# times. Comfortably above what an ordinary hand-written journal entry or
-# topic note runs (a paragraph or two — a few hundred to low thousands of
-# characters), so those still come back whole in a single call.
+# times. A document arrives from outside at whatever size its source format
+# happens to be (a scanned PDF, an exported calendar feed) — nothing about
+# its length says anything about how much of it is worth seeing at once, so
+# this stays tight.
 _WHOLE_DOCUMENT_CHAR_LIMIT = 4_000
+
+# The same threshold for a NOTE (kind == "note": something the user wrote
+# into the vault themselves, via es_notes_journal/es_notes_topic/Obsidian
+# directly) — deliberately much larger than _WHOLE_DOCUMENT_CHAR_LIMIT above.
+#
+# A note is authored, not ingested: its length reflects how much the user
+# actually wrote, not an external format's page count, so "long" doesn't
+# carry the same "there is a lot here to page through" implication it does
+# for a converted document. The question a note-outline answers ("what did
+# I write about the tournament") is usually better served by the answer
+# itself than by a menu of section ids to fetch one at a time — an outline
+# is a genuinely useful detour for a 40-page manual; for a topic note the
+# user has been appending to for a year, it is mostly friction, costing the
+# agent a second call for content that would have fit in the first response.
+# A note that DOES have its own headings still gets one via `outline` below
+# (nothing here suppresses that) — this only changes when a note crosses
+# from "one answer" to "worth paging" in the first place.
+#
+# Set to read.DEFAULT_WINDOW_LIMIT's own ~16,000-character "a window's worth
+# of lines" estimate (see that module's docstring: 200 lines at a typical
+# prose width) rather than an arbitrary multiple of the document threshold:
+# below that size, the note would fit in a single page/window anyway if it
+# ever DID need paging, so returning it whole costs nothing paging would
+# have saved. Above it, a long-appended note benefits from the same
+# heading/line paging a document does — the risk this whole task exists to
+# avoid (dumping an enormous blob into one response) is still real for a
+# note, just at a size ordinary journal/topic writing rarely reaches.
+_WHOLE_NOTE_CHAR_LIMIT = 16_000
 
 
 @mcp.tool()
@@ -511,11 +541,15 @@ def es_read(target: str, section: Optional[str] = None,
     es_notes_journal/es_notes_topic/es_notes_attach), or a "doc:<id>" handle
     returned by es_doc_extract.
 
-    No arguments: a short document comes back WHOLE (more=false). A long one
-    instead comes back as `outline` — a list of {id, title, level} in
-    document order — with a short preview in `content` and more=true; pass
+    No arguments: a short note or document comes back WHOLE (more=false). A
+    long one instead comes back as `outline` — a list of {id, title, level}
+    in document order — with a short preview in `content` and more=true; pass
     an outline id as `section` to read that piece in full (its own
-    subsections included). query full-text searches headings + bodies,
+    subsections included). "Long" is a higher bar for a vault note (authored
+    by the user, naturally bounded) than for a document es_doc_extract
+    converted (arrives at whatever size its source happened to be) — an
+    ordinary journal/topic note almost always comes back whole. query
+    full-text searches headings + bodies,
     case-insensitively, and returns matching outline entries (not their
     text) to follow up with `section`; no matches still returns ok, with
     `content` naming what to try instead. offset pages by LINE, for content
@@ -566,7 +600,9 @@ def es_read(target: str, section: Optional[str] = None,
         return out
 
     outline = read_cap.outline(md)
-    large = len(md) > _WHOLE_DOCUMENT_CHAR_LIMIT
+    whole_limit = (_WHOLE_NOTE_CHAR_LIMIT if resolved["kind"] == "note"
+                   else _WHOLE_DOCUMENT_CHAR_LIMIT)
+    large = len(md) > whole_limit
     if outline and large:
         out["outline"] = outline
         out["content"] = read_cap.section(md, read_cap.PREAMBLE_ID).strip() or None

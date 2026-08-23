@@ -62,6 +62,47 @@ def test_xlsx_large_sheet_truncates_with_a_marker(tmp_path):
     assert "truncated" in md.lower()
 
 
+def test_xlsx_later_sheets_reachable_when_first_sheet_exhausts_budget(tmp_path):
+    """Regression: before the per-sheet budget fix, a first sheet alone big
+    enough to spend the whole MAX_CHARS budget made every LATER sheet vanish
+    entirely -- not truncated, not noted, simply absent from both the
+    Markdown and (since es_read's outline is built from `## ` headings) the
+    outline itself. No parameter on es_doc_extract/es_read could reach a
+    "## Summary"/"## Notes" sheet that was never emitted in the first place.
+    Every sheet must now get at least a heading, and (per
+    _render_sheet_rows's own first-row-always-shown rule) at least one row
+    of real, independently-readable content."""
+    from openpyxl import Workbook
+    from es.capabilities import read as read_cap
+
+    p = tmp_path / "report.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    for i in range(8000):
+        ws.append([f"row{i}", i, "padding value here to burn the budget"])
+    summary = wb.create_sheet("Summary")
+    summary.append(["Total", 8000])
+    notes = wb.create_sheet("Notes")
+    notes.append(["Remember to reconcile next quarter"])
+    wb.save(str(p))
+
+    md, _ = doc_office.convert(p, tmp_path)
+
+    # All three sheets are discoverable from the outline built over this one
+    # markdown string -- exactly what es_read hands the agent on its FIRST,
+    # argument-less call.
+    outline = read_cap.outline(md)
+    assert [s["title"] for s in outline] == ["Data", "Summary", "Notes"]
+
+    # And each later sheet is independently readable, not merely a bare
+    # heading with nothing behind it.
+    summary_id = next(s["id"] for s in outline if s["title"] == "Summary")
+    notes_id = next(s["id"] for s in outline if s["title"] == "Notes")
+    assert "Total" in read_cap.section(md, summary_id)
+    assert "reconcile" in read_cap.section(md, notes_id)
+
+
 def test_xlsx_empty_workbook_does_not_raise(tmp_path):
     from openpyxl import Workbook
     p = tmp_path / "empty.xlsx"

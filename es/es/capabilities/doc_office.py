@@ -21,6 +21,22 @@ paragraph is emitted as plain text.
 structural unit a spreadsheet has, which is exactly what makes a workbook
 pageable by that same reader. Rows render as a pipe table via doc_support.
 
+Every sheet's heading is emitted UNCONDITIONALLY, even once MAX_CHARS is
+fully spent — a workbook whose first sheet alone exceeds the budget used to
+make every later sheet vanish entirely: not truncated, not noted, simply
+absent from both the Markdown and es_read's outline (built from `## `
+headings), with no parameter on es_doc_extract/es_read able to reach it —
+`## Notes` and `## Summary` could exist in the source and the agent would
+never even learn they were there. `_convert_xlsx` instead fair-shares
+whatever budget remains across the CURRENT sheet and every sheet still to
+come (recomputed fresh each iteration, so a sheet that uses less than its
+share leaves the surplus for later ones, rather than a fixed up-front split
+wasting budget a short sheet didn't need) — every sheet is therefore
+guaranteed a heading, and, per `_render_sheet_rows`'s own "first row always
+shown regardless of budget" rule, at least one row of real content too
+(never a heading with nothing readable behind it). See
+test_xlsx_later_sheets_reachable_when_first_sheet_exhausts_budget.
+
 Formula cells are read as the FORMULA TEXT (`data_only=False`), never the
 cached result (`data_only=True`). A workbook saved by any tool that never ran
 Excel's calculation engine — including openpyxl itself, which is exactly the
@@ -578,22 +594,35 @@ def _convert_xlsx(source: Path) -> str:
         if not worksheets:
             return "*(this workbook has no sheets)*"
 
+        n = len(worksheets)
         lines: List[str] = []
         used = 0
-        sheets_rendered = 0
-        for ws in worksheets:
+        for i, ws in enumerate(worksheets):
+            # The heading is unconditional — see the module docstring's
+            # "sheet reachability" note. No early exit here, unlike every
+            # other budget check in this module: a document with no earlier
+            # boundary to stop at is exactly the shape we cannot afford for
+            # a MULTI-sheet workbook, since a missing heading isn't just
+            # truncated content — it's a sheet the agent can never even
+            # discover exists.
             header = f"## {ws.title}"
             header_cost = len(header) + (2 if lines else 0)
-            if lines and used + header_cost > MAX_CHARS:
-                break  # no budget left even for this sheet's heading
             if lines:
                 lines.append("")
             lines.append(header)
             used += header_cost
-            sheets_rendered += 1
+
+            # Fair-share whatever budget remains across this sheet and every
+            # sheet still to come (recomputed fresh each iteration, not a
+            # fixed 1/n split decided up front) — a sheet that needs less
+            # than its share leaves the surplus for the sheets after it. This
+            # is what keeps a short "## Summary"/"## Notes" sheet from being
+            # squeezed by an even split sized for a much bigger sheet.
+            remaining_sheets = n - i
+            sheet_budget = max(0, (MAX_CHARS - used) // remaining_sheets)
 
             table_md, kept, total_rows, hit_row_cap, hit_budget = _render_sheet_rows(
-                ws, MAX_CHARS - used, source)
+                ws, sheet_budget, source)
             if table_md:
                 lines.append("")
                 lines.append(table_md)
@@ -608,23 +637,16 @@ def _convert_xlsx(source: Path) -> str:
                     "needed")
                 lines.append(marker)
                 used += len(marker) + 2
-                # A per-sheet character-budget cut means the shared budget is
-                # spent — no point attempting further sheets.
-                if used >= MAX_CHARS:
-                    break
+                # Deliberately NOT a `break`: every remaining sheet still
+                # gets its own heading (and, via _render_sheet_rows's
+                # first-row-always-shown rule, at least one row) even though
+                # this sheet's own share is spent — see the module
+                # docstring. The per-sheet fair-share above already prices
+                # that in for the sheets still to come.
     finally:
         wb.close()
 
-    md = "\n".join(lines)
-    if sheets_rendered < len(worksheets):
-        remaining = len(worksheets) - sheets_rendered
-        md += "\n\n" + truncation_marker(
-            f"after {sheets_rendered} of {len(worksheets)} "
-            f"sheets — the {MAX_CHARS}-character limit was reached; this "
-            "workbook has no page range to resume from, so ask for a "
-            f"narrower export if the remaining {remaining} sheet"
-            f"{'s' if remaining != 1 else ''} are needed")
-    return md
+    return "\n".join(lines)
 
 
 _HANDLERS = {
