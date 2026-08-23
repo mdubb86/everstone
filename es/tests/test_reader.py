@@ -41,7 +41,7 @@ def test_resolve_note_by_path_returns_markdown_body(vault):
 
 
 def test_resolve_note_by_topic_name_matches_by_path_resolution(vault):
-    """Preserves es_notes_read's existing target semantics exactly: a bare
+    """Preserves the retired es_notes_read's target semantics exactly: a bare
     topic name resolves the same note as its vault-relative path."""
     vault.write_topic("Manual", body="# Manual\n\nRead me.")
     by_path = reader.resolve("Topics/Manual.md", vault=vault, cache_root=None)
@@ -52,9 +52,9 @@ def test_resolve_note_by_topic_name_matches_by_path_resolution(vault):
 
 
 def test_resolve_note_returns_frontmatter(vault):
-    """es_notes_read returns {path, frontmatter, body} and the agent relies
-    on frontmatter (topics, tags, created) — dropping it would be a
-    regression once es_notes_read is retired in favor of es_read."""
+    """The retired es_notes_read returned {path, frontmatter, body} and the
+    agent relies on frontmatter (topics, tags, created) — dropping it would
+    be a regression now that es_read is the only read path for notes."""
     vault.write_journal("Practice moved", "Body text.", tags=["soccer"],
                         topics=["Thunder U10"])
     entries = vault.list_journal()
@@ -137,7 +137,7 @@ def test_doc_handle_traversal_is_rejected_as_expired_not_a_path_error(cache_root
 def test_note_path_traversal_is_rejected_unchanged(vault):
     """Vault confinement (VaultClient._within_root) is untouched by this
     module — a traversal attempt still surfaces as NoteNotFound, exactly as
-    es_notes_read already behaves."""
+    the retired es_notes_read already behaved."""
     with pytest.raises(NoteNotFound):
         reader.resolve("../../../../etc/passwd", vault=vault, cache_root=None)
 

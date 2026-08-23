@@ -19,17 +19,16 @@ Two forms of `target`:
   must keep it alive the same way repeated es_doc_extract calls already do.
 
 - anything else — a vault note, addressed by path or by topic name exactly
-  as es_notes_read/vault_client.read_note already accept. This module adds
-  NO new note-addressing semantics; it is a thin pass-through so a future
-  es_read can replace es_notes_read without changing what `target` means
-  for a note (same path-or-topic resolution, same traversal confinement,
-  both already enforced inside VaultClient._resolve/_within_root).
+  as vault_client.read_note already accepts. This module adds NO new
+  note-addressing semantics; it is a thin pass-through so es_read needs no
+  path-or-topic logic of its own (same resolution, same traversal
+  confinement, both already enforced inside VaultClient._resolve/_within_root).
 
-Frontmatter is returned for a note (not just its body): es_notes_read
-returns {path, frontmatter, body} today and the agent may rely on
-frontmatter (topics, tags, created) to decide what to do next — dropping it
-here would be a silent regression the moment es_notes_read is retired in
-favor of es_read.
+Frontmatter is returned for a note (not just its body): the retired
+es_notes_read tool returned {path, frontmatter, body}, and the agent may
+rely on frontmatter (topics, tags, created) to decide what to do next —
+dropping it here would be a regression now that es_read is the only read
+path for notes.
 """
 import re
 from pathlib import Path
@@ -88,9 +87,8 @@ def resolve(target: str, *, vault: VaultClient, cache_root: Path) -> dict:
     always name what it just read regardless of which branch served it. A
     note's dict additionally carries `path` (== source) and `frontmatter`.
 
-    Raises vault_client.NoteNotFound for an unknown note path/topic
-    (unchanged from es_notes_read), or DocHandleExpired for an unknown,
-    malformed, or aged-out `doc:<id>`.
+    Raises vault_client.NoteNotFound for an unknown note path/topic, or
+    DocHandleExpired for an unknown, malformed, or aged-out `doc:<id>`.
     """
     if target.startswith(DOC_PREFIX):
         return _resolve_doc(target[len(DOC_PREFIX):], cache_root)

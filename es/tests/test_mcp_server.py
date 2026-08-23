@@ -321,16 +321,21 @@ def test_es_notes_topics_ok(fake_vault):
     fake_vault.list_topics.assert_called_once_with(like="home")
 
 
-def test_es_notes_read_ok(fake_vault):
+def test_es_read_note_ok_via_notes_client(fake_vault):
+    # es_notes_read is retired; es_read is now the one read path for notes,
+    # wired through the same _notes_client(). This exercises that wiring
+    # (mocked vault, unlike test_reader.py's real-VaultClient coverage) and
+    # confirms the body->content mapping the retirement depends on.
     fake_vault.read_note.return_value = {"path": "topics/X.md", "frontmatter": {}, "body": "b"}
-    out = mcp_server.es_notes_read("X")
-    assert out["ok"] is True and out["data"]["body"] == "b"
+    out = mcp_server.es_read("X")
+    assert out["ok"] is True and out["data"]["content"] == "b"
+    fake_vault.read_note.assert_called_once_with("X")
 
 
-def test_es_notes_read_missing_is_error_envelope(fake_vault):
+def test_es_read_note_missing_is_error_envelope(fake_vault):
     from es.vault_client import NoteNotFound
     fake_vault.read_note.side_effect = NoteNotFound("nope")
-    out = mcp_server.es_notes_read("nope")
+    out = mcp_server.es_read("nope")
     assert out == {"ok": False, "error": {"code": "note_not_found", "message": "nope"}}
 
 

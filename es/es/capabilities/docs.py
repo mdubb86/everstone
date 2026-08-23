@@ -266,7 +266,7 @@ def _expand_source(source: str) -> str:
       (docs.py owns "which root is 'the vault'"); paths.py never learns that
       name.
     - anything else (a bare relative path): joined onto the vault root — the
-      same convention es_notes_read/es_notes_attach/es_notes_list already use
+      same convention es_read/es_notes_attach/es_notes_list already use
       (they hand back vault-relative paths like "Topics/Soccer/schedule.pdf"
       for exactly this source), so "$vault/X" and bare "X" are interchangeable.
 

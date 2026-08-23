@@ -54,9 +54,16 @@ def test_group_allows_es_cal_tools():
 
 
 def test_group_blocks_es_notes_tools():
-    for tool in ("es_notes_journal", "es_notes_read", "es_notes_topics"):
+    for tool in ("es_notes_journal", "es_notes_topics"):
         r = run_policy(tool, "agent:main:telegram:group:-100")
         assert r is not None and "block" in str(r), tool
+
+
+def test_group_blocks_es_read():
+    # es_read (notes) is private, same as the retired es_notes_read it
+    # replaces — not in _GROUP_ALLOWED_PREFIXES, so it's blocked in groups.
+    r = run_policy("es_read", "agent:main:telegram:group:-100")
+    assert r is not None and "block" in str(r)
 
 
 def test_group_blocks_non_es_tools():
@@ -74,7 +81,7 @@ def test_group_blocks_es_contacts_tools():
 
 def test_supergroup_treated_same():
     assert run_policy("es_tasks_list", "agent:main:telegram:supergroup:-100") is None
-    assert run_policy("es_notes_read", "agent:main:telegram:supergroup:-100") is not None
+    assert run_policy("es_read", "agent:main:telegram:supergroup:-100") is not None
 
 
 # --- Fail-closed fallbacks ---

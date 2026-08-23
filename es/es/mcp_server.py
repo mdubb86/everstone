@@ -366,14 +366,6 @@ def es_notes_edit(target: str, body: Optional[str] = None,
 
 @mcp.tool()
 @mcp_envelope
-def es_notes_read(target: str) -> dict:
-    """Read a note's frontmatter + body. target is a vault-relative path or a topic
-    name. Returns {path, frontmatter, body}."""
-    return _notes_client().read_note(target)
-
-
-@mcp.tool()
-@mcp_envelope
 def es_notes_list(topic: Optional[str] = None, since: Optional[str] = None,
                   day: Optional[str] = None) -> list:
     """List journal entries (frontmatter summaries), filtered by topic link, since a
@@ -464,7 +456,7 @@ def es_doc_extract(source: str, pages: Optional[str] = None) -> dict:
     and return it as Markdown. source is the local path of a file the user
     uploaded (an absolute path) or a file in the vault, given as "$vault/..."
     or a vault-relative path (e.g. "Topics/Manual.pdf", same convention as
-    es_notes_read). pages optionally narrows a long PDF ("1-5", "1-2,7");
+    es_read). pages optionally narrows a long PDF ("1-5", "1-2,7");
     other formats have no pages and reject a pages argument. PDF pages that
     are images rather than text are rendered to PNGs and linked inline as
     ![page N](path) — read those with vision_analyze. Returns {doc_id, kind,
@@ -486,7 +478,7 @@ def es_doc_render(source: str, pages: Optional[str] = None) -> dict:
 
     source is the local path of an uploaded file (an absolute path) or a file
     in the vault, given as "$vault/..." or a vault-relative path (e.g.
-    "Topics/Manual.pdf", same convention as es_notes_read). pages narrows to a
+    "Topics/Manual.pdf", same convention as es_read). pages narrows to a
     range/list ("1-5", "1-2,7"); omit it to render the first 10 pages, or all
     of them if the document is shorter. An EXPLICIT pages range that runs past
     the document's end is an error (it likely names the wrong page) — omit
@@ -516,7 +508,8 @@ def es_read(target: str, section: Optional[str] = None,
     paged by heading so a long one doesn't have to come back all at once.
 
     target is a vault-relative path, a topic name (same convention as
-    es_notes_read), or a "doc:<id>" handle returned by es_doc_extract.
+    es_notes_journal/es_notes_topic/es_notes_attach), or a "doc:<id>" handle
+    returned by es_doc_extract.
 
     No arguments: a short document comes back WHOLE (more=false). A long one
     instead comes back as `outline` — a list of {id, title, level} in

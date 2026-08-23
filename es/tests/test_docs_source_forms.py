@@ -8,7 +8,7 @@ hands the agent a cache-relative string to expand):
 1. An absolute path — unchanged, still confined to whatever `roots` are
    passed in (mirrors today's only working form).
 2. A vault-relative path, either as a bare relative string (matching
-   es_notes_read/es_notes_attach/es_notes_list's existing convention — they
+   es_read/es_notes_attach/es_notes_list's existing convention — they
    hand back exactly this form) or the explicit "$vault/..." synonym.
 
 These tests exercise es.capabilities.docs._expand_source/_prepare (via

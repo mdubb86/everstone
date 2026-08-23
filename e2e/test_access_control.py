@@ -69,7 +69,7 @@ def test_group_allows_tasks_and_cal_tools(everstone):
     c = everstone["container_name"]
     for tool in ("es_tasks_list", "es_tasks_add", "es_cal_agenda"):
         assert _policy(c, tool, session_key="agent:main:telegram:group:-100") is None, tool
-    for tool in ("es_notes_journal", "es_notes_read"):
+    for tool in ("es_notes_journal", "es_read"):
         r = _policy(c, tool, session_key="agent:main:telegram:group:-100")
         assert r is not None and "block" in str(r), tool
     # supergroup treated the same

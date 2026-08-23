@@ -3,9 +3,9 @@ windowing, and text query — over a Markdown string already produced by
 `es_doc_extract` (or any other Markdown, e.g. a vault note).
 
 No I/O, no cache, no vault knowledge, no MCP wiring here — this module only
-ever sees a string in and returns plain data out. Callers (a future
-es_doc_read / es_notes_read tool) own fetching the Markdown, budget
-enforcement on the SOURCE side, and any caching.
+ever sees a string in and returns plain data out. Callers (the es_read tool,
+via capabilities/reader.py) own fetching the Markdown, budget enforcement on
+the SOURCE side, and any caching.
 
 Why this exists: `es_doc_extract`'s converters deliberately emit one "## "
 heading per unit of source structure (a PDF page, a spreadsheet sheet, a
