@@ -93,11 +93,49 @@ def test_purge_on_missing_namespace_is_noop(tmp_path):
 
 
 def test_doc_id_matches_known_sha256(tmp_path):
+    """doc_id folds the (lowercased) extension into the hash ahead of the
+    content, separated by a NUL byte — see doc_cache.doc_id's docstring for
+    why the format must be part of the identity, not just the bytes."""
     import hashlib
     f = tmp_path / "a.pdf"
     f.write_bytes(b"hello")
-    expected = hashlib.sha256(b"hello").hexdigest()[:12]
+    expected = hashlib.sha256(b".pdf\0hello").hexdigest()[:12]
     assert doc_cache.doc_id(f) == expected
+
+
+def test_doc_id_differs_for_same_content_different_extension(tmp_path):
+    """The cross-format cache collision this fixes: identical bytes saved
+    under two different extensions must hash to two different ids, since a
+    .csv reading and a .pdf reading of the same bytes are different, both
+    independently correct, documents (different kind/markdown/page_count) —
+    not "the same document twice"."""
+    a = tmp_path / "a.csv"
+    b = tmp_path / "b.pdf"
+    a.write_bytes(b"same bytes")
+    b.write_bytes(b"same bytes")
+    assert doc_cache.doc_id(a) != doc_cache.doc_id(b)
+
+
+def test_doc_id_differs_for_zero_byte_files_of_different_extension(tmp_path):
+    """Regression guard named in the review: two empty files of different
+    extensions must not collide either — an empty-content edge case that a
+    pure content hash (with nothing to distinguish) would otherwise unify."""
+    a = tmp_path / "a.csv"
+    b = tmp_path / "b.txt"
+    a.write_bytes(b"")
+    b.write_bytes(b"")
+    assert doc_cache.doc_id(a) != doc_cache.doc_id(b)
+
+
+def test_doc_id_ext_param_overrides_the_path_suffix(tmp_path):
+    """doc_id(source, ext=...) lets a caller name the format explicitly
+    (docs.py does, using the already-lowercased `ext` it resolved) rather
+    than re-deriving it from source.suffix — confirm the explicit value
+    actually wins and is lowercase-sensitive the same way."""
+    f = tmp_path / "a.pdf"
+    f.write_bytes(b"hello")
+    assert doc_cache.doc_id(f, ext=".csv") != doc_cache.doc_id(f, ext=".pdf")
+    assert doc_cache.doc_id(f, ext=".pdf") == doc_cache.doc_id(f)  # matches the path's own suffix
 
 
 def test_artifact_dir_is_idempotent(tmp_path):

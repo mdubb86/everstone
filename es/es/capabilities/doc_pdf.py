@@ -23,6 +23,7 @@ import pdfplumber
 import pypdfium2 as pdfium
 
 from es import doc_cache
+from es.capabilities.doc_support import table_to_markdown as _table_to_markdown
 
 # Matches Hermes's own tuned constant (tools/read_extract.py).
 BLANK_PAGE_CHARS = 20
@@ -41,27 +42,6 @@ MEANINGFUL_IMAGE_AREA_FRACTION = 0.10
 def page_count(source: Path) -> int:
     with pdfplumber.open(source) as pdf:
         return len(pdf.pages)
-
-
-def _table_to_markdown(table: List[List[Optional[str]]]) -> str:
-    """Render one extracted table as a Markdown pipe table.
-
-    Cell text is escaped so a literal '|' can't be mistaken for a column
-    separator, which would misalign every following row.
-    """
-    def cell(c: Optional[str]) -> str:
-        return (c or "").replace("\n", " ").strip().replace("|", "\\|")
-
-    rows = [[cell(c) for c in row] for row in table if row]
-    if not rows:
-        return ""
-    width = max(len(r) for r in rows)
-    rows = [r + [""] * (width - len(r)) for r in rows]
-    head, *body = rows
-    out = ["| " + " | ".join(head) + " |",
-           "|" + "|".join([" --- "] * width) + "|"]
-    out += ["| " + " | ".join(r) + " |" for r in body]
-    return "\n".join(out)
 
 
 def _prose_text(page, table_bboxes: List[Tuple[float, float, float, float]]) -> str:

@@ -3,10 +3,18 @@
 The only module the MCP layer imports for es_doc_*. Keeps doc_pdf free of
 cache and confinement concerns, and doc_cache free of parsing concerns.
 
-Today this only understands PDFs — there is no real format dispatch yet
-(`kind` is hardcoded "pdf"). Dispatch on extension/content-type arrives with
-Phase 2's other document formats; SUPPORTED is the seam that will grow.
+Dispatch is a table, CONVERTERS, keyed by lowercased extension; SUPPORTED is
+derived from it so the two can't drift apart. CONVERTERS holds ".pdf" (via
+doc_pdf, the reference/paginated converter), ".txt"/".md"/".csv"/".json"
+(all four via doc_text, the flat/non-paginated converter), ".ics" (via
+doc_ics, which synthesizes one "## " heading per VEVENT so a flat calendar
+feed still pages well), and ".docx"/".xlsx" (both via doc_office, which reads
+a Word document's own heading outline and gives each Excel sheet its own "##"
+heading — neither has page_count/render, same as doc_text's formats) —
+adding a new format is meant to be a pure addition (a new converter module +
+one new table entry), not a change to extract()/render() themselves.
 """
+import csv
 import json
 import os
 import re
@@ -17,7 +25,7 @@ from pdfminer.pdfdocument import PDFEncryptionError
 from pdfplumber.utils.exceptions import PdfminerException
 
 from es import config, doc_cache, paths
-from es.capabilities import doc_pdf
+from es.capabilities import doc_ics, doc_office, doc_pdf, doc_support, doc_text
 
 MAX_MARKDOWN_CHARS = 40_000
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
@@ -26,7 +34,48 @@ MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
 # (rasterizing into Hermes's shared upload cache), so one call site owning the
 # limit and the other pointing at it keeps them from drifting apart.
 MAX_RENDER_PAGES = doc_pdf.MAX_AUTO_RENDER_PAGES
-SUPPORTED = {".pdf"}
+
+# The stdlib csv module's default field_size_limit (128 KiB) is a parser
+# safety valve, not a real document-shape limit — a single free-text CSV
+# column (a pasted comment, a description field) can legitimately exceed it,
+# and hitting the default raises `_csv.Error: field larger than field limit`,
+# which used to surface to the agent as the literal, unexplainable es_code
+# "Error". csv.field_size_limit() is a process-wide setting on the `_csv` C
+# module, not a per-Reader option, so it can be raised HERE — once, for the
+# life of the process — without doc_text.py (which owns the actual
+# `csv.reader()` call) needing to change at all. 10 MiB comfortably covers any
+# realistic single field while still being a real, bounded ceiling: a CSV
+# with an unbalanced/unterminated quote makes csv.reader treat everything
+# from that quote to EOF as ONE field (see doc_text._convert_csv's docstring
+# on why it must use a real line iterator, not splitlines()), so an
+# unterminated quote in a large file must still hit SOME limit rather than
+# buffer the rest of a 50MB upload into one Python string.
+CSV_FIELD_SIZE_LIMIT = 10 * 1024 * 1024
+csv.field_size_limit(CSV_FIELD_SIZE_LIMIT)
+
+# Maps a supported extension to its converter module. Each converter is
+# expected to implement a shared per-format contract (doc_pdf.py is the
+# reference): `convert(source, adir, pages=None) -> (markdown, images)` is
+# REQUIRED; `page_count(source) -> int` and `render(source, adir, pages) ->
+# images` are OPTIONAL — their presence is how the rest of this module tells
+# a paginated/renderable format (PDF, via doc_pdf) apart from a flat one
+# (txt/md/csv/json, via doc_text — none of the four have pages, so that
+# module implements neither attribute) without hardcoding a format list
+# anywhere else. SUPPORTED is DERIVED from this table rather than
+# hand-maintained alongside it, so the two can never drift apart: an entry
+# here is automatically "supported", and nothing can claim to be supported
+# without a converter.
+CONVERTERS = {
+    ".pdf": doc_pdf,
+    ".txt": doc_text,
+    ".md": doc_text,
+    ".csv": doc_text,
+    ".json": doc_text,
+    ".ics": doc_ics,
+    ".docx": doc_office,
+    ".xlsx": doc_office,
+}
+SUPPORTED = set(CONVERTERS)
 
 # Cache filenames within a doc_id's artifact dir. Both are written ONLY for a
 # full-document extract (pages=None) — see the comment in extract().
@@ -108,9 +157,81 @@ def _reraise_pdf_error(real: Path, exc: PdfminerException):
         "truncated, or not actually a PDF; ask the user to resend it") from exc
 
 
-def _page_count(real: Path) -> int:
+# Per-converter-module parse-failure handling. Two DIFFERENT mechanisms meet
+# here, on purpose:
+#
+# - doc_pdf raises PdfminerException directly — pdfplumber's own exception
+#   type, which ONLY that library raises, never ordinary application code by
+#   coincidence (unlike ValueError/KeyError/AttributeError). It is therefore
+#   safe to catch broadly around the whole `mod.convert()` call without risk
+#   of masking a bug in doc_pdf's own code; see _reraise_pdf_error, which
+#   also distinguishes "needs a password" from ordinary corruption by
+#   inspecting pdfminer's own wrapped cause.
+# - doc_office and doc_text instead raise doc_support.ParseFailed — a
+#   sentinel THEY construct themselves, from inside a try/except scoped
+#   tightly around their own library's open/parse call only (see each
+#   module's own _open_docx/_open_xlsx/_safe_row_iter and
+#   _safe_csv_rows/RecursionError handling). Their underlying libraries'
+#   parse failures are ordinary types (ValueError, KeyError, AttributeError,
+#   ...) that a genuine bug in OUR OWN code could just as easily raise by
+#   coincidence — so what makes a failure "a parse failure" here is WHERE it
+#   was raised (the narrow try/except inside the converter), never the
+#   exception's type. See doc_support.ParseFailed's docstring for the full
+#   reasoning. Catching ParseFailed broadly around `mod.convert()` below is
+#   safe precisely because a bug elsewhere in doc_office.py/doc_text.py can
+#   never raise ParseFailed itself — only their own narrow parse-boundary
+#   code does.
+#
+# doc_ics has neither: it already catches its own parse failures internally
+# (see doc_ics._read_calendar's `except Exception: return None`, which
+# convert() turns into a friendly in-band "could not be read" markdown
+# instead of raising), and that catch is ALREADY scoped to just the parse
+# call (`Calendar.from_ical(...)`), so it has none of the masking risk this
+# module exists to avoid — nothing to change here.
+def _reraise_conversion_error(real: Path, exc: Exception) -> None:
+    """Always raises. The one place a converter's parse failure is
+    translated into the shared {EncryptedDocument, UnreadableDocument}
+    catalogue — kept here (not in each converter module) because docs.py
+    already imports every converter module to populate CONVERTERS, so a
+    converter importing back from docs.py to raise these classes itself
+    would be a circular import."""
+    if isinstance(exc, PdfminerException):
+        _reraise_pdf_error(real, exc)
+    assert isinstance(exc, doc_support.ParseFailed)
+    if exc.encrypted:
+        raise EncryptedDocument(str(exc)) from exc
+    raise UnreadableDocument(str(exc)) from exc
+
+
+def _page_count(mod, real: Path) -> Optional[int]:
+    """None means "this format has no concept of pages" (a flat format like
+    .csv/.txt/.json/.md, all served by doc_text) — kept a distinct value
+    from 0 or 1:
+
+    - NOT 0: for a format that DOES paginate, _page_count already treats a
+      report of zero pages as an error below (a PDF that opens but claims no
+      pages is corrupt/empty, not legitimately "paginated with nothing" — an
+      indistinguishable value here would erase that distinction and make a
+      flat format look broken).
+    - NOT 1: a page count of 1 would suggest page-range/render semantics
+      apply ("page 1 of 1"), which is false for something that isn't
+      paginated at all.
+
+    The dispatch signal is simply whether the converter module exposes
+    `page_count` — a flat converter that never implements it is, by
+    construction, a format with no pages.
+
+    The exception mapping below (PdfminerException -> the PDF-specific
+    encrypted/unreadable errors) is deliberately PDF-specific and today only
+    ever fires for doc_pdf (the only converter with a page_count). A future
+    paginated converter with its own failure modes gets its own mapping at
+    its own call site — this function does not try to generalize that part
+    ahead of need.
+    """
+    if not hasattr(mod, "page_count"):
+        return None
     try:
-        total = doc_pdf.page_count(real)
+        total = mod.page_count(real)
     except PdfminerException as e:
         _reraise_pdf_error(real, e)
     if total <= 0:
@@ -231,7 +352,7 @@ def _prepare(source: str, roots, cache_root: Path):
         raise DocumentTooLarge(
             f"{real.name} is larger than the {MAX_DOCUMENT_BYTES // (1024*1024)}MB "
             "limit; ask for a smaller file or a page range")
-    did = doc_cache.doc_id(real)
+    did = doc_cache.doc_id(real, ext)
     adir = doc_cache.artifact_dir(cache_root, did)
     return real, did, adir
 
@@ -293,7 +414,37 @@ def _safe_hard_cut(text: str, limit: int) -> int:
     return cut
 
 
-def _truncate_markdown(markdown: str, total_pages: int) -> Tuple[str, bool]:
+# Every converter's own self-truncation marker — doc_text (CSV/JSON/txt/md),
+# doc_office (docx/xlsx), and doc_ics all follow the same "\n\n*(truncated
+# ...)*" convention this module's own PDF marker uses (see each module's own
+# MAX_CHARS/MAX_ICS_CHARS comments), because none of them can rely on
+# _truncate_markdown below to do it for them — that function only knows
+# "## Page N" PDF-style boundaries. Detection used to be a regex requiring NO
+# parentheses between "*(" and the closing ")*" — that broke the moment a
+# converter's own detail text legitimately needed a nested parenthetical
+# aside (verified live: a write_only .xlsx sheet with no <dimension> element
+# emits "...could not be determined (its XML has no declared dimension)",
+# which the regex silently stopped matching, so `truncated` came back False
+# on a document missing most of its rows). Detection now anchors on
+# doc_support.TRUNCATION_SENTINEL, a fixed prefix every converter's marker is
+# built through (doc_support.truncation_marker) — a plain substring check,
+# not a regex trying to parse prose that four independently-maintained
+# converter modules are free to reword.
+def _converter_self_truncated(markdown: str) -> bool:
+    """True if a converter already truncated ITS OWN output (before this
+    module's outer MAX_MARKDOWN_CHARS cap ever ran) and said so in-band.
+    Needed because every non-PDF converter self-truncates at its own,
+    smaller budget (see doc_text.MAX_CHARS / doc_office.MAX_CHARS /
+    doc_ics.MAX_ICS_CHARS, all well under this module's 40_000), so the
+    result docs.extract() gets back is very often already under
+    MAX_MARKDOWN_CHARS by the time _truncate_markdown looks at it — which
+    otherwise reports `truncated: False` even though real content was
+    genuinely cut, contradicting es_doc_extract's own docstring that
+    `truncated` is the agent's signal to look for more."""
+    return doc_support.TRUNCATION_SENTINEL in markdown
+
+
+def _truncate_markdown(markdown: str, total_pages: Optional[int]) -> Tuple[str, bool]:
     """Cut `markdown` to at most MAX_MARKDOWN_CHARS at a page-block boundary
     (the last "## Page N" heading before the limit), never mid-word or
     mid-image-link, and append a marker naming where extraction stopped and
@@ -307,6 +458,15 @@ def _truncate_markdown(markdown: str, total_pages: int) -> Tuple[str, bool]:
     offered, rather than pretending a narrower range would fix anything.
     Reads the real page number off the first heading rather than assuming 1
     — a page-SUBSET extract (e.g. pages="5-8") starts with "## Page 5", not 1.
+
+    `total_pages` is None for a non-paginated format (every converter except
+    doc_pdf — see docs._page_count). The "page N" wording above only ever
+    makes sense when a document actually HAS pages: a "## Page N" boundary
+    can only occur in doc_pdf's own output (no other converter emits that
+    literal heading text), so `candidates` is guaranteed empty whenever
+    `total_pages is None` and only the hard-cut branch below can fire for a
+    flat format — which is exactly why that branch, and only that branch,
+    needs a second, page-free wording.
     """
     if len(markdown) <= MAX_MARKDOWN_CHARS:
         return markdown, False
@@ -318,26 +478,58 @@ def _truncate_markdown(markdown: str, total_pages: int) -> Tuple[str, bool]:
     if candidates:
         cut_pos, next_page = max(candidates)
         stopped_after = next_page - 1
-        marker = (f"\n\n*(truncated after page {stopped_after} of {total_pages} "
-                   f"— call es_doc_extract again with pages=\"{stopped_after + 1}-"
-                   f"{total_pages}\" to continue)*")
+        marker = "\n\n" + doc_support.truncation_marker(
+            f"after page {stopped_after} of {total_pages} "
+            f"— call es_doc_extract again with pages=\"{stopped_after + 1}-"
+            f"{total_pages}\" to continue")
+        return markdown[:cut_pos] + marker, True
+
+    cut_pos = _safe_hard_cut(markdown, MAX_MARKDOWN_CHARS)
+    if total_pages is None:
+        # A flat format (csv/json/txt/md/ics/docx/xlsx): there are no pages
+        # to narrow and no es_doc_render to fall back to (render() itself
+        # refuses any format without page_count — see render()'s own
+        # UnsupportedDocument check) — naming either would send the agent
+        # chasing a remedy that provably doesn't exist for this document.
+        # The honest answer is that one indivisible block (a row, a
+        # paragraph, an event) is simply too large, with no narrower view
+        # available at all.
+        marker = "\n\n" + doc_support.truncation_marker(
+            f"— a single block of content exceeds the "
+            f"{MAX_MARKDOWN_CHARS}-character limit with no earlier "
+            "boundary to stop at, and this format has no narrower "
+            "view to fall back to; ask the user for a smaller/"
+            "narrower version of this document")
         return markdown[:cut_pos] + marker, True
 
     first_match = _FIRST_PAGE_RE.match(markdown)
     first_page = int(first_match.group(1)) if first_match else 1
-    cut_pos = _safe_hard_cut(markdown, MAX_MARKDOWN_CHARS)
-    marker = (f"\n\n*(truncated inside page {first_page} — its content alone "
-              f"exceeds the {MAX_MARKDOWN_CHARS}-character limit, so there is "
-              "no earlier page boundary to stop at; narrowing pages won't "
-              f"help since page {first_page} alone is already too large — try "
-              "es_doc_render on this page instead)*")
+    marker = "\n\n" + doc_support.truncation_marker(
+        f"inside page {first_page} — its content alone "
+        f"exceeds the {MAX_MARKDOWN_CHARS}-character limit, so there is "
+        "no earlier page boundary to stop at; narrowing pages won't "
+        f"help since page {first_page} alone is already too large — try "
+        "es_doc_render on this page instead")
     return markdown[:cut_pos] + marker, True
 
 
 def extract(source: str, roots, cache_root: Path,
             pages: Optional[str] = None) -> dict:
     real, did, adir = _prepare(source, roots, cache_root)
-    total = _page_count(real)
+    ext = real.suffix.lower()
+    mod = CONVERTERS[ext]
+    total = _page_count(mod, real)
+
+    # `pages` on a format with no pages (total is None) is a loud error, not
+    # a silent no-op — same philosophy as render()'s explicit-out-of-range
+    # behavior below: an argument that cannot mean anything for this
+    # document is more likely a mistaken assumption about its format than an
+    # intentional "give me everything" request (which is already spelled by
+    # omitting pages entirely).
+    if pages is not None and total is None:
+        raise InvalidPageRange(
+            f"{ext} documents do not have pages — omit the pages argument "
+            "to extract the whole document")
     wanted = parse_pages(pages, total) if pages is not None else None
 
     if wanted is None:
@@ -353,9 +545,9 @@ def extract(source: str, roots, cache_root: Path,
             images = _read_images_manifest(adir)
         else:
             try:
-                markdown, image_paths = doc_pdf.convert(real, adir, pages=None)
-            except PdfminerException as e:
-                _reraise_pdf_error(real, e)
+                markdown, image_paths = mod.convert(real, adir, pages=None)
+            except (doc_support.ParseFailed, PdfminerException) as e:
+                _reraise_conversion_error(real, e)
             _write_full_extract(adir, markdown, image_paths)
             doc_cache.touch(adir)
             images = [str(i) for i in image_paths]
@@ -368,14 +560,23 @@ def extract(source: str, roots, cache_root: Path,
         # subsets always convert fresh and are simply never persisted; only
         # the full-document result is cached.
         try:
-            markdown, image_paths = doc_pdf.convert(real, adir, pages=wanted)
-        except PdfminerException as e:
-            _reraise_pdf_error(real, e)
+            markdown, image_paths = mod.convert(real, adir, pages=wanted)
+        except (doc_support.ParseFailed, PdfminerException) as e:
+            _reraise_conversion_error(real, e)
         doc_cache.touch(adir)
         images = [str(i) for i in image_paths]
 
+    # Checked against the PRE-outer-cap markdown (whether it just came out of
+    # convert() or out of the cache): a converter's own self-truncation
+    # marker is the only signal docs.py gets that IT already cut real
+    # content at its own, smaller budget — _truncate_markdown below only
+    # ever sees "## Page N" boundaries, so it can't detect that on its own.
+    self_truncated = _converter_self_truncated(markdown)
     markdown, truncated = _truncate_markdown(markdown, total)
-    return {"doc_id": did, "kind": "pdf", "page_count": total,
+    truncated = truncated or self_truncated
+    # kind is trivially the extension without its dot ("pdf" for ".pdf") —
+    # correct today and requires no per-format table of its own.
+    return {"doc_id": did, "kind": ext.lstrip("."), "page_count": total,
             "markdown": markdown, "images": images, "truncated": truncated}
 
 
@@ -395,7 +596,22 @@ def render(source: str, roots, cache_root: Path, pages: Optional[str] = None) ->
     number than an intentional "give me what you can" request.
     """
     real, did, adir = _prepare(source, roots, cache_root)
-    total = _page_count(real)
+    ext = real.suffix.lower()
+    mod = CONVERTERS[ext]
+    # Rasterizing pages only means something for a format that HAS pages to
+    # rasterize — a converter without `render` (every flat format: txt/md/
+    # csv/json, all via doc_text) can't support this call at all, independent
+    # of whatever `pages` was passed, so the capability check comes first and
+    # names the actual reason rather than failing confusingly deeper down
+    # (e.g. inside parse_pages against a page_count that doesn't exist).
+    # hasattr is enough: it mirrors the same "presence of the optional
+    # attribute IS the capability" convention _page_count already uses for
+    # page_count, so a reader only has to learn the pattern once.
+    if not hasattr(mod, "render"):
+        raise UnsupportedDocument(
+            f"{ext} cannot be rendered to images — es_doc_render can only "
+            "render pages of a PDF; try es_doc_extract instead")
+    total = _page_count(mod, real)
     spec = pages if pages is not None else f"1-{min(DEFAULT_RENDER_PAGES_HI, total)}"
     wanted = parse_pages(spec, total)
     if len(wanted) > MAX_RENDER_PAGES:
@@ -403,7 +619,7 @@ def render(source: str, roots, cache_root: Path, pages: Optional[str] = None) ->
             f"cannot render {len(wanted)} pages in one call — the limit is "
             f"{MAX_RENDER_PAGES}; narrow the range (or call es_doc_render "
             "again for the rest)")
-    images = doc_pdf.render(real, adir, wanted)
+    images = mod.render(real, adir, wanted)
     doc_cache.touch(adir)
     return {"doc_id": did, "page_count": total,
             "images": [str(i) for i in images]}
