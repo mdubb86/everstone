@@ -138,8 +138,17 @@ def _assign_ids(titles: List[str]) -> List[str]:
     resolves first). Walking a growing `used` set and bumping the suffix
     past any collision, however produced, keeps ids one-to-one with
     headings no matter what the titles are.
+
+    `used` is SEEDED with PREAMBLE_ID, not started empty: PREAMBLE_ID is
+    already a reserved id (section() treats it as "text before the first
+    heading" regardless of whether any heading resolves to it), so a
+    document that happens to contain a heading literally titled "Preamble"
+    must not be handed that same id — without the seed, `section("preamble")`
+    would silently return the text before the first heading instead of the
+    "## Preamble" heading's own body, and nothing about the collision would
+    be visible to a caller.
     """
-    used = set()
+    used = {PREAMBLE_ID}
     ids = []
     for title in titles:
         slug = _slugify(title)
@@ -251,21 +260,59 @@ def window(md: str, offset: int = 0, limit: int = DEFAULT_WINDOW_LIMIT) -> Windo
     }
 
 
-def query(md: str, text: str) -> List[Section]:
-    """Return the outline entries (same shape as `outline`) for every
-    section whose HEADING TEXT or OWN BODY contains `text`, case-insensitively.
+class LineHit(TypedDict):
+    offset: int
+    line: str
+
+
+# Cap on how many {"offset","line"} entries a flat-content query returns (see
+# `query` below). A needle that appears on nearly every line of a very long
+# flat document (a repeated log-style token in a big .csv/.txt) would
+# otherwise turn "find this" back into "here is most of the document again,
+# one line at a time" — exactly the dump-it-all-at-once outcome offset
+# paging exists to avoid. The agent can always re-query with a more specific
+# term, or page from the last reported offset, if it needs more than this.
+_MAX_LINE_HITS = 50
+
+
+def query(md: str, text: str) -> List[dict]:
+    """Search `md` for `text`, case-insensitively, and return something the
+    caller can act on next — the exact shape depends on whether `md` HAS
+    headings:
+
+    - If it does: return outline entries (same {"id","title","level"} shape
+      as `outline`) for every section whose heading text or own body
+      contains `text`, PLUS a {"id": PREAMBLE_ID, "title": "Preamble",
+      "level": 0} entry first if the text before the first heading matches.
+      Each entry feeds a follow-up `section(md, id)` call — the useful unit
+      to hand back is exactly the id that call needs. Preamble text is
+      bounded (it always ends at the first heading), so handing back its id
+      the same way a real section's id is handed back costs nothing extra;
+      it does not carry the "this might be huge" risk flat content does
+      below.
+
+    - If it has NO headings at all (flat content: a converted .csv/.txt/
+      .json, or a plain-prose note) there is no section id to name, so
+      matches are instead reported as up to `_MAX_LINE_HITS`
+      {"offset", "line"} entries: the 0-based line number (to pass straight
+      to `offset=`) and the matching line's own text for context. This
+      shape is deliberately NOT the outline-entry shape — a caller can tell
+      "this is a section id, call section()" apart from "this is a line
+      offset, call offset=" just by which keys are present, with no extra
+      flag needed. Returning `section(md, PREAMBLE_ID)` instead (the whole
+      document, since a headingless document's "preamble" IS the whole
+      document) would silently reintroduce the exact problem offset-paging
+      exists to solve: dumping a possibly very large document back whole
+      just because a search term was found somewhere inside it.
+
+    An empty list means no match anywhere (headings, bodies, preamble, and
+    — for flat content — every line); a non-empty list, in EITHER shape,
+    means a match exists and names exactly where to look next.
 
     Case-insensitive because the agent is matching a user's own words
     (spoken/typed casually over Telegram) against document text it has
     never seen normalized — case is not meaningful signal here and a
     case-sensitive miss would silently look like "not in this document".
-
-    Returns whole outline entries (id/title/level), not matching lines with
-    surrounding context: the result feeds a follow-up `section(md, id)`
-    call, so the useful unit to hand back is exactly the id that call
-    needs, and duplicating a snippet of body text here would be a second,
-    inconsistent view of content the agent can just read in full a moment
-    later for the cost of one more call.
 
     "Own body" deliberately means the text up to the NEXT heading of ANY
     level — NOT `section()`'s same-or-shallower rule — so a match inside a
@@ -280,10 +327,22 @@ def query(md: str, text: str) -> List[Section]:
     if not needle:
         return []
     lines, headings = _lines_and_heading_positions(md)
+
     if not headings:
-        return []
+        hits: List[LineHit] = []
+        for i, line in enumerate(lines):
+            if needle in line.lower():
+                hits.append({"offset": i, "line": line})
+                if len(hits) >= _MAX_LINE_HITS:
+                    break
+        return hits
+
     ids = _assign_ids([title for _i, _level, title in headings])
     hits: List[Section] = []
+    preamble_end = headings[0][0]
+    preamble_text = "\n".join(lines[:preamble_end])
+    if needle in preamble_text.lower():
+        hits.append({"id": PREAMBLE_ID, "title": "Preamble", "level": 0})
     for idx, (sid, (start_line, level, title)) in enumerate(zip(ids, headings)):
         entry: Section = {"id": sid, "title": title, "level": level}
         if needle in title.lower():
