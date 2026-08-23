@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from es.capabilities import docs
+from es.capabilities import doc_ics, doc_text, docs
 
 
 # --- fixtures for malformed/unusual PDFs -----------------------------------
@@ -137,16 +137,40 @@ def test_extract_truncates_oversized_output_but_caches_the_full_markdown(
     assert "Fall Season Schedule" in cached
 
 
+def _two_page_pdf(path, per_page_lines=60):
+    """A PDF whose pages are big enough that a cap can sit BETWEEN "page 1 plus
+    its truncation marker" and "the whole document". The small `text_pdf`
+    fixture has no such cap: _truncate_markdown holds back _MARKER_RESERVE, and
+    reserving that much from a ~200-character document leaves a cap larger than
+    the document itself, so nothing truncates at all."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+    c = canvas.Canvas(str(path), pagesize=letter)
+    for page in (1, 2):
+        for i in range(per_page_lines):
+            c.drawString(40, 750 - i * 11, f"Page {page} line {i}: lorem ipsum dolor sit amet")
+        c.showPage()
+    c.save()
+    return path
+
+
 def test_truncation_cuts_at_a_page_boundary_with_a_correct_usable_resume_range(
-        text_pdf, tmp_path, monkeypatch):
+        tmp_path, monkeypatch):
     """When truncation lands past page 1, the cut must land exactly at the
     "## Page N" heading boundary (not mid-page), and the resume marker must
     name a page range that (a) picks up exactly where output stopped and
     (b) actually works if the agent uses it."""
+    text_pdf = _two_page_pdf(tmp_path / "big_two_page.pdf")
     baseline = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
     assert baseline["truncated"] is False
     boundary = baseline["markdown"].index("\n\n## Page 2")
-    monkeypatch.setattr(docs, "MAX_MARKDOWN_CHARS", boundary + 2)
+    # Room for the marker as well as the content: _truncate_markdown holds
+    # back _MARKER_RESERVE so cut+marker still fits the cap. A cap of exactly
+    # boundary+2 genuinely cannot hold page 1 AND a marker, so it would
+    # (correctly) fall through to the hard-cut branch — which is not the
+    # branch this test is pinning.
+    monkeypatch.setattr(docs, "MAX_MARKDOWN_CHARS",
+                        boundary + 2 + docs._MARKER_RESERVE)
 
     out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
     assert out["truncated"] is True
@@ -155,13 +179,13 @@ def test_truncation_cuts_at_a_page_boundary_with_a_correct_usable_resume_range(
         'pages="2-2" to continue)*')
     # The cut landed cleanly at the page boundary: page 1's content survives
     # whole, page 2's content is entirely gone (not a partial fragment of it).
-    assert "Fall Season Schedule" in out["markdown"]
-    assert "Game 1" not in out["markdown"]
+    assert "Page 1 line 0" in out["markdown"]
+    assert "Page 2 line 0" not in out["markdown"]
 
     # The marker's suggested range is actually usable.
     resumed = docs.extract(str(text_pdf), roots=[text_pdf.parent],
                            cache_root=tmp_path, pages="2-2")
-    assert "Game 1" in resumed["markdown"]
+    assert "Page 2 line 0" in resumed["markdown"]
 
 
 def test_truncation_never_splits_a_markdown_image_link(tmp_path, monkeypatch):
@@ -291,13 +315,20 @@ def test_outer_truncation_marker_is_format_aware_for_xlsx(tmp_path):
 
 
 # --- truncated must be True whenever a converter self-truncated, even when ---
-# --- the RESULT stays under the outer 40k cap (item 2) ----------------------
-# Every converter below truncates ITSELF at its own smaller budget (~30k) and
-# says so in-band; before this fix, docs.py's `truncated` flag only ever
-# reflected its OWN 40k outer cap, so it stayed False even though the agent
-# was handed less than the full document.
+# --- the RESULT stays under the outer 40k cap -------------------------------
+# A converter that truncates ITSELF says so in-band; docs.py must surface that
+# as `truncated`, not only reflect its OWN outer cap — otherwise the agent is
+# handed less than the full document with the flag reading False.
+#
+# Converters now convert in FULL (bounded by a resource ceiling in the tens of
+# millions of characters, not a context-window budget), because doc.md is
+# cached and es_read pages it — truncating at conversion time destroyed data
+# nothing needed to destroy. So these tests monkeypatch the ceiling DOWN to
+# force self-truncation, rather than relying on a real document crossing it.
+# The property under test is unchanged; only how it is provoked.
 
-def test_self_truncation_is_reported_for_csv(tmp_path):
+def test_self_truncation_is_reported_for_csv(tmp_path, monkeypatch):
+    monkeypatch.setattr(doc_text, "MAX_CHARS", 4_000)
     rows = "\n".join(f"{i},value-{i}" for i in range(6000))
     p = tmp_path / "many_rows.csv"
     p.write_text("id,value\n" + rows + "\n", encoding="utf-8")
@@ -307,7 +338,8 @@ def test_self_truncation_is_reported_for_csv(tmp_path):
     assert "truncated after" in out["markdown"]
 
 
-def test_self_truncation_is_reported_for_json(tmp_path):
+def test_self_truncation_is_reported_for_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(doc_text, "MAX_CHARS", 4_000)
     import json as jsonlib
     data = [{"i": i, "note": "padding text to grow each entry a bit"} for i in range(1200)]
     p = tmp_path / "big.json"
@@ -318,7 +350,8 @@ def test_self_truncation_is_reported_for_json(tmp_path):
     assert "truncated after" in out["markdown"]
 
 
-def test_self_truncation_is_reported_for_txt(tmp_path):
+def test_self_truncation_is_reported_for_txt(tmp_path, monkeypatch):
+    monkeypatch.setattr(doc_text, "MAX_CHARS", 4_000)
     line = "x" * 39 + "\n"
     p = tmp_path / "big.txt"
     p.write_text(line * 1000, encoding="utf-8")
@@ -328,7 +361,8 @@ def test_self_truncation_is_reported_for_txt(tmp_path):
     assert "truncated after" in out["markdown"]
 
 
-def test_self_truncation_is_reported_for_md(tmp_path):
+def test_self_truncation_is_reported_for_md(tmp_path, monkeypatch):
+    monkeypatch.setattr(doc_text, "MAX_CHARS", 4_000)
     line = "x" * 39 + "\n"
     p = tmp_path / "big.md"
     p.write_text(line * 1000, encoding="utf-8")
@@ -338,7 +372,8 @@ def test_self_truncation_is_reported_for_md(tmp_path):
     assert "truncated after" in out["markdown"]
 
 
-def test_self_truncation_is_reported_for_ics(tmp_path):
+def test_self_truncation_is_reported_for_ics(tmp_path, monkeypatch):
+    monkeypatch.setattr(doc_ics, "MAX_ICS_CHARS", 4_000)
     events = []
     for i in range(500):
         events.append(
@@ -355,8 +390,10 @@ def test_self_truncation_is_reported_for_ics(tmp_path):
     assert "truncated after" in out["markdown"]
 
 
-def test_self_truncation_is_reported_for_docx(tmp_path):
+def test_self_truncation_is_reported_for_docx(tmp_path, monkeypatch):
     from docx import Document
+    from es.capabilities import doc_office
+    monkeypatch.setattr(doc_office, "MAX_CHARS", 4_000)
 
     p = tmp_path / "many_paragraphs.docx"
     d = Document()
@@ -369,8 +406,10 @@ def test_self_truncation_is_reported_for_docx(tmp_path):
     assert "truncated after" in out["markdown"]
 
 
-def test_self_truncation_is_reported_for_xlsx(tmp_path):
+def test_self_truncation_is_reported_for_xlsx(tmp_path, monkeypatch):
     from openpyxl import Workbook
+    from es.capabilities import doc_office
+    monkeypatch.setattr(doc_office, "MAX_CHARS", 4_000)
 
     p = tmp_path / "many_rows.xlsx"
     wb = Workbook()
@@ -384,7 +423,7 @@ def test_self_truncation_is_reported_for_xlsx(tmp_path):
     assert "truncated after" in out["markdown"]
 
 
-def test_self_truncation_is_reported_for_write_only_xlsx_with_no_dimension(tmp_path):
+def test_self_truncation_is_reported_for_write_only_xlsx_with_no_dimension(tmp_path, monkeypatch):
     """Regression guard for a LIVE bug: `openpyxl.Workbook(write_only=True)`
     never writes a `<dimension>` element to a sheet's XML (see doc_office's
     module docstring), so this sheet's true row count can never be
@@ -401,8 +440,16 @@ def test_self_truncation_is_reported_for_write_only_xlsx_with_no_dimension(tmp_p
     and the es_doc_extract envelope reported `truncated: false` — the worst
     failure mode for this tool, a successful-looking result with wrong
     content. This is the test that would have caught it.
+
+    doc_office.MAX_CHARS is monkeypatched down for the same reason as the
+    docx/xlsx self-truncation tests above: it is now a generous resource
+    ceiling a 5,000-row sheet never reaches on its own, so provoking
+    self-truncation here means constraining the ceiling, not just building
+    a bigger workbook.
     """
     from openpyxl import Workbook
+    from es.capabilities import doc_office
+    monkeypatch.setattr(doc_office, "MAX_CHARS", 4_000)
 
     p = tmp_path / "write_only_many_rows.xlsx"
     wb = Workbook(write_only=True)
@@ -1097,7 +1144,7 @@ def test_a_bug_in_doc_office_docx_rendering_is_not_masked_as_corrupt(
         docx_file, tmp_path, monkeypatch):
     from es.capabilities import docs, doc_office
 
-    def boom(paragraph):
+    def boom(*args, **kwargs):
         raise ValueError("simulated bug in doc_office rendering")
 
     monkeypatch.setattr(doc_office, "_paragraph_block", boom)

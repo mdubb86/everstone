@@ -28,6 +28,9 @@ from es import config, doc_cache, paths
 from es.capabilities import doc_ics, doc_office, doc_pdf, doc_support, doc_text
 
 MAX_MARKDOWN_CHARS = 40_000
+# Upper bound on the truncation marker appended by _truncate_markdown, held
+# back from the cut so cut+marker still fits inside MAX_MARKDOWN_CHARS.
+_MARKER_RESERVE = 400
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
 # Mirrors doc_pdf.MAX_AUTO_RENDER_PAGES rather than duplicating the number —
 # render() and extract()'s auto-render both bound the same disk-fill risk
@@ -496,9 +499,23 @@ def _truncate_markdown(markdown: str, total_pages: Optional[int]) -> Tuple[str, 
     if len(markdown) <= MAX_MARKDOWN_CHARS:
         return markdown, False
 
+    # Room for the marker itself. Every branch below returns cut + marker, so
+    # cutting AT the limit and appending would return more than the limit —
+    # which it silently did until converters stopped self-truncating below
+    # 40,000 and this path started actually running. The reserve is a ceiling
+    # on the longest marker any branch builds; _fits() re-checks rather than
+    # trusting it, so a future reword can't quietly reintroduce the overshoot.
+    limit = MAX_MARKDOWN_CHARS - _MARKER_RESERVE
+
+    def _fits(cut: str, marker: str) -> str:
+        out = cut + marker
+        if len(out) <= MAX_MARKDOWN_CHARS:
+            return out
+        return cut[:MAX_MARKDOWN_CHARS - len(marker)] + marker
+
     boundaries = [(m.start(), int(m.group(1)))
                   for m in _PAGE_BOUNDARY_RE.finditer(markdown)]
-    candidates = [b for b in boundaries if b[0] <= MAX_MARKDOWN_CHARS]
+    candidates = [b for b in boundaries if b[0] <= limit]
 
     if candidates:
         cut_pos, next_page = max(candidates)
@@ -507,9 +524,9 @@ def _truncate_markdown(markdown: str, total_pages: Optional[int]) -> Tuple[str, 
             f"after page {stopped_after} of {total_pages} "
             f"— call es_doc_extract again with pages=\"{stopped_after + 1}-"
             f"{total_pages}\" to continue")
-        return markdown[:cut_pos] + marker, True
+        return _fits(markdown[:cut_pos], marker), True
 
-    cut_pos = _safe_hard_cut(markdown, MAX_MARKDOWN_CHARS)
+    cut_pos = _safe_hard_cut(markdown, limit)
     if total_pages is None:
         # A flat format (csv/json/txt/md/ics/docx/xlsx): there are no pages
         # to narrow and no es_doc_render to fall back to (render() itself
@@ -525,7 +542,7 @@ def _truncate_markdown(markdown: str, total_pages: Optional[int]) -> Tuple[str, 
             "boundary to stop at, and this format has no narrower "
             "view to fall back to; ask the user for a smaller/"
             "narrower version of this document")
-        return markdown[:cut_pos] + marker, True
+        return _fits(markdown[:cut_pos], marker), True
 
     first_match = _FIRST_PAGE_RE.match(markdown)
     first_page = int(first_match.group(1)) if first_match else 1
@@ -535,7 +552,7 @@ def _truncate_markdown(markdown: str, total_pages: Optional[int]) -> Tuple[str, 
         "no earlier page boundary to stop at; narrowing pages won't "
         f"help since page {first_page} alone is already too large — try "
         "es_doc_render on this page instead")
-    return markdown[:cut_pos] + marker, True
+    return _fits(markdown[:cut_pos], marker), True
 
 
 def extract(source: str, roots, cache_root: Path,
