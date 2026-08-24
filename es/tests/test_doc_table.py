@@ -8,6 +8,7 @@ later and much more confusingly ("the whole file is one VARCHAR column").
 """
 import datetime
 
+import duckdb
 import openpyxl
 import pytest
 from openpyxl import Workbook
@@ -35,6 +36,29 @@ def _sheet(rows, title="Data", merges=()):
     buf.seek(0)
     wb2 = openpyxl.load_workbook(buf, read_only=True, data_only=True)
     return wb2[title]
+
+
+def _xlsx(tmp_path, sheets, name="book.xlsx"):
+    """`sheets` is an ordered {title: [row, ...]} mapping."""
+    wb = Workbook()
+    wb.remove(wb.active)
+    for title, rows in sheets.items():
+        ws = wb.create_sheet(title=title)
+        for r in rows:
+            ws.append(r)
+    p = tmp_path / name
+    wb.save(p)
+    return p
+
+
+def _csv_file(tmp_path, text, name="data.csv"):
+    p = tmp_path / name
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def _by_sheet(result):
+    return {t["sheet"]: t for t in result["tables"]}
 
 
 def _lines(ws, tmp_path, name="out.csv"):
@@ -138,3 +162,164 @@ def test_an_empty_sheet_writes_nothing(tmp_path):
     p = tmp_path / "empty.csv"
     doc_table.sheet_to_csv(ws, p)
     assert p.read_text(encoding="utf-8") == ""
+
+
+# ---------------------------------------------------------------- build()
+
+
+def test_a_csv_preamble_is_skipped_and_types_inferred(tmp_path):
+    src = _csv_file(tmp_path, (
+        "Quarterly Revenue Report\n"
+        "generated 2026-08-24 by acme\n"
+        "\n"
+        "id,name,amount,when\n"
+        "1,alice,10.5,2026-01-02\n"
+        "2,bob,20.25,2026-01-03\n"
+    ))
+    adir = tmp_path / "art"
+    adir.mkdir()
+    result = doc_table.build(src, adir)
+
+    assert (adir / doc_table.DB_NAME).is_file()
+    t = result["tables"][0]
+    assert [c["name"] for c in t["columns"]] == ["id", "name", "amount", "when"]
+    assert [c["type"] for c in t["columns"]] == ["BIGINT", "VARCHAR", "DOUBLE", "DATE"]
+    assert t["rows"] == 2
+    # 1-based line number of the header row itself — three lines of preamble
+    # precede it, so it is line 4. Stated as a LINE NUMBER (not a skip count)
+    # so it can be cross-checked directly against the `cells` table, which is
+    # also 1-based.
+    assert t["header_row"] == 4
+
+
+def test_a_headerless_csv_reports_no_header_row(tmp_path):
+    src = _csv_file(tmp_path, "1,2,3\n4,5,6\n")
+    adir = tmp_path / "art"
+    adir.mkdir()
+    t = doc_table.build(src, adir)["tables"][0]
+    assert t["header_row"] is None
+    assert [c["name"] for c in t["columns"]] == ["column0", "column1", "column2"]
+
+
+def test_each_sheet_becomes_its_own_table_with_its_own_schema(tmp_path):
+    src = _xlsx(tmp_path, {
+        "Sales": [["id", "amount"], [1, 10.5], [2, 20.5]],
+        "People": [["name", "city"], ["alice", "austin"]],
+    })
+    adir = tmp_path / "art"
+    adir.mkdir()
+    tables = _by_sheet(doc_table.build(src, adir))
+
+    assert set(tables) == {"Sales", "People"}
+    assert [c["type"] for c in tables["Sales"]["columns"]] == ["BIGINT", "DOUBLE"]
+    assert [c["name"] for c in tables["People"]["columns"]] == ["name", "city"]
+    assert tables["Sales"]["rows"] == 2
+    assert tables["People"]["rows"] == 1
+
+
+@pytest.mark.parametrize("title", [
+    "Q1 Sales",           # spaces
+    "2024 Budget",        # leading digit
+    "order",              # a reserved SQL keyword
+    "P&L (draft)",        # punctuation
+    "Ventas Año",         # non-ASCII
+])
+def test_a_sheet_name_becomes_a_usable_table_name(tmp_path, title):
+    """Whatever the mapping is, the name it produces must actually work as an
+    unquoted identifier in the SQL the agent will write — that is the only
+    property that matters here, so assert it by RUNNING a query rather than
+    by pinning a particular slug."""
+    src = _xlsx(tmp_path, {title: [["id"], [1]]})
+    adir = tmp_path / "art"
+    adir.mkdir()
+    t = doc_table.build(src, adir)["tables"][0]
+
+    assert t["sheet"] == title
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        assert con.execute(f"SELECT count(*) FROM {t['table']}").fetchone()[0] == 1
+    finally:
+        con.close()
+
+
+def test_the_sheet_to_table_mapping_is_returned_not_inferred(tmp_path):
+    """An identifier the agent reconstructs is one it gets wrong. Two sheets
+    that slugify to the same name must still be distinguishable, and the
+    receipt has to say which is which."""
+    src = _xlsx(tmp_path, {
+        "Q1 Sales": [["id"], [1]],
+        "Q1-Sales": [["id"], [2], [3]],
+    })
+    adir = tmp_path / "art"
+    adir.mkdir()
+    tables = _by_sheet(doc_table.build(src, adir))
+
+    names = [t["table"] for t in tables.values()]
+    assert len(set(names)) == 2, "deduplication must not collapse two sheets"
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        for sheet, expect in (("Q1 Sales", 1), ("Q1-Sales", 2)):
+            got = con.execute(
+                f"SELECT count(*) FROM {tables[sheet]['table']}").fetchone()[0]
+            assert got == expect, f"{sheet} maps to the wrong table"
+    finally:
+        con.close()
+
+
+def test_an_empty_sheet_is_a_table_with_zero_rows_not_an_error(tmp_path):
+    src = _xlsx(tmp_path, {"Blank": [], "Real": [["id"], [1]]})
+    adir = tmp_path / "art"
+    adir.mkdir()
+    tables = _by_sheet(doc_table.build(src, adir))
+
+    assert tables["Blank"]["rows"] == 0
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        assert con.execute(
+            f"SELECT count(*) FROM {tables['Blank']['table']}").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+def test_a_large_sheet_converts_in_full_with_no_row_cap(tmp_path):
+    """The bug that started this: 40,000 rows of spreadsheet became a capped
+    Markdown table, and the agent confidently answered a count question with
+    the size of the cap."""
+    from openpyxl import Workbook as WB
+    wb = WB(write_only=True)
+    ws = wb.create_sheet(title="Txns")
+    ws.append(["id", "amount"])
+    for i in range(1, 40001):
+        ws.append([i, float(i)])
+    src = tmp_path / "big.xlsx"
+    wb.save(src)
+
+    adir = tmp_path / "art"
+    adir.mkdir()
+    t = doc_table.build(src, adir)["tables"][0]
+    assert t["rows"] == 40000
+
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        assert con.execute(f"SELECT count(*) FROM {t['table']}").fetchone()[0] == 40000
+        assert con.execute(
+            f"SELECT sum(amount) FROM {t['table']}").fetchone()[0] == 800020000.0
+    finally:
+        con.close()
+
+
+def test_rebuilding_over_an_existing_database_replaces_it(tmp_path):
+    """The artifact directory is keyed by a content hash, so a rebuild always
+    means the same content — but a half-written database left by a crashed
+    conversion must not be appended to or reused."""
+    adir = tmp_path / "art"
+    adir.mkdir()
+    src = _xlsx(tmp_path, {"Sales": [["id"], [1]]})
+    doc_table.build(src, adir)
+    t = doc_table.build(src, adir)["tables"][0]
+
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        assert con.execute(f"SELECT count(*) FROM {t['table']}").fetchone()[0] == 1
+    finally:
+        con.close()

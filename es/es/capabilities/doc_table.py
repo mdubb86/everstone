@@ -32,8 +32,14 @@ column. Nothing raised, nothing warned; the data was simply wrong.
 """
 import csv
 import datetime
+import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import List, Tuple
+
+import duckdb
+import openpyxl
+
+from es.capabilities import doc_support
 
 
 def _cell_text(value) -> str:
@@ -131,3 +137,180 @@ def sheet_to_csv(ws, path: Path) -> int:
                 writer.writerow(cells + [""] * (width - len(cells)))
             written += 1
     return written
+
+
+DB_NAME = "data.duckdb"
+
+# Table names this module owns. Seeded into the used-name set before any
+# sheet is slugified, so a sheet actually called "Cells" cannot take the name
+# and leave the metadata table to be renamed out from under the agent — the
+# tables it is TOLD about in the receipt must be the ones it can query.
+META_TABLE = "tables_meta"
+CELLS_TABLE = "cells"
+_RESERVED_TABLE_NAMES = (META_TABLE, CELLS_TABLE)
+
+
+def _reserved_keywords(con) -> set:
+    """DuckDB's own reserved-word list rather than a hardcoded copy — the
+    list is version-specific (75 entries in 1.5.5) and a stale local copy
+    would fail exactly where it matters: silently, at query time, on a sheet
+    innocently named "Order"."""
+    return {r[0].lower() for r in con.execute(
+        "SELECT keyword_name FROM duckdb_keywords() "
+        "WHERE keyword_category = 'reserved'").fetchall()}
+
+
+def _slug(name: str, used: set, reserved: set) -> str:
+    """A sheet name as a table identifier the agent can type UNQUOTED.
+
+    Unquoted is the requirement worth stating: the agent writes SQL from the
+    receipt, and an identifier needing quotes is one it will sooner or later
+    write without them. Unicode letters are kept rather than stripped —
+    DuckDB accepts them unquoted (verified: `CREATE TABLE ventas_año` works),
+    so a Spanish or Japanese sheet name stays recognizable instead of
+    decaying into `ventas_a_o`.
+    """
+    slug = "".join(ch if ch.isalnum() else "_" for ch in name.lower())
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    slug = slug.strip("_")
+    if not slug:
+        slug = "sheet"
+    if slug[0].isdigit() or slug in reserved:
+        slug = "t_" + slug
+    candidate = slug
+    n = 2
+    while candidate in used:
+        candidate = f"{slug}_{n}"
+        n += 1
+    used.add(candidate)
+    return candidate
+
+
+def _sniff(con, csv_path: Path) -> dict:
+    """DuckDB's own sniffer decisions for one CSV — the delimiter it chose,
+    whether it found a header, and how many lines it skipped to get there.
+
+    This IS `tables_meta`: the value of exposing it is that a MISPARSE
+    becomes visible. Header detection on a messy real spreadsheet is a
+    guess, and a wrong guess is otherwise a silently wrong answer to every
+    later question. Reported alongside `cells`, the agent can cross-check
+    "the header is on line 4" against what line 4 actually holds.
+    """
+    cur = con.execute("SELECT * FROM sniff_csv(?)", [str(csv_path)])
+    names = [d[0] for d in cur.description]
+    row = cur.fetchone()
+    if row is None:
+        return {"delimiter": ",", "header_row": None}
+    info = dict(zip(names, row))
+    skip = info.get("SkipRows") or 0
+    has_header = bool(info.get("HasHeader"))
+    return {
+        "delimiter": info.get("Delimiter") or ",",
+        # 1-based LINE NUMBER of the header row itself, not a skip count —
+        # the same numbering `cells` uses, so the two can be compared
+        # directly without the agent having to know which is off by one.
+        "header_row": skip + 1 if has_header else None,
+    }
+
+
+def _open_workbook(source: Path):
+    """Scoped tightly around openpyxl's own parse, per doc_support.ParseFailed's
+    contract: a corrupt or password-protected .xlsx must not be reported the
+    same way as a bug in our own row handling."""
+    try:
+        return openpyxl.load_workbook(source, read_only=True, data_only=True)
+    except Exception as e:
+        # An OLE2 compound-document header means an ENCRYPTED workbook (Excel
+        # wraps the real zip in one), not a corrupt file — the same sniff
+        # doc_office.py uses, giving the agent the one message it can act on.
+        try:
+            encrypted = source.open("rb").read(8) == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+        except OSError:
+            encrypted = False
+        raise doc_support.ParseFailed(str(e), encrypted=encrypted) from e
+
+
+def _serialize(source: Path, workdir: Path) -> List[Tuple[str, Path]]:
+    """Every unit of the source as (name, csv_path), in source order.
+
+    A `.csv` is already CSV and is handed to DuckDB UNCHANGED — re-serializing
+    it would mean parsing it ourselves first, which throws away exactly the
+    delimiter/quoting/embedded-newline handling DuckDB's sniffer is better at
+    than we are. Its one pseudo-sheet takes the file's stem as a name, so
+    `transactions.csv` reads as sheet "transactions" and a receipt has the
+    same shape for both formats.
+    """
+    if source.suffix.lower() == ".csv":
+        return [(source.stem, source)]
+    wb = _open_workbook(source)
+    try:
+        out = []
+        for ws in wb.worksheets:
+            path = workdir / f"sheet{len(out):03d}.csv"
+            sheet_to_csv(ws, path)
+            out.append((ws.title, path))
+        return out
+    finally:
+        wb.close()
+
+
+def build(source: Path, adir: Path) -> dict:
+    """Convert `source` into `adir/data.duckdb` and describe what was built.
+
+    Returns `{"tables": [{sheet, table, rows, header_row, columns}, ...]}` in
+    source order — `columns` is `[{name, type}, ...]` as DuckDB actually
+    stored them, read back with DESCRIBE rather than echoed from the sniffer,
+    so the receipt cannot claim a schema the database does not have.
+
+    The same description is also written INTO the database as `tables_meta`,
+    so the mapping survives the receipt: an agent that has the doc_id but not
+    the original response can recover which table a sheet became with one
+    query instead of guessing at the slug.
+    """
+    db_path = Path(adir) / DB_NAME
+    # A crashed conversion can leave a partial database behind, and the
+    # artifact dir is keyed by a content hash — so the stale file would be
+    # found by the very next extract of the same document and appended to.
+    if db_path.exists():
+        db_path.unlink()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sheets = _serialize(Path(source), Path(tmp))
+        con = duckdb.connect(str(db_path))
+        try:
+            reserved = _reserved_keywords(con)
+            used = set(_RESERVED_TABLE_NAMES)
+            tables = []
+            for name, csv_path in sheets:
+                table = _slug(name, used, reserved)
+                try:
+                    meta = _sniff(con, csv_path)
+                    con.execute(
+                        f'CREATE TABLE "{table}" AS SELECT * FROM read_csv(?)',
+                        [str(csv_path)])
+                except duckdb.Error as e:
+                    raise doc_support.ParseFailed(str(e)) from e
+                columns = [{"name": r[0], "type": r[1]} for r in
+                           con.execute(f'DESCRIBE "{table}"').fetchall()]
+                rows = con.execute(
+                    f'SELECT count(*) FROM "{table}"').fetchone()[0]
+                tables.append({"sheet": name, "table": table, "rows": rows,
+                               "header_row": meta["header_row"],
+                               "columns": columns})
+            _write_meta(con, tables)
+            return {"tables": tables}
+        finally:
+            con.close()
+
+
+def _write_meta(con, tables: List[dict]) -> None:
+    con.execute(
+        f'CREATE TABLE "{META_TABLE}" ('
+        ' sheet VARCHAR, table_name VARCHAR, header_row BIGINT,'
+        ' row_count BIGINT, column_count BIGINT)')
+    for t in tables:
+        con.execute(
+            f'INSERT INTO "{META_TABLE}" VALUES (?, ?, ?, ?, ?)',
+            [t["sheet"], t["table"], t["header_row"], t["rows"],
+             len(t["columns"])])
