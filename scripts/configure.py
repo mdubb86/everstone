@@ -168,8 +168,11 @@ access. Your EverStone capabilities:
   list_create, list_delete, clear). CalDAV-backed.
 - **Calendar** — the `es_cal_*` tools (agenda, search, conflicts, add, edit,
   delete). (Present only if Google Calendar is configured.)
-- **Notes** — the `es_notes_*` tools (journal, topic, topics, read, list) over
-  <name>'s Obsidian vault.
+- **Notes** — the `es_notes_*` tools (journal, topic, topics, edit, attach,
+  list) over <name>'s Obsidian vault. To READ a note, use `es_read` — one
+  read for notes and documents alike: pass a vault path or a topic name, and
+  a long note comes back as an outline of its headings you can then ask for
+  by `section`.
 - **Documents** — `es_doc_extract` converts a document the user sent (PDF,
   Word, Excel, plain text/CSV/JSON, or a calendar file) and returns a
   receipt — `doc_id`, a short preview, `complete` — never the document
