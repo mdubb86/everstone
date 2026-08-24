@@ -13,7 +13,7 @@ import openpyxl
 import pytest
 from openpyxl import Workbook
 
-from es.capabilities import doc_table
+from es.capabilities import doc_support, doc_table
 
 
 def _sheet(rows, title="Data", merges=()):
@@ -702,12 +702,13 @@ def test_a_field_with_an_embedded_newline_stays_one_row(tmp_path):
         con.close()
 
 
-def test_a_latin1_csv_is_read_rather_than_rejected(tmp_path):
+@pytest.mark.parametrize("codec", ["latin-1", "cp1252"])
+def test_a_non_utf8_csv_is_read_rather_than_rejected(tmp_path, codec):
     """Exporting a CSV from Excel on Windows produces cp1252, not UTF-8, and
     DuckDB rejects the whole file at the first accented character. That is a
-    real user's real spreadsheet, so it falls back to latin-1."""
-    src = tmp_path / "cp1252.csv"
-    src.write_bytes("id,name\n1,café\n2,naïve\n".encode("latin-1"))
+    real user's real spreadsheet, so it is transcoded first."""
+    src = tmp_path / f"{codec}.csv"
+    src.write_bytes("id,name\n1,café\n2,naïve\n".encode(codec))
     adir = tmp_path / "art"
     adir.mkdir()
     t = doc_table.build(src, adir)["tables"][0]
@@ -777,3 +778,65 @@ def test_a_formula_cell_with_no_cached_result_is_empty_not_wrong(tmp_path):
             "WHERE ref = 'C2'").fetchone()[0] == 0
     finally:
         con.close()
+
+
+def test_a_cp1252_csv_keeps_the_punctuation_latin1_would_destroy(tmp_path):
+    """The case a plain latin-1 fallback gets WRONG, found by making a
+    realistic test file rather than a synthetic one. An em dash or a smart
+    quote — which Excel on Windows emits constantly — is byte 0x97/0x93, and
+    latin-1 maps those to C1 CONTROL characters, so DuckDB refuses the file
+    outright: "File is not latin-1 encoded". cp1252 is tried first for
+    exactly this."""
+    src = tmp_path / "windows.csv"
+    src.write_bytes(
+        "Rapport trimestriel \u2014 Caf\u00e9 Ubique\r\n"
+        "\r\n"
+        "id,client,ville\r\n"
+        "1,Ren\u00e9e \u201cRen\u201d Dubois,Montr\u00e9al\r\n"
+        "2,Jonas M\u00fcller,Gen\u00e8ve\r\n".encode("cp1252"))
+    adir = tmp_path / "art"
+    adir.mkdir()
+    t = doc_table.build(src, adir)["tables"][0]
+
+    assert [c["name"] for c in t["columns"]] == ["id", "client", "ville"]
+    assert t["header_row"] == 3, "the em-dash banner must still be seen as preamble"
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        assert con.execute(
+            f"SELECT client FROM {t['table']} WHERE id = 1").fetchone()[0] == (
+                "Ren\u00e9e \u201cRen\u201d Dubois")
+        # the banner survives in cells with its em dash intact
+        assert "\u2014" in con.execute(
+            f"SELECT value FROM {doc_table.CELLS_TABLE} WHERE ref = 'A1'").fetchone()[0]
+    finally:
+        con.close()
+
+
+def test_binary_bytes_named_csv_are_refused_by_the_transcoder(tmp_path):
+    """The guard that keeps the transcoder honest: latin-1 decodes ANY byte
+    sequence, so without a binary check a misnamed file would transcode
+    "successfully" into a table of mojibake."""
+    src = tmp_path / "actually_binary.csv"
+    src.write_bytes(b"id,name\n\x00\x01\x02\xff\xfe not text at all\n")
+    adir = tmp_path / "art"
+    adir.mkdir()
+    with pytest.raises(doc_support.ParseFailed) as e:
+        doc_table.build(src, adir)
+    assert "not text" in str(e.value)
+
+
+@pytest.mark.parametrize("magic,expect", [
+    (b"%PDF-1.4\nnot really a csv\n", "a PDF"),
+    (b"PK\x03\x04rest of a zip\n", "zip"),
+    (b"\x89PNG\r\n\x1a\nIHDR\n", "PNG"),
+])
+def test_a_file_named_csv_that_is_another_format_says_which(tmp_path, magic, expect):
+    """Named by what it IS, not by what went wrong three layers down. The
+    agent can act on "this is a PDF" — it cannot act on "column0 VARCHAR"."""
+    src = tmp_path / "mislabelled.csv"
+    src.write_bytes(magic)
+    adir = tmp_path / "art"
+    adir.mkdir()
+    with pytest.raises(doc_support.ParseFailed) as e:
+        doc_table.build(src, adir)
+    assert expect in str(e.value)

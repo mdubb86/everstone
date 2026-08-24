@@ -977,16 +977,20 @@ def test_cross_format_cache_collision_is_fixed(text_pdf, tmp_path):
 
 def test_binary_bytes_named_csv_are_reported_unreadable_not_converted_to_mojibake(
         text_pdf, tmp_path):
-    """A .csv now goes to DuckDB, which refuses a file it cannot decode. That
-    refusal has to survive the latin-1 fallback added for cp1252 exports:
-    latin-1 decodes ANY byte sequence, so without a guard this file would
-    "succeed" and produce a table of garbage — a confidently wrong answer
-    instead of an error."""
+    """A .csv is transcoded before DuckDB sees it, and cp1252/latin-1 decode
+    ANY byte sequence — so without a guard this file would transcode
+    "successfully" into a table of garbage, a confidently wrong answer where
+    an error belongs.
+
+    A NUL-byte check alone would NOT catch it: measured, this reportlab PDF
+    contains no NUL bytes anywhere. The magic prefix is what does, and the
+    error names the real problem rather than a symptom."""
     from es.capabilities import docs
     as_csv = tmp_path / "actually_a_pdf.csv"
     as_csv.write_bytes(text_pdf.read_bytes())
-    with pytest.raises(docs.UnreadableDocument):
+    with pytest.raises(docs.UnreadableDocument) as e:
         docs.extract(str(as_csv), roots=[tmp_path], cache_root=tmp_path)
+    assert "a PDF" in str(e.value)
 
 
 def test_cross_format_cache_collision_is_fixed_for_zero_byte_files(tmp_path):

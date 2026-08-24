@@ -241,11 +241,32 @@ def _slug(name: str, used: set, reserved: set) -> str:
     return candidate
 
 
-# The first chunk of a file to inspect when deciding whether it is text at
-# all. A NUL byte in the first 8 KiB is git's own binary heuristic, and it is
-# the right one here: no text encoding produces NUL, so its presence is a
-# reliable "this is not a spreadsheet someone exported" signal — which is
-# what lets the latin-1 fallback below be safe.
+# What a file says it is, from its own first bytes. Checked BEFORE any
+# decoding, because a file that announces itself as a PDF is a PDF no matter
+# what extension it was given or what encoding it would happen to decode
+# under — and because the resulting error can then name the actual problem
+# ("this is a PDF") instead of a symptom three layers down ("column0
+# VARCHAR").
+#
+# This is the guard that keeps transcoding honest. A NUL-byte check alone is
+# not enough: measured, a small reportlab-generated PDF contains NO NUL bytes
+# at all, so it would decode cleanly as cp1252 and produce a table of
+# mojibake — a confidently wrong answer where an error belongs.
+_MAGIC_PREFIXES = (
+    (b"%PDF-", "a PDF"),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "a legacy Office file (.doc/.xls) "
+                                            "or a password-protected one"),
+    (b"PK\x03\x04", "a zip archive (a .docx/.xlsx is one)"),
+    (b"\x89PNG\r\n\x1a\n", "a PNG image"),
+    (b"\xff\xd8\xff", "a JPEG image"),
+    (b"GIF8", "a GIF image"),
+    (b"\x1f\x8b", "a gzip archive"),
+)
+
+# A NUL byte means binary even when no magic prefix matched — git's own
+# heuristic, and the right one: no text encoding produces NUL. Checked over
+# the whole file rather than a prefix window, since the bytes are already in
+# memory by then and it costs nothing.
 _BINARY_SNIFF_BYTES = 8192
 
 
@@ -257,37 +278,62 @@ def _looks_like_text(path: Path) -> bool:
         return False
 
 
-def _read_csv_args(csv_path: Path, encoding: Optional[str]) -> str:
-    return ("read_csv(?)" if encoding is None
-            else f"read_csv(?, encoding='{encoding}')")
+def _ensure_utf8(source: Path, workdir: Path) -> Path:
+    """`source` if it is already valid UTF-8, else a transcoded copy in
+    `workdir`. Raises ParseFailed for bytes that are not text at all.
 
+    DuckDB reads UTF-8, and its `encoding` option offers only utf-8, utf-16
+    and latin-1 — none of which is what a spreadsheet exported from Excel on
+    Windows actually is. That file is cp1252, and the difference is not
+    academic: an em dash or a smart quote is byte 0x97/0x93, which latin-1
+    maps to a C1 CONTROL character and DuckDB then rejects outright ("File is
+    not latin-1 encoded"). Transcoding here instead of asking DuckDB to
+    decode makes the whole of Python's codec table available, and it makes
+    the `.csv` path identical to the `.xlsx` one, which already hands DuckDB
+    a UTF-8 file it wrote itself.
 
-def _pick_encoding(con, csv_path: Path) -> Optional[str]:
-    """None for UTF-8 (DuckDB's default), or 'latin-1' for a file that is not
-    valid UTF-8 but is still plainly text.
+    cp1252 first, latin-1 second: cp1252 is a strict superset of latin-1's
+    printable range, so trying it first recovers the punctuation, and latin-1
+    (which maps all 256 bytes and therefore cannot fail) is the backstop for
+    the five bytes cp1252 leaves undefined.
 
-    Exporting a CSV from Excel on Windows produces cp1252, not UTF-8, and
-    DuckDB rejects the whole file the moment it hits one accented character —
-    "Invalid unicode (byte sequence mismatch)". That is a real user's real
-    spreadsheet, so falling back matters. latin-1 decodes ANY byte sequence
-    and therefore never fails, which is exactly why it must be gated on
-    _looks_like_text: without that, a PDF misnamed `.csv` would "succeed" and
-    produce a table of mojibake instead of being reported as unreadable.
-
-    We ask by TRYING, rather than by guessing from the bytes: the sniffer's
-    own verdict on the actual file is more reliable than any charset
-    heuristic we would write here.
+    The binary check is what keeps this honest. latin-1 decodes ANY byte
+    sequence, so without it a PDF misnamed `.csv` would transcode
+    "successfully" into a table of mojibake — a confidently wrong answer
+    where an error belongs. A NUL byte in the first 8 KiB is git's own
+    binary heuristic, and it is the right one: no text encoding produces NUL.
     """
+    raw = source.read_bytes()
+    for magic, what in _MAGIC_PREFIXES:
+        if raw.startswith(magic):
+            raise doc_support.ParseFailed(
+                f"{source.name} is named .csv but its contents are {what} — "
+                "rename it to the right extension and extract it again, or "
+                "ask the user to resend it as a CSV.")
     try:
-        con.execute(f"SELECT * FROM sniff_csv(?)", [str(csv_path)]).fetchone()
-        return None
-    except duckdb.Error:
-        if not _looks_like_text(csv_path):
-            raise
-        return "latin-1"
+        raw.decode("utf-8")
+        return source
+    except UnicodeDecodeError:
+        pass
+    if b"\x00" in raw:
+        raise doc_support.ParseFailed(
+            f"{source.name} is not text — it could not be read as UTF-8 and "
+            "contains binary data; it may not really be a CSV, or it may be "
+            "corrupt. Ask the user to resend it, or to export it as CSV.")
+    for codec in ("cp1252", "latin-1"):
+        try:
+            text = raw.decode(codec)
+        except UnicodeDecodeError:
+            continue
+        out = workdir / f"{source.stem}.utf8.csv"
+        out.write_text(text, encoding="utf-8")
+        return out
+    raise doc_support.ParseFailed(
+        f"{source.name} could not be decoded as text in any supported "
+        "encoding; ask the user to re-export it as UTF-8 CSV.")
 
 
-def _sniff(con, csv_path: Path, encoding: Optional[str] = None) -> dict:
+def _sniff(con, csv_path: Path) -> dict:
     """DuckDB's own sniffer decisions for one CSV — the delimiter it chose,
     whether it found a header, and how many lines it skipped to get there.
 
@@ -297,9 +343,7 @@ def _sniff(con, csv_path: Path, encoding: Optional[str] = None) -> dict:
     later question. Reported alongside `cells`, the agent can cross-check
     "the header is on line 4" against what line 4 actually holds.
     """
-    sniff = ("sniff_csv(?)" if encoding is None
-             else f"sniff_csv(?, encoding='{encoding}')")
-    cur = con.execute(f"SELECT * FROM {sniff}", [str(csv_path)])
+    cur = con.execute("SELECT * FROM sniff_csv(?)", [str(csv_path)])
     names = [d[0] for d in cur.description]
     row = cur.fetchone()
     if row is None:
@@ -388,7 +432,7 @@ def _serialize(source: Path, workdir: Path) -> List[Tuple[str, Path]]:
     same shape for both formats.
     """
     if source.suffix.lower() == ".csv":
-        return [(source.stem, source)]
+        return [(source.stem, _ensure_utf8(source, workdir))]
     wb = _open_workbook(source)
     try:
         out = []
@@ -432,11 +476,10 @@ def build(source: Path, adir: Path) -> dict:
             for name, csv_path in sheets:
                 table = _slug(name, used, reserved)
                 try:
-                    encoding = _pick_encoding(con, csv_path)
-                    meta = _sniff(con, csv_path, encoding)
+                    meta = _sniff(con, csv_path)
                     con.execute(
-                        f'CREATE TABLE "{table}" AS SELECT * FROM '
-                        + _read_csv_args(csv_path, encoding), [str(csv_path)])
+                        f'CREATE TABLE "{table}" AS SELECT * FROM read_csv(?)',
+                        [str(csv_path)])
                 except duckdb.Error as e:
                     raise doc_support.ParseFailed(str(e)) from e
                 columns = [{"name": r[0], "type": r[1]} for r in
@@ -447,8 +490,7 @@ def build(source: Path, adir: Path) -> dict:
                                "header_row": meta["header_row"],
                                "columns": columns})
                 sheets_meta.append({"sheet": name, "csv": csv_path,
-                                    "delimiter": meta["delimiter"],
-                                    "encoding": encoding or "utf-8"})
+                                    "delimiter": meta["delimiter"]})
             _write_cells(con, sheets_meta, Path(tmp))
             _write_meta(con, tables)
             return {"tables": tables}
@@ -526,7 +568,9 @@ def _write_cells(con, sheets_meta: List[dict], workdir: Path) -> None:
     with open(dump, "w", newline="", encoding="utf-8") as out:
         writer = csv.writer(out, lineterminator="\n")
         for meta in sheets_meta:
-            with open(meta["csv"], newline="", encoding=meta["encoding"],
+            # UTF-8 unconditionally: every CSV reaching this point either was
+            # UTF-8 already or was transcoded to it by _ensure_utf8.
+            with open(meta["csv"], newline="", encoding="utf-8",
                       errors="replace") as fh:
                 reader = csv.reader(fh, delimiter=meta["delimiter"])
                 # enumerate over LOGICAL rows: a quoted field containing a
