@@ -229,15 +229,20 @@ class Window(TypedDict):
     next_offset: Optional[int]
 
 
-# es_doc_extract's own conversion budget is 40_000 characters
-# (docs.py:MAX_MARKDOWN_CHARS); a full document `window` might be asked to
-# page through is bounded by roughly that size. 200 lines is comfortably
-# under a token budget the agent can re-read a few times per turn without
-# dominating context (typical converted-document lines run well under 200
-# chars; even at ~80 chars/line that's ~16,000 chars, a fraction of a
-# model's context and a fraction of the 40k source budget), while still
-# being enough to show useful continuous context in one call rather than
-# forcing many round trips for an ordinary-sized section.
+# 200 lines is comfortably under a token budget the agent can re-read a few
+# times per turn without dominating context (typical converted-document
+# lines run well under 200 chars; even at ~80 chars/line that's ~16,000
+# chars, a fraction of a model's context), while still being enough to show
+# useful continuous context in one call rather than forcing many round trips
+# for an ordinary-sized section.
+#
+# This is NOT sized against the full document's own length — a converted
+# document is only bounded by its own converter's resource ceiling now (tens
+# of millions of characters for the flat formats; see doc_text.MAX_CHARS and
+# friends), not by any fixed response-sized budget. The guarantee that one
+# es_read call still comes back small is enforced one layer up, on this
+# function's OUTPUT: mcp_server._CONTENT_CHAR_CAP caps `content` after
+# window() returns it, independently of how large the source document is.
 DEFAULT_WINDOW_LIMIT = 200
 
 

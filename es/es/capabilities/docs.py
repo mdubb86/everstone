@@ -82,10 +82,38 @@ CONVERTERS = {
 }
 SUPPORTED = set(CONVERTERS)
 
-# Cache filenames within a doc_id's artifact dir. Both are written ONLY for a
-# full-document extract (pages=None) — see the comment in extract().
+# Cache filenames within a doc_id's artifact dir. All three are written ONLY
+# for a full-document extract (pages=None) — see the comment in extract().
 DOC_MD_NAME = "doc.md"
 DOC_IMAGES_MANIFEST = "images.json"
+# The sidecar reader.py's `doc:<id>` resolution reads to learn a handle's
+# `kind` without re-deriving it from a source file it no longer has (only
+# the doc_id, a one-way content hash, survives past extract() — the original
+# extension is not recoverable from it). A small JSON sidecar beside doc.md
+# was chosen over inventing a second cache (or folding kind into the doc_id
+# string itself, which would mean changing DOC_ID_LEN/_DOC_ID_RE and every
+# caller that treats a doc_id as opaque hex) because it's the same pattern
+# images.json already established: one small JSON file per artifact,
+# written once at conversion time, read by read_cached().
+DOC_META_NAME = "meta.json"
+
+# Kinds that are TABLE-shaped rather than Markdown-shaped. es_read exists to
+# page MARKDOWN (reader.py/read.py's whole outline/section/window/query
+# machinery assumes prose with optional "## " headings) — a table-kind
+# handle must be refused there, with the agent pointed at a query-shaped
+# tool instead, rather than silently handed markdown that happens to render
+# a table, or an empty/misleading read.
+#
+# No CONVERTER produces one of these kinds today: doc_text/doc_office's own
+# .csv/.xlsx converters still emit kind "csv"/"xlsx" — ordinary Markdown
+# pipe tables, fully readable via es_read like any other document. This set
+# is empty of real converter output on purpose, ahead of need: a later plan
+# converts .csv/.xlsx into a queryable DuckDB database instead (addressed by
+# a new es_doc_query tool, not es_read) and will record that conversion's
+# `kind` as "table". Defining the set — and reader.py's rejection path that
+# checks it — now means that plan lands into a surface that already refuses
+# correctly, rather than bolting the refusal on after the fact.
+TABLE_KINDS = frozenset({"table"})
 
 
 class UnsupportedDocument(Exception):
@@ -394,19 +422,43 @@ def _read_images_manifest(adir: Path) -> List[str]:
         return []
 
 
+def _read_meta_kind(adir: Path) -> Optional[str]:
+    """None means "no recorded kind" — a plain absence (an artifact dir
+    written before meta.json existed, or one partially purged) or an
+    unreadable/corrupt sidecar, treated the same permissively as a missing
+    images.json (_read_images_manifest): the cache entry is still a hit,
+    just with kind unknown. reader.py treats an unknown kind as NOT a table
+    kind (docs.TABLE_KINDS membership fails for None), so a pre-existing
+    artifact from before this sidecar existed keeps reading exactly as it
+    did before — only a handle that positively recorded a table kind is
+    ever refused."""
+    meta = adir / DOC_META_NAME
+    if not meta.is_file():
+        return None
+    try:
+        return json.loads(meta.read_text(encoding="utf-8")).get("kind")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def read_cached(adir: Path) -> Optional[dict]:
     """Read a previously cached FULL-document extract (doc.md + its
-    images.json sidecar) from `adir`, or None if there isn't one — never
-    converted, purged, or an undecodable doc.md (treated as a miss, not an
-    error; see _read_cached_markdown).
+    images.json/meta.json sidecars) from `adir`, or None if there isn't one
+    — never converted, purged, or an undecodable doc.md (treated as a miss,
+    not an error; see _read_cached_markdown).
 
     The one shared accessor for reading a cached conversion: extract()'s own
     cache-hit path below uses it, and so does es_read's `doc:<id>` resolution
-    (es/capabilities/reader.py) — neither re-reads doc.md/images.json on its
-    own, so there is exactly one place that knows a missing images.json
-    sidecar means "no images" rather than "cache broken" (_read_images_manifest
-    already tolerates that; a caller here inherits it for free instead of
-    re-deciding it).
+    (es/capabilities/reader.py) — neither re-reads doc.md/images.json/
+    meta.json on its own, so there is exactly one place that knows a missing
+    images.json sidecar means "no images" (_read_images_manifest) and a
+    missing meta.json means "kind unknown" (_read_meta_kind) rather than
+    "cache broken" — a caller here inherits both for free instead of
+    re-deciding them.
+
+    `kind` is what reader.py's `_resolve_doc` checks against
+    docs.TABLE_KINDS to refuse a table-shaped handle before ever handing
+    back markdown for es_read to page.
 
     Does NOT touch()/mkdir the directory — that's the caller's call: a
     cache-hit inside extract() touches immediately (a hit there always means
@@ -416,13 +468,24 @@ def read_cached(adir: Path) -> Optional[dict]:
     markdown = _read_cached_markdown(adir)
     if markdown is None:
         return None
-    return {"markdown": markdown, "images": _read_images_manifest(adir)}
+    return {"markdown": markdown, "images": _read_images_manifest(adir),
+            "kind": _read_meta_kind(adir)}
 
 
-def _write_full_extract(adir: Path, markdown: str, images: List[Path]) -> None:
+def _write_full_extract(adir: Path, markdown: str, images: List[Path],
+                         kind: Optional[str] = None) -> None:
+    """`kind` defaults to None (no meta.json written) rather than being
+    required, so a test/fixture built before this sidecar existed (writing
+    only doc.md + images.json, e.g. tests/test_reader.py's `_seed_doc`) keeps
+    working unchanged — read_cached() already treats a missing meta.json the
+    same permissive way it treats a missing images.json (see
+    _read_meta_kind)."""
     (adir / DOC_MD_NAME).write_text(markdown, encoding="utf-8")
     (adir / DOC_IMAGES_MANIFEST).write_text(
         json.dumps([str(i) for i in images]), encoding="utf-8")
+    if kind is not None:
+        (adir / DOC_META_NAME).write_text(
+            json.dumps({"kind": kind}), encoding="utf-8")
 
 
 def extract(source: str, roots, cache_root: Path) -> dict:
@@ -430,6 +493,11 @@ def extract(source: str, roots, cache_root: Path) -> dict:
     ext = real.suffix.lower()
     mod = CONVERTERS[ext]
     total = _page_count(mod, real)
+    # Trivially the extension without its dot ("pdf" for ".pdf") — correct
+    # today and requires no per-format table of its own. Computed once, up
+    # front, so both the meta.json sidecar (written below) and the receipt's
+    # own `kind` field (returned at the bottom) always agree.
+    kind = ext.lstrip(".")
 
     # Full-document extract only: doc_id is a content hash, so a previous
     # conversion of this exact content is still correct — check the cache
@@ -449,7 +517,7 @@ def extract(source: str, roots, cache_root: Path) -> dict:
             markdown, image_paths = mod.convert(real, adir, pages=None)
         except (doc_support.ParseFailed, PdfminerException) as e:
             _reraise_conversion_error(real, e)
-        _write_full_extract(adir, markdown, image_paths)
+        _write_full_extract(adir, markdown, image_paths, kind=kind)
         doc_cache.touch(adir)
 
     # A RECEIPT, not the document: doc.md (written above, in full, before any
@@ -468,9 +536,7 @@ def extract(source: str, roots, cache_root: Path) -> dict:
         if complete else
         f'call es_read(target="doc:{did}") to read the rest, paged by heading'
     )
-    # kind is trivially the extension without its dot ("pdf" for ".pdf") —
-    # correct today and requires no per-format table of its own.
-    return {"doc_id": did, "kind": ext.lstrip("."), "page_count": total,
+    return {"doc_id": did, "kind": kind, "page_count": total,
             "preview": preview, "complete": complete, "next": next_step}
 
 
