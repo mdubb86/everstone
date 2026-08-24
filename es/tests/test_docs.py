@@ -56,7 +56,7 @@ def fake_pdf(tmp_path):
 def one_scanned_one_text_pdf(tmp_path):
     """Page 1 is image-only (auto-rendered by extract); page 2 has a real
     text layer. Gives extract() a non-empty images.json (from page 1) that
-    is distinguishable from a PNG a LATER es_doc_render call would drop into
+    is distinguishable from a PNG a LATER image_pages call would drop into
     the same artifact dir for page 2."""
     from PIL import Image
     from reportlab.lib.pagesizes import letter
@@ -346,13 +346,13 @@ def test_cache_hit_images_come_from_manifest_not_a_directory_scan(
         one_scanned_one_text_pdf, tmp_path):
     """A cache-hit extract must report only the images the ORIGINAL extract
     produced (from images.json) — not every PNG that happens to sit in the
-    artifact dir, including ones a later es_doc_render call drops there for
+    artifact dir, including ones a later image_pages call drops there for
     pages the extract itself never rendered.
 
     extract()'s own return no longer carries `images` at all (the receipt
     contract this task adds — see test_extract_returns_a_receipt_not_the_
     document); the manifest itself is still cached and still the thing a
-    cache-hit must not let a later render() call corrupt, so this asserts
+    cache-hit must not let a later image_pages call corrupt, so this asserts
     against docs.read_cached() (the shared accessor for that cache entry)
     directly."""
     first = docs.extract(str(one_scanned_one_text_pdf),
@@ -361,18 +361,19 @@ def test_cache_hit_images_come_from_manifest_not_a_directory_scan(
     first_images = docs.read_cached(adir)["images"]
     assert len(first_images) == 1  # only page 1, the image-only page
 
-    # es_doc_render page 2 into the SAME artifact dir — page 2 has real text
-    # and was never rendered by extract(), so its PNG is new to the dir.
-    rendered = docs.render(str(one_scanned_one_text_pdf),
-                           roots=[one_scanned_one_text_pdf.parent],
-                           cache_root=tmp_path, pages="2")
-    assert rendered["images"]
+    # image_pages="2" into the SAME artifact dir — page 2 has real text and
+    # was never rendered by the plain extract() above, so its PNG is new to
+    # the dir.
+    rendered = docs.extract(str(one_scanned_one_text_pdf),
+                            roots=[one_scanned_one_text_pdf.parent],
+                            cache_root=tmp_path, image_pages="2")
+    assert rendered["page_images"]
     assert len(list(adir.glob("*.png"))) == 2  # both PNGs now physically present
 
     docs.extract(str(one_scanned_one_text_pdf),
                  roots=[one_scanned_one_text_pdf.parent], cache_root=tmp_path)  # cache hit
     second_images = docs.read_cached(adir)["images"]
-    assert second_images == first_images  # unchanged by the render() call
+    assert second_images == first_images  # unchanged by the image_pages call
 
 
 def test_extract_cache_hit_still_touches_artifact_dir(text_pdf, tmp_path):
@@ -444,29 +445,33 @@ def test_extract_rejects_over_long_path_without_leaking_oserror(tmp_path):
     assert e.value.es_code == "doc_unreadable"
 
 
-def test_render_rejects_empty_pages_string(text_pdf, tmp_path):
-    """pages="" is a malformed selector, not a synonym for "the default
-    window" — only omitting the argument (None) means that. (Used to also
-    assert the same for extract(), which had its own `pages` argument; that
-    argument is gone — extract() always converts the whole document now, so
-    there is no pages="" case left to be malformed.)"""
+def test_extract_rejects_empty_image_pages_string(text_pdf, tmp_path):
+    """image_pages="" is a malformed selector, not a synonym for "render
+    nothing" — only omitting the argument entirely (None) means that."""
     with pytest.raises(docs.InvalidPageRange):
-        docs.render(str(text_pdf), roots=[text_pdf.parent],
-                    cache_root=tmp_path, pages="")
+        docs.extract(str(text_pdf), roots=[text_pdf.parent],
+                    cache_root=tmp_path, image_pages="")
 
 
-# --- render() ------------------------------------------------------------
+# --- extract()'s image_pages parameter --------------------------------------
 
-def test_render_returns_page_images(text_pdf, tmp_path):
-    out = docs.render(str(text_pdf), roots=[text_pdf.parent],
-                      cache_root=tmp_path, pages="1-2")
-    assert len(out["images"]) == 2
+def test_extract_image_pages_returns_page_images(text_pdf, tmp_path):
+    out = docs.extract(str(text_pdf), roots=[text_pdf.parent],
+                       cache_root=tmp_path, image_pages="1-2")
+    assert len(out["page_images"]) == 2
     assert out["page_count"] == 2
 
 
+def test_extract_without_image_pages_returns_an_empty_page_images_list(text_pdf, tmp_path):
+    """`page_images` is always present — an empty list, not a missing key or
+    null, is the true statement when image_pages was never asked for."""
+    out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
+    assert out["page_images"] == []
+
+
 def _make_pdf(path, n_pages):
-    """An n-page PDF with real text on every page (used to check the
-    render() default range against documents of varying length)."""
+    """An n-page PDF with real text on every page (used to check image_pages
+    against documents of varying length)."""
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
 
@@ -478,43 +483,50 @@ def _make_pdf(path, n_pages):
     return path
 
 
-@pytest.mark.parametrize("n_pages", [1, 2, 15])
-def test_render_default_pages_clamps_to_the_document_length(tmp_path, n_pages):
-    """The default (pages omitted) must never error just because the document
-    is shorter than the default 1-10 window — the motivating case is a 1-3
-    page schedule. A document at/over the window renders exactly the window."""
-    pdf = _make_pdf(tmp_path / f"doc_{n_pages}.pdf", n_pages)
-    out = docs.render(str(pdf), roots=[tmp_path], cache_root=tmp_path)
-    assert out["page_count"] == n_pages
-    assert len(out["images"]) == min(n_pages, 10)
-
-
-def test_render_explicit_out_of_range_still_errors_even_when_default_would_clamp(tmp_path):
-    """Clamping is only for the implicit default. An agent-supplied EXPLICIT
-    range past the document's end stays a loud error (matching extract()'s
-    explicit-range behavior) rather than silently returning a partial result —
-    it more likely names a wrong page than an intentional partial ask."""
-    pdf = _make_pdf(tmp_path / "doc_3.pdf", 3)
+def test_extract_image_pages_rejects_page_out_of_range(text_pdf, tmp_path):
     with pytest.raises(docs.InvalidPageRange):
-        docs.render(str(pdf), roots=[tmp_path], cache_root=tmp_path, pages="1-10")
+        docs.extract(str(text_pdf), roots=[text_pdf.parent],
+                    cache_root=tmp_path, image_pages="9")
 
 
-def test_render_rejects_page_out_of_range(text_pdf, tmp_path):
-    with pytest.raises(docs.InvalidPageRange):
-        docs.render(str(text_pdf), roots=[text_pdf.parent],
-                    cache_root=tmp_path, pages="9")
-
-
-def test_render_rejects_more_pages_than_the_cap(text_pdf, tmp_path, monkeypatch):
-    monkeypatch.setattr(docs, "MAX_RENDER_PAGES", 1)
+def test_extract_image_pages_rejects_more_pages_than_the_cap(text_pdf, tmp_path, monkeypatch):
+    monkeypatch.setattr(docs, "MAX_IMAGE_PAGES", 1)
     with pytest.raises(docs.InvalidPageRange) as e:
-        docs.render(str(text_pdf), roots=[text_pdf.parent],
-                    cache_root=tmp_path, pages="1-2")
+        docs.extract(str(text_pdf), roots=[text_pdf.parent],
+                    cache_root=tmp_path, image_pages="1-2")
     msg = str(e.value)
     # Specific enough to fail if the cap or the requested-page count regress
     # (the old "1" in str(e.value) assertion would pass on almost any message).
     assert "cannot render 2 pages" in msg
     assert "limit is 1" in msg
+
+
+def test_extract_image_pages_on_a_conversion_cache_hit_still_renders(text_pdf, tmp_path):
+    """A second extract() call on the same source, now WITH image_pages, must
+    be a conversion cache hit (same doc_id, same preview — convert() is not
+    re-run) that still does the rendering work: image_pages is additive to an
+    existing conversion, not part of what makes a call a cache hit."""
+    first = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
+    assert first["page_images"] == []
+
+    second = docs.extract(str(text_pdf), roots=[text_pdf.parent],
+                          cache_root=tmp_path, image_pages="1")
+    assert second["doc_id"] == first["doc_id"]
+    assert second["preview"] == first["preview"]
+    assert len(second["page_images"]) == 1
+
+
+def test_extract_receipt_shape_is_stable_regardless_of_image_pages(text_pdf, tmp_path):
+    """The receipt's key set must not change shape based on whether
+    image_pages was given — only `page_images`'s CONTENTS (and `next`'s
+    wording) differ."""
+    without = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
+    with_pages = docs.extract(str(text_pdf), roots=[text_pdf.parent],
+                              cache_root=tmp_path, image_pages="1")
+    expected_keys = {"doc_id", "kind", "page_count", "preview", "complete",
+                     "page_images", "next"}
+    assert set(without) == expected_keys
+    assert set(with_pages) == expected_keys
 
 
 # --- parse_pages() ---------------------------------------------------------
@@ -554,7 +566,8 @@ def test_mcp_tools_are_registered():
     with the server instead."""
     from es import mcp_server
     names = {t.name for t in asyncio.run(mcp_server.mcp.list_tools())}
-    assert {"es_doc_extract", "es_doc_render"} <= names
+    assert "es_doc_extract" in names
+    assert "es_doc_render" not in names
 
 
 def test_mcp_extract_returns_envelope_on_bad_path(monkeypatch, tmp_path):
@@ -575,20 +588,20 @@ def test_mcp_extract_returns_envelope_on_success(text_pdf, monkeypatch, tmp_path
     assert "Fall Season Schedule" in out["data"]["preview"]
 
 
-def test_mcp_render_returns_envelope_on_success(text_pdf, monkeypatch, tmp_path):
+def test_mcp_extract_image_pages_returns_envelope_on_success(text_pdf, monkeypatch, tmp_path):
     from es import mcp_server
     monkeypatch.setattr(mcp_server, "_doc_roots", lambda: [text_pdf.parent])
     monkeypatch.setattr(mcp_server, "_doc_cache_root", lambda: tmp_path)
-    out = mcp_server.es_doc_render(str(text_pdf), pages="1")
+    out = mcp_server.es_doc_extract(str(text_pdf), image_pages="1")
     assert out["ok"] is True
-    assert len(out["data"]["images"]) == 1
+    assert len(out["data"]["page_images"]) == 1
 
 
-def test_mcp_render_returns_envelope_on_bad_path(monkeypatch, tmp_path):
+def test_mcp_extract_image_pages_returns_envelope_on_bad_path(monkeypatch, tmp_path):
     from es import mcp_server
     monkeypatch.setattr(mcp_server, "_doc_roots", lambda: [tmp_path])
     monkeypatch.setattr(mcp_server, "_doc_cache_root", lambda: tmp_path)
-    out = mcp_server.es_doc_render("/etc/passwd")
+    out = mcp_server.es_doc_extract("/etc/passwd", image_pages="1")
     assert out["ok"] is False
     assert out["error"]["code"] in ("doc_not_found", "doc_forbidden")
 
@@ -708,17 +721,20 @@ def test_corrupt_xlsx_maps_to_doc_unreadable(tmp_path):
         docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
 
 
-def test_render_rejects_a_non_pdf_with_a_clear_reason(csv_file, tmp_path):
+def test_extract_image_pages_rejects_a_non_pdf_with_a_clear_reason(csv_file, tmp_path):
     from es.capabilities import docs
     with pytest.raises(docs.UnsupportedDocument) as e:
-        docs.render(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
+        docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path,
+                     image_pages="1")
     assert "pdf" in str(e.value).lower()
+    assert "image_pages" in str(e.value)
 
 
 def test_every_format_returns_the_stable_shape(
         csv_file, json_file, txt_file, ics_file, docx_file, xlsx_file, text_pdf, tmp_path):
     from es.capabilities import docs
-    expected = {"doc_id", "kind", "page_count", "preview", "complete", "next"}
+    expected = {"doc_id", "kind", "page_count", "preview", "complete",
+                "page_images", "next"}
     for f in (csv_file, json_file, txt_file, ics_file, docx_file, xlsx_file, text_pdf):
         out = docs.extract(str(f), roots=[f.parent], cache_root=tmp_path)
         assert set(out) == expected, f.name
@@ -1043,7 +1059,8 @@ def test_extract_same_extension_repeat_is_still_a_cache_hit(csv_file, tmp_path, 
 
 def test_extract_returns_a_receipt_not_the_document(text_pdf, tmp_path):
     out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
-    assert set(out) == {"doc_id", "kind", "page_count", "preview", "complete", "next"}
+    assert set(out) == {"doc_id", "kind", "page_count", "preview", "complete",
+                        "page_images", "next"}
     assert "markdown" not in out and "truncated" not in out and "images" not in out
 
 

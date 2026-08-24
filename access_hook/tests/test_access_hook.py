@@ -108,6 +108,6 @@ def test_group_blocks_es_doc_tools():
     # is blocked in groups (DM-only). The allowlist already denies these — this
     # guards against a future edit to _GROUP_ALLOWED_PREFIXES quietly exposing
     # document reading, which can reach any file in the cache or the vault.
-    for tool in ("es_doc_extract", "es_doc_render"):
+    for tool in ("es_doc_extract",):
         r = run_policy(tool, "agent:main:telegram:group:-100")
         assert r is not None and "block" in str(r), tool

@@ -124,7 +124,8 @@ def test_generate_agents_md_documents_guidance(tmp_path):
         body = (tmp_path / "AGENTS.md").read_text()
         # The tools are named, and the agent is told where the path comes from.
         assert "es_doc_extract" in body
-        assert "es_doc_render" in body
+        assert "image_pages" in body
+        assert "es_doc_render" not in body
         assert "It is saved at:" in body
         assert "vision_analyze" in body
         # The crux: an explicit override of Hermes's injected attachment note,

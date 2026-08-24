@@ -452,7 +452,7 @@ def _doc_roots():
 
 @mcp.tool()
 @mcp_envelope
-def es_doc_extract(source: str) -> dict:
+def es_doc_extract(source: str, image_pages: Optional[str] = None) -> dict:
     """Convert a document — .pdf, .docx, .xlsx, .txt, .md, .csv, .json, or
     .ics — and return a HANDLE plus a short preview, not the document itself.
     source is the local path of a file the user uploaded (an absolute path)
@@ -462,36 +462,34 @@ def es_doc_extract(source: str) -> dict:
     once and then page through the result with es_read's own `section`
     (e.g. "page-37"), not by narrowing what gets extracted.
 
-    Returns {doc_id, kind, page_count, preview, complete, next}. `preview` is
-    only the first ~800 characters — enough to tell what you're holding, not
-    to read it. `complete: true` means preview IS the whole document and
-    nothing else need be called; otherwise call `next` (es_read with the
-    "doc:<doc_id>" handle) to read the rest, paged by heading. PDF pages that
-    are images rather than text are still converted to inline ![page N](path)
-    links in the full document — read those with vision_analyze once you
-    reach them via es_read."""
-    return docs_cap.extract(source, _doc_roots(), _doc_cache_root())
+    image_pages is a FALLBACK, not a normal step — skip it on a first call.
+    Every embedded image and chart a PDF contains is already extracted and
+    linked inline in the text you get back, so there is nothing left for it
+    to reveal about a page's IMAGES. It exists for the opposite problem: the
+    document's TEXT itself came back unreadable in a way rereading it won't
+    fix — columns that got interleaved into nonsense, a table or form whose
+    layout the extractor flattened, a page you can tell is broken just by
+    looking at what came back. In that case, name the page(s) as they
+    actually printed and look at them directly. PDF only, e.g. image_pages=
+    "7" or "1-5" or "3,9" — there is no "render the whole document" default;
+    name only the page(s) whose text you distrust. This does not create a
+    second document: doc_id is unchanged, and calling it again on the same
+    source (with or without image_pages) is a conversion cache hit that at
+    most does the extra rendering work.
 
-
-@mcp.tool()
-@mcp_envelope
-def es_doc_render(source: str, pages: Optional[str] = None) -> dict:
-    """Render PDF pages to PNG images and return their paths, for pages whose
-    meaning is visual (a chart, a map, a form) and therefore survives text
-    extraction as useless prose. PDF only — for any other format (.docx,
-    .xlsx, .txt, .md, .csv, .json, .ics) use es_doc_extract instead, the same
-    tool that already handles those. Read the returned paths with
-    vision_analyze. Use es_doc_extract first — this is for when its text
-    came back unhelpful.
-
-    source is the local path of an uploaded file (an absolute path) or a file
-    in the vault, given as "$vault/..." or a vault-relative path (e.g.
-    "Topics/Manual.pdf", same convention as es_read). pages narrows to a
-    range/list ("1-5", "1-2,7"); omit it to render the first 10 pages, or all
-    of them if the document is shorter. An EXPLICIT pages range that runs past
-    the document's end is an error (it likely names the wrong page) — omit
-    pages instead if you just want "as much as there is"."""
-    return docs_cap.render(source, _doc_roots(), _doc_cache_root(), pages=pages)
+    Returns {doc_id, kind, page_count, preview, complete, page_images, next}.
+    `preview` is only the first ~800 characters — enough to tell what you're
+    holding, not to read it. `complete: true` means preview IS the whole
+    document and nothing else need be called for the text. `page_images` is
+    the list of rendered PNG paths — always present, empty when image_pages
+    was not given. PDF pages that are images rather than text are still
+    converted to inline ![page N](path) links in the full document — read
+    those with vision_analyze once you reach them via es_read. `next` names
+    the next call: when image_pages was given, it points at vision_analyze
+    on the paths in `page_images`; otherwise it points at es_read (the
+    "doc:<doc_id>" handle) to read the rest, paged by heading."""
+    return docs_cap.extract(source, _doc_roots(), _doc_cache_root(),
+                             image_pages=image_pages)
 
 
 # es_read's own whole-vs-outline threshold — for a DOCUMENT (kind == "doc":

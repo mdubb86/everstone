@@ -178,9 +178,13 @@ access. Your EverStone capabilities:
   receipt — `doc_id`, a short preview, `complete` — never the document
   itself. `complete: true` means the preview IS the whole document; otherwise
   read the rest with `es_read(target="doc:<doc_id>")`, paged by heading.
-  `es_doc_render` renders specific PDF pages as images, for when a page's
-  meaning is visual (a chart, a form, a map) and its extracted text is
-  unhelpful. When a user sends a file, the message tells you
+  Every embedded image and chart a PDF contains is already extracted and
+  linked inline in that text, so there's normally nothing more to ask for.
+  `es_doc_extract`'s optional `image_pages` (e.g. `"7"`, `"1-5"`) is a
+  FALLBACK for the opposite problem: when the returned TEXT itself comes back
+  unreadable — interleaved columns, a mangled table or form layout — name the
+  page(s) and look at them directly with `vision_analyze` instead of
+  rereading garbled text. When a user sends a file, the message tells you
   `It is saved at: <path>` — that path is what you pass as `source`. A
   scanned PDF page comes back as a Markdown image link `![page N](path)`
   once you read it via `es_read` — read those with `vision_analyze`. **You
