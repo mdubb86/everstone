@@ -66,9 +66,25 @@ def artifact_dir(cache_root: Path, did: str) -> Path:
     return d
 
 
-def page_image_path(adir: Path, page_no: int) -> Path:
-    """Zero-padded so lexical order matches page order."""
-    return Path(adir) / f"p{page_no:03d}.png"
+def page_image_path(adir: Path, page_no: int, image_no: Optional[int] = None) -> Path:
+    """Zero-padded so lexical order matches page order (and, when given,
+    image order within a page).
+
+    `image_no` defaults to None for the WHOLE-PAGE raster es_doc_render
+    produces (`pNNN.png` — one file per requested page, unchanged from
+    before this parameter existed). Passing `image_no` names one of
+    POSSIBLY SEVERAL embedded images extracted from a single page
+    (`pNNN-iMM.png`) — doc_pdf.convert() now extracts every embedded raster
+    image on a page, not just one, so "one PNG per page" is no longer a safe
+    assumption for that path. The two forms can never collide: only the
+    `-iMM` suffix distinguishes an embedded-image crop from a whole-page
+    render, and a page's whole-page render (`pNNN.png`) is only ever written
+    by a SEPARATE call (es_doc_render), never alongside convert()'s own
+    per-image files for the same page.
+    """
+    if image_no is None:
+        return Path(adir) / f"p{page_no:03d}.png"
+    return Path(adir) / f"p{page_no:03d}-i{image_no:02d}.png"
 
 
 def touch(adir: Path) -> None:

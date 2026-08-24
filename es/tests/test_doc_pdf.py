@@ -13,11 +13,59 @@ def test_extracts_text_with_page_headings(text_pdf, tmp_path):
 
 
 def test_scanned_page_is_rendered_not_transcribed(scanned_pdf, tmp_path):
+    """The headline case: a page with NO text layer and one embedded image.
+    No blank-page detection is involved any more — the page's section must
+    contain the image link and NOTHING ELSE (no heading text, no note)."""
     md, images = doc_pdf.convert(scanned_pdf, tmp_path)
     assert len(images) == 1
-    assert images[0].name == "p001.png"
+    assert images[0].name == "p001-i01.png"
     assert images[0].is_file()
     assert f"]({images[0]})" in md, "page image must be linked inline"
+    section = md.split("## Page 1", 1)[1].strip()
+    assert section == f"![page 1 image 1]({images[0]})"
+
+
+def test_one_embedded_photo_produces_one_png_and_one_link(photo_page_pdf, tmp_path):
+    md, images = doc_pdf.convert(photo_page_pdf, tmp_path)
+    assert len(images) == 1
+    assert images[0].is_file()
+    assert f"]({images[0]})" in md
+
+
+def test_image_position_is_interleaved_with_surrounding_text(text_photo_text_pdf, tmp_path):
+    """The image link must sit at the image's position in the reading
+    order — interleaved with the text — not appended after everything."""
+    md, images = doc_pdf.convert(text_photo_text_pdf, tmp_path)
+    assert len(images) == 1
+    link = f"]({images[0]})"
+    intro_pos = md.index("INTRO TEXT ABOVE THE PHOTO")
+    link_pos = md.index(link)
+    outro_pos = md.index("OUTRO TEXT BELOW THE PHOTO")
+    assert intro_pos < link_pos < outro_pos
+
+
+def test_two_images_on_one_page_produce_two_files_and_two_links(two_images_pdf, tmp_path):
+    md, images = doc_pdf.convert(two_images_pdf, tmp_path)
+    assert len(images) == 2
+    assert len({str(p) for p in images}) == 2, "each image must be a distinct file"
+    for img in images:
+        assert img.is_file()
+        assert f"]({img})" in md
+
+
+def test_page_with_no_image_gets_no_link(text_pdf, tmp_path):
+    md, images = doc_pdf.convert(text_pdf, tmp_path)
+    assert images == []
+    assert "![" not in md
+
+
+def test_image_only_on_second_page_is_linked_only_in_that_section(
+        image_on_second_page_pdf, tmp_path):
+    md, images = doc_pdf.convert(image_on_second_page_pdf, tmp_path)
+    assert len(images) == 1
+    page1_section, page2_section = md.split("## Page 2", 1)
+    assert f"]({images[0]})" not in page1_section
+    assert f"]({images[0]})" in page2_section
 
 
 def test_page_selection_limits_output(text_pdf, tmp_path):
@@ -68,23 +116,14 @@ def test_page_of_only_a_table_is_not_misclassified_as_image(table_only_pdf, tmp_
     assert "Alice" in md
 
 
-def test_meaningful_image_on_text_page_gets_render_note(mixed_content_pdf, tmp_path):
-    md, images = doc_pdf.convert(mixed_content_pdf, tmp_path, pages=[1])
-    assert images == [], "a page with enough text must not be auto-rendered"
-    assert "es_doc_render" in md
-    assert 'pages="1"' in md
-
-
-def test_small_decorative_image_gets_no_render_note(mixed_content_pdf, tmp_path):
-    md, images = doc_pdf.convert(mixed_content_pdf, tmp_path, pages=[2])
-    assert images == []
-    assert "es_doc_render" not in md
-
-
-def test_auto_render_cap_is_enforced(tmp_path, monkeypatch):
-    """More image-only pages than the cap: rendering stops at the cap, and
-    every page beyond it gets a note pointing at es_doc_render instead of a
-    silently-dropped image."""
+def test_image_extraction_ceiling_is_enforced_and_reported_in_band(tmp_path, monkeypatch):
+    """More embedded images across the document than MAX_EXTRACTED_IMAGES:
+    extraction stops at the ceiling, and every image beyond it is reported
+    in-band (a note pointing at es_doc_render) rather than silently dropped.
+    This replaces the old per-PAGE auto-render cap (deleted along with the
+    blank-page auto-render branch it protected) with a per-IMAGE ceiling —
+    every page can now contribute more than one image, so the resource risk
+    that needs bounding is the image count, not the page count."""
     from PIL import Image
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
@@ -98,14 +137,52 @@ def test_auto_render_cap_is_enforced(tmp_path, monkeypatch):
         c.showPage()
     c.save()
 
-    monkeypatch.setattr(doc_pdf, "MAX_AUTO_RENDER_PAGES", 2)
+    monkeypatch.setattr(doc_pdf, "MAX_EXTRACTED_IMAGES", 2)
     md, images = doc_pdf.convert(src, tmp_path)
 
     assert len(images) == 2
     for idx in (3, 4):
         assert f'es_doc_render with pages="{idx}"' in md
+    assert "not extracted" in md
 
 
 def test_render_rejects_out_of_range_page(text_pdf, tmp_path):
     with pytest.raises(ValueError, match="1-2"):
         doc_pdf.render(text_pdf, tmp_path, pages=[99])
+
+
+def test_extracted_image_preserves_native_resolution_over_small_display(tmp_path):
+    """A source image stored at high native resolution but placed small on
+    the page must be extracted at (close to) its native resolution, not
+    downsampled to the small on-page display size — otherwise a legible
+    high-res scan placed as a thumbnail would come out blurry."""
+    from PIL import Image
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    native = tmp_path / "native.png"
+    Image.new("RGB", (1200, 800), (100, 150, 200)).save(native)
+    src = tmp_path / "small_display.pdf"
+    c = canvas.Canvas(str(src), pagesize=letter)
+    c.drawImage(str(native), 72, 400, width=150, height=100)  # displayed tiny
+    c.showPage()
+    c.save()
+
+    _, images = doc_pdf.convert(src, tmp_path)
+    assert len(images) == 1
+    from PIL import Image as PILImage
+    out = PILImage.open(images[0])
+    # Native is 1200x800; a naive full-page raster at RENDER_DPI (150/72)
+    # would only produce roughly 150*(150/72) =~ 312px wide for this
+    # placement — assert we're well above that, i.e. close to native.
+    assert out.size[0] >= 1000
+
+
+def test_extracted_image_pixel_color_matches_source(photo_page_pdf, tmp_path):
+    """Sanity check on the extraction path itself: the saved PNG must
+    actually contain the source image's pixels, not a blank/garbage crop."""
+    from PIL import Image as PILImage
+    _, images = doc_pdf.convert(photo_page_pdf, tmp_path)
+    out = PILImage.open(images[0]).convert("RGB")
+    center = out.getpixel((out.size[0] // 2, out.size[1] // 2))
+    assert center == (100, 150, 200)

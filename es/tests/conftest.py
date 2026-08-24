@@ -105,27 +105,88 @@ def table_only_pdf(tmp_path):
 
 
 @pytest.fixture
-def mixed_content_pdf(tmp_path):
-    """Two pages, each with meaningful text plus an image. Page 1's image is
-    large (a chart) — the agent must be told it's there. Page 2's image is a
-    small decorative mark (a logo) — it must NOT trigger a note on every page
-    of an otherwise-textual document."""
+def photo_page_pdf(tmp_path):
+    """One page: a short heading plus ONE embedded photo — the plain "a page
+    has an image" case, distinct from scanned_pdf (which has no text layer
+    at all)."""
     from PIL import Image
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
 
-    big_png = tmp_path / "big.png"
-    Image.new("RGB", (300, 200), (100, 150, 200)).save(big_png)
-    small_png = tmp_path / "small.png"
-    Image.new("RGB", (30, 30), (10, 10, 10)).save(small_png)
+    photo = tmp_path / "photo.png"
+    Image.new("RGB", (300, 200), (100, 150, 200)).save(photo)
 
-    p = tmp_path / "mixed.pdf"
+    p = tmp_path / "photo_page.pdf"
     c = canvas.Canvas(str(p), pagesize=letter)
-    c.drawString(72, 740, "Attendance chart for the fall season follows below.")
-    c.drawImage(str(big_png), 72, 500, width=300, height=200)
+    c.drawString(72, 740, "Team photo from the fall season banquet follows below.")
+    c.drawImage(str(photo), 72, 500, width=300, height=200)
     c.showPage()
-    c.drawString(72, 740, "Report footer text with a small logo mark nearby.")
-    c.drawImage(str(small_png), 72, 700, width=30, height=30)
+    c.save()
+    return p
+
+
+@pytest.fixture
+def text_photo_text_pdf(tmp_path):
+    """One page with a photo sandwiched between two distinguishable blocks
+    of text — used to assert the image's Markdown link lands at its
+    POSITION in the reading order, not appended after all the text."""
+    from PIL import Image
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    photo = tmp_path / "photo.png"
+    Image.new("RGB", (300, 150), (100, 150, 200)).save(photo)
+
+    p = tmp_path / "text_photo_text.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    c.drawString(72, 740, "INTRO TEXT ABOVE THE PHOTO")
+    c.drawImage(str(photo), 72, 500, width=300, height=150)
+    c.drawString(72, 400, "OUTRO TEXT BELOW THE PHOTO")
+    c.showPage()
+    c.save()
+    return p
+
+
+@pytest.fixture
+def two_images_pdf(tmp_path):
+    """One page with two distinct embedded photos at different vertical
+    positions — both must be extracted to separate files and linked."""
+    from PIL import Image
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    top_photo = tmp_path / "top.png"
+    Image.new("RGB", (200, 100), (200, 0, 0)).save(top_photo)
+    bottom_photo = tmp_path / "bottom.png"
+    Image.new("RGB", (200, 100), (0, 0, 200)).save(bottom_photo)
+
+    p = tmp_path / "two_images.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    c.drawString(72, 740, "Two photos on one page.")
+    c.drawImage(str(top_photo), 72, 600, width=200, height=100)
+    c.drawImage(str(bottom_photo), 72, 400, width=200, height=100)
+    c.showPage()
+    c.save()
+    return p
+
+
+@pytest.fixture
+def image_on_second_page_pdf(tmp_path):
+    """Two pages: page 1 is plain text with no image, page 2 has text plus
+    one embedded photo — the image link must land in page 2's section only."""
+    from PIL import Image
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    photo = tmp_path / "photo.png"
+    Image.new("RGB", (200, 150), (50, 200, 50)).save(photo)
+
+    p = tmp_path / "image_on_second_page.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    c.drawString(72, 720, "Page one has only text.")
+    c.showPage()
+    c.drawString(72, 720, "Page two has text and a photo.")
+    c.drawImage(str(photo), 72, 500, width=200, height=150)
     c.showPage()
     c.save()
     return p
