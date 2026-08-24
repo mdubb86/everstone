@@ -132,6 +132,26 @@ def test_a_single_column_sheet_is_not_mangled(tmp_path):
     assert lines == ["name", "alice", "bob"]
 
 
+def test_a_subtotal_row_inside_the_data_is_padded_not_treated_as_a_banner(tmp_path):
+    """A row where only one column is filled is a BANNER at the top of a
+    sheet and a SUBTOTAL in the middle of one — and the difference is not
+    cosmetic. Written as one field mid-data it collapses the whole file:
+    `id,note / 1 / 2,here` came back from DuckDB as a single VARCHAR column
+    named `id,note`, holding ('1',) and ('2,here',). Measured, not
+    hypothesized."""
+    ws = _sheet([
+        ["Quarterly Revenue Report"],
+        ["id", "name", "amount"],
+        [1, "alice", 10.5],
+        [None, None, 10.5],          # a subtotal: only the amount column
+        [2, "bob", 20.0],
+    ])
+    lines = _lines(ws, tmp_path)
+    assert lines[0] == "Quarterly Revenue Report", "the real banner still is one"
+    assert lines[3] == ",,10.5"
+    assert all(len(ln.split(",")) == 3 for ln in lines[1:])
+
+
 def test_dates_serialize_as_iso_and_none_as_empty(tmp_path):
     ws = _sheet([
         ["id", "when", "note"],
@@ -321,5 +341,166 @@ def test_rebuilding_over_an_existing_database_replaces_it(tmp_path):
     con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
     try:
         assert con.execute(f"SELECT count(*) FROM {t['table']}").fetchone()[0] == 1
+    finally:
+        con.close()
+
+
+# ----------------------------------------------------------------- cells
+
+
+def _cells(adir):
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        return con.execute(
+            f"SELECT sheet, row, col, ref, value FROM {doc_table.CELLS_TABLE} "
+            "ORDER BY sheet, row, col").fetchall()
+    finally:
+        con.close()
+
+
+def test_cells_recovers_the_real_header_when_detection_gets_it_wrong(tmp_path):
+    """The point of the whole table, so it is tested first.
+
+    Without an escape hatch a misdetected header is a silently wrong answer to
+    every later question. This file misdetects for real (verified against
+    DuckDB 1.5.5): a subtitle line with the same field count as the data wins
+    the header vote, and the ACTUAL header becomes row one of the data.
+    """
+    src = _csv_file(tmp_path, (
+        "Region,Q1,Q2\n"
+        "id,name,amount\n"
+        "1,alice,10\n"
+        "2,bob,20\n"
+    ))
+    adir = tmp_path / "art"
+    adir.mkdir()
+    t = doc_table.build(src, adir)["tables"][0]
+
+    # The misdetection itself — pinned so the test still means something if
+    # DuckDB's sniffer improves and this file stops fooling it.
+    assert [c["name"] for c in t["columns"]] == ["Region", "Q1", "Q2"]
+    assert t["header_row"] == 1
+
+    # ...and the recovery: the real header is right there, addressable by row.
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        row2 = con.execute(
+            f"SELECT value FROM {doc_table.CELLS_TABLE} "
+            "WHERE row = 2 ORDER BY col").fetchall()
+    finally:
+        con.close()
+    assert [v[0] for v in row2] == ["id", "name", "amount"]
+
+
+def test_every_non_empty_cell_is_addressable_by_sheet_row_and_column(tmp_path):
+    src = _xlsx(tmp_path, {
+        "Sales": [["id", "amount"], [1, 10.5]],
+        "Notes": [["only"]],
+    })
+    adir = tmp_path / "art"
+    adir.mkdir()
+    doc_table.build(src, adir)
+
+    assert _cells(adir) == [
+        ("Notes", 1, 1, "A1", "only"),
+        ("Sales", 1, 1, "A1", "id"),
+        ("Sales", 1, 2, "B1", "amount"),
+        ("Sales", 2, 1, "A2", "1"),
+        ("Sales", 2, 2, "B2", "10.5"),
+    ]
+
+
+def test_an_empty_cell_is_absent_rather_than_stored(tmp_path):
+    """Sparse on purpose: a 40,000-row sheet of 20 columns would otherwise
+    put 800,000 rows in this table, most of them recording nothing. An
+    absent (row, col) means empty — which is also what a spreadsheet means
+    by an empty cell."""
+    src = _xlsx(tmp_path, {"Sales": [["id", "note"], [1, None], [2, "here"]]})
+    adir = tmp_path / "art"
+    adir.mkdir()
+    doc_table.build(src, adir)
+
+    refs = [c[3] for c in _cells(adir)]
+    assert "B2" not in refs
+    assert refs == ["A1", "B1", "A2", "A3", "B3"]
+
+
+@pytest.mark.parametrize("col,ref", [
+    (1, "A"), (26, "Z"), (27, "AA"), (28, "AB"), (52, "AZ"),
+    (53, "BA"), (702, "ZZ"), (703, "AAA"),
+])
+def test_a1_notation_matches_what_a_spreadsheet_shows(col, ref):
+    assert doc_table.a1_ref(col, 7) == f"{ref}7"
+
+
+def test_cell_values_are_raw_text_not_typed(tmp_path):
+    """`cells` is the check ON type inference, so it must not be subject to
+    it: everything is VARCHAR, exactly the text the typed table was built
+    from. A number that lost precision, a date read as a string, a column
+    that came out entirely NULL — all of them are diagnosable only if this
+    table shows what was actually there."""
+    src = _csv_file(tmp_path, "id,when\n007,2026-01-02\n")
+    adir = tmp_path / "art"
+    adir.mkdir()
+    doc_table.build(src, adir)
+
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        types = [r[1] for r in con.execute(
+            f"DESCRIBE {doc_table.CELLS_TABLE}").fetchall()]
+        assert types[-1] == "VARCHAR"
+        # The typed table read "007" as the number 7; cells kept the zeros.
+        assert con.execute(
+            f"SELECT value FROM {doc_table.CELLS_TABLE} "
+            "WHERE ref = 'A2'").fetchone()[0] == "007"
+    finally:
+        con.close()
+
+
+def test_cell_rows_line_up_with_the_reported_header_row(tmp_path):
+    """The cross-check has to actually work: `header_row` is only useful if
+    looking that row up in `cells` shows the header."""
+    src = _csv_file(tmp_path, (
+        "Quarterly Revenue Report\n"
+        "\n"
+        "id,name\n"
+        "1,alice\n"
+    ))
+    adir = tmp_path / "art"
+    adir.mkdir()
+    t = doc_table.build(src, adir)["tables"][0]
+
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        header = con.execute(
+            f"SELECT value FROM {doc_table.CELLS_TABLE} WHERE row = ? "
+            "ORDER BY col", [t["header_row"]]).fetchall()
+    finally:
+        con.close()
+    assert [v[0] for v in header] == ["id", "name"]
+
+
+def test_a_sheet_with_a_subtotal_row_still_builds_a_real_table(tmp_path):
+    """The serializer test above pins the field count; this pins what DuckDB
+    then does with it. Without the preamble guard the whole sheet came back
+    as ONE VARCHAR column, and every later query against it would have been
+    confidently wrong."""
+    src = _xlsx(tmp_path, {"Sales": [
+        ["Quarterly Revenue Report"],
+        ["id", "name", "amount"],
+        [1, "alice", 10.5],
+        [None, None, 10.5],
+        [2, "bob", 20.0],
+    ]})
+    adir = tmp_path / "art"
+    adir.mkdir()
+    t = doc_table.build(src, adir)["tables"][0]
+
+    assert [c["name"] for c in t["columns"]] == ["id", "name", "amount"]
+    assert t["rows"] == 3
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        assert con.execute(
+            f"SELECT sum(amount) FROM {t['table']}").fetchone()[0] == 41.0
     finally:
         con.close()

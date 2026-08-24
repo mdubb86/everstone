@@ -21,14 +21,22 @@ machinery, tested once.
 sniffer identifies a preamble purely by COLUMN-COUNT CONTRAST: a line with
 fewer fields than the block beneath it is not data. So:
 
-    blank row                        -> a blank line
-    exactly one non-empty cell       -> ONE field
-    anything else                    -> PADDED to the full sheet width
+    blank row                                     -> a blank line
+    one non-empty cell, BEFORE the first data row -> ONE field (a banner)
+    anything else                                 -> PADDED to full width
 
 An earlier version trimmed trailing empty cells from every row. That made a
 data row whose last column happened to be empty 4 fields wide where its
 neighbours were 5 — and DuckDB then read the entire file as a SINGLE VARCHAR
 column. Nothing raised, nothing warned; the data was simply wrong.
+
+The "before the first data row" qualifier is the same failure, found the same
+way. Written without it, a SUBTOTAL row — one where only the amount column is
+filled, which is ordinary in a real spreadsheet — collapsed to one field in
+the middle of the data, and `id,note / 1 / 2,here` came back as a single
+column named `id,note` holding `('1',)` and `('2,here',)`. A banner is a
+top-of-sheet thing; once a full-width row has been written the block has
+started, and a narrow row inside it is data with empty cells, not a title.
 """
 import csv
 import datetime
@@ -115,6 +123,10 @@ def sheet_to_csv(ws, path: Path) -> int:
     width = _sheet_width(ws)
     written = 0
     pending_blanks = 0
+    # Flipped by the first full-width row. After that a one-cell row is a
+    # subtotal or a sparse data row, never a banner — see the module
+    # docstring for the file-collapsing bug that distinction prevents.
+    in_preamble = True
     with open(path, "w", newline="", encoding="utf-8") as fh:
         # "\n" rather than the dialect default "\r\n" so a blank row is one
         # byte and every line ends the same way, whichever branch wrote it.
@@ -131,10 +143,11 @@ def sheet_to_csv(ws, path: Path) -> int:
                 writer.writerow([])
                 written += 1
             pending_blanks = 0
-            if len(non_empty) == 1 and width > 1:
+            if in_preamble and len(non_empty) == 1 and width > 1:
                 writer.writerow([non_empty[0]])
             else:
                 writer.writerow(cells + [""] * (width - len(cells)))
+                in_preamble = False
             written += 1
     return written
 
@@ -282,6 +295,7 @@ def build(source: Path, adir: Path) -> dict:
             reserved = _reserved_keywords(con)
             used = set(_RESERVED_TABLE_NAMES)
             tables = []
+            sheets_meta = []
             for name, csv_path in sheets:
                 table = _slug(name, used, reserved)
                 try:
@@ -298,6 +312,9 @@ def build(source: Path, adir: Path) -> dict:
                 tables.append({"sheet": name, "table": table, "rows": rows,
                                "header_row": meta["header_row"],
                                "columns": columns})
+                sheets_meta.append({"sheet": name, "csv": csv_path,
+                                    "delimiter": meta["delimiter"]})
+            _write_cells(con, sheets_meta, Path(tmp))
             _write_meta(con, tables)
             return {"tables": tables}
         finally:
@@ -314,3 +331,60 @@ def _write_meta(con, tables: List[dict]) -> None:
             f'INSERT INTO "{META_TABLE}" VALUES (?, ?, ?, ?, ?)',
             [t["sheet"], t["table"], t["header_row"], t["rows"],
              len(t["columns"])])
+
+
+def a1_ref(col: int, row: int) -> str:
+    """A cell's spreadsheet address — 1-based column and row to "B7"/"AA12".
+
+    The point is that the agent and the USER can talk about the same cell. A
+    person looking at the spreadsheet sees `AA12` in the corner of the window,
+    not `(row=12, col=27)`; a tool that reports only the latter forces a
+    translation neither side should have to do by hand. Bijective base-26, so
+    26 is Z and 27 is AA — there is no "zero" letter.
+    """
+    letters = ""
+    while col > 0:
+        col, rem = divmod(col - 1, 26)
+        letters = chr(ord("A") + rem) + letters
+    return f"{letters}{row}"
+
+
+def _write_cells(con, sheets_meta: List[dict], workdir: Path) -> None:
+    """Build the `cells` table by re-reading the very CSVs DuckDB was fed.
+
+    Reading OUR serialization back (rather than the source a second time)
+    is what makes this a real cross-check: `cells` and the typed tables are
+    then two views of identical bytes, so a disagreement between them can
+    only come from type inference or header detection — the two guesses this
+    table exists to expose. It also keeps one code path for both formats and
+    guarantees the row numbers line up with `tables_meta.header_row`.
+
+    Sparse: only non-empty cells are stored. A 40,000-row sheet of 20 columns
+    would otherwise contribute 800,000 rows recording mostly nothing, and an
+    absent (row, col) already means exactly what an empty spreadsheet cell
+    means.
+    """
+    con.execute(
+        f'CREATE TABLE "{CELLS_TABLE}" ('
+        ' sheet VARCHAR, row BIGINT, col BIGINT, ref VARCHAR, value VARCHAR)')
+    dump = workdir / "_cells.csv"
+    with open(dump, "w", newline="", encoding="utf-8") as out:
+        writer = csv.writer(out, lineterminator="\n")
+        for meta in sheets_meta:
+            with open(meta["csv"], newline="", encoding="utf-8",
+                      errors="replace") as fh:
+                reader = csv.reader(fh, delimiter=meta["delimiter"])
+                # enumerate over LOGICAL rows: a quoted field containing a
+                # newline spans several physical lines but is one row to both
+                # csv.reader and DuckDB, so the numbering stays in agreement.
+                for r, row in enumerate(reader, 1):
+                    for c, value in enumerate(row, 1):
+                        if value != "":
+                            writer.writerow(
+                                [meta["sheet"], r, c, a1_ref(c, r), value])
+    if dump.stat().st_size:
+        con.execute(
+            f'INSERT INTO "{CELLS_TABLE}" SELECT * FROM read_csv(?, '
+            "header=false, columns={'sheet': 'VARCHAR', 'row': 'BIGINT', "
+            "'col': 'BIGINT', 'ref': 'VARCHAR', 'value': 'VARCHAR'})",
+            [str(dump)])
