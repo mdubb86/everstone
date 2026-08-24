@@ -97,6 +97,136 @@ test_image_extraction_ceiling_is_enforced_and_reported_in_band.
 Precondition: `adir` must already exist for both `convert()` and `render()`
 — callers create it via `doc_cache.artifact_dir`; this module doesn't own
 that.
+
+VECTOR DRAWINGS (charts, diagrams — paths, not raster images):
+A chart drawn with lines/curves/filled shapes (a bar chart, a plotted line,
+a diagram) is neither text nor an embedded raster image — pdfplumber's text
+extraction gives only axis labels, and Task 1's embedded-image extraction
+(above) finds nothing, because there is no XObject to find. Left alone, a
+page like that produces markdown reading "Revenue 0 50 100 Q1 Q2 Q3" with no
+picture — the chart is invisible. `_page_drawing_entries` closes this by
+rasterizing clusters of `page.lines + page.rects + page.curves`.
+
+Subtraction first: a bordered table's own grid lines are ALSO
+lines/rects — measured directly (see the fixtures for
+test_bordered_table_produces_no_drawing_image / table_and_chart_pdf), every
+one of a bordered table's border lines falls inside `find_tables()`'s bbox.
+Without subtracting those out before clustering, every table would be
+doubled: once correctly as a Markdown table, and again as a spurious
+"drawing" of its own borders. The subtraction is a simple bbox-containment
+test (a vector object counts as "the table's" if its bbox lies inside a
+detected table's bbox, within a small float tolerance) — not a judgment
+about the object's content, purely where it sits.
+
+Clustering: proximity/gap-based, not "everything remaining on the page is
+one drawing." The simpler whole-page rule is wrong for a page with two
+unrelated charts (verified with two_charts_side_by_side_pdf) — it would
+crop one image spanning both charts AND the blank gap between them, rather
+than two separate, tightly-cropped drawings. The rule implemented
+(`_cluster_boxes`) is connected-components over the remaining objects'
+bboxes: two objects join the same cluster if the gap between their bboxes
+is <= DRAWING_CLUSTER_GAP in BOTH axes (an overlap counts as a negative gap,
+so overlapping/touching objects always merge); clusters are transitive
+(A-B-C merges into one group even if A and C aren't directly close), which
+is what lets a chart's separate bars all merge with its axis lines even
+though no two of them share an edge. DRAWING_CLUSTER_GAP = 36pt (0.5in):
+comfortably larger than the spacing BETWEEN a chart's own elements (bars,
+tick marks — tens of points at most in every fixture measured) and
+comfortably smaller than the whitespace gap real layouts put BETWEEN
+unrelated elements (a column gutter, or the ~100-250pt measured between two
+side-by-side charts in the test fixture).
+
+The size floor (MIN_DRAWING_DIMENSION = 20pt, ~0.28in/7mm) rejects a
+CLUSTER (not a single raw object — an axis line is legitimately
+zero-height, but the chart it belongs to isn't) whose bbox is smaller than
+20pt in EITHER dimension. This is a geometric claim, not an importance
+judgment: measured directly, a hairline rule/underline/separator's bbox has
+one dimension at or near 0 (a horizontal line's height, a vertical line's
+width — see lone_rule_pdf), while every real chart/diagram fixture measured
+is 150-300pt in both dimensions. 20pt sits well above realistic stroke
+widths (0-3pt) and well below the smallest real drawing observed, with
+headroom in both directions.
+
+The floor applies to the CLUSTER's bbox, never to individual objects within
+it, and this was checked against real documents, not assumed: on
+example_paper.pdf (tests/fixtures/pdf/, a real academic paper), the actual
+bars of a real 42-bar chart are only 7.7pt WIDE each (measured directly —
+more categories on a similarly-sized chart than icml_numpapers.pdf's
+16.2pt-wide bars). A rule requiring each individual object to itself clear
+the floor in both dimensions would reject that chart outright — a false
+NEGATIVE on real data, worse than the false positives below. Only the
+cluster's union bbox is measured against the floor.
+
+10pt (not 20pt) was also tried, prompted by a first pass at real per-object
+measurements suggesting real prose pages' vector objects are all "thin"
+(<10pt in one dimension). Checked directly against colm2025_conference.pdf
+and example_paper.pdf: two clusters that are NOT chart content — a
+booktabs-style table's header-rule pair ("PART / DESCRIPTION", 205.9pt wide
+x 16.1pt tall) and an algorithm-box title bar ("Algorithm 1 Bubble Sort",
+234pt wide x 13.5pt tall) — both clear a 10pt floor and both were confirmed
+by rendering the crop (not guessed) to be pure decorative rule pairs, not
+drawings. 20pt rejects both (13.5 and 16.1 are under 20) while still
+passing every real chart measured. This is why 20pt, not 10pt.
+
+KNOWN FALSE POSITIVE, not fixed: a filled decorative shape (or hollow
+frame) big enough in both dimensions to clear the floor is not
+geometrically distinguishable from real chart content — there is no size-
+or shape-only rule that tells them apart, and adding a content-aware one
+(e.g. "does the interior have any non-blank pixels") would be exactly the
+kind of importance/content judgment this whole module avoids, and would
+risk rejecting real charts that are mostly white space around thin lines.
+Measured on realistic_report_page_pdf (header rule + footer rule + bordered
+table + one shading band): the rules and table borders are fully
+suppressed (subtraction + floor), and the shading band alone survives as
+one false-positive drawing — see test_realistic_page_false_positive_count.
+The same shape (an isolated, floor-clearing cluster with no chart content)
+occurs on a REAL document too: colm2025_conference.pdf page 3 has a hollow
+rectangle (4 hairline segments, no fill) that survives as one drawing.
+Rendered and inspected directly (not assumed): it is the LaTeX template's
+literal "Figure 1: Sample figure caption" placeholder — an intentionally
+blank, captioned figure region. That makes it arguably not even a false
+positive: a blank box is what that part of the page actually looks like.
+See test_real_paper_with_no_charts_produces_only_the_known_figure_placeholder,
+which pins this at exactly one drawing (not zero) and documents why.
+
+COST: measured, not assumed. `_cluster_boxes` is O(n^2) in the number of
+NON-table vector objects remaining on one page (pairwise proximity checks,
+then union-find) — isolated directly: 1000 scattered non-merging boxes
+cluster in ~160ms, 2000 in ~650ms. That sounds alarming until placed next
+to what real pages actually leave behind: a 50-page document of dense
+bordered tables (41 lines/page, ALL subtracted, nothing left to cluster)
+costs the same with drawing detection on or off (1.70s vs 1.74s for 50
+pages — the difference is noise, not signal) because `page.lines`/
+`page.rects`/`page.curves` are pdfplumber-cached properties already
+computed internally by `find_tables()` for the SAME page, so this module
+pays ~nothing extra to read them. 50 synthetic pages each with a small real
+chart (a handful of objects per page) convert in 0.43s total, against a
+0.07s no-vector-content baseline for the same page count — a per-page cost
+similar in order of magnitude to Task 1's per-image cost. On real documents
+(tests/fixtures/pdf/): colm2025_conference.pdf (5pp, 18 vector objects
+total) converts in ~0.21s, example_paper.pdf (7pp, 133 vector objects, one
+page with 61 after table subtraction) in ~0.42s, icml_numpapers.pdf (1pp,
+113 objects, a real chart) in ~0.04s. The O(n^2) term only matters for a
+PATHOLOGICAL page — hundreds to thousands of small, mutually distant,
+non-table vector objects on one page — which no fixture measured here
+produces; this module accepts that as a known, undocumented-further
+scaling edge rather than adding a second, harder-to-justify ceiling on
+object count (MAX_EXTRACTED_DRAWINGS bounds OUTPUT, not this computation).
+
+MAX_EXTRACTED_DRAWINGS bounds drawings document-wide, SEPARATELY from
+MAX_EXTRACTED_IMAGES — the two are different resources produced by
+different code paths (a pdfium per-object bitmap fetch vs. a pdfplumber
+page-region crop-to-image) with different per-item cost, and a document
+heavy in one shouldn't starve budget from the other (a photo-heavy scanned
+report and a chart-heavy financial report are different documents; sharing
+one counter would make an unrelated resource's abundance the reason a later
+chart gets silently downgraded to a note). 100 is smaller than
+MAX_EXTRACTED_IMAGES's 500 because real documents legitimately contain
+dozens to hundreds of embedded photos (one per scanned page) but rarely
+more than a handful of true vector charts per document — 100 is generous
+headroom above any real report this module has been measured against, while
+still a finite, real bound. Hitting it is reported IN-BAND (mirroring
+MAX_EXTRACTED_IMAGES exactly) — never a silent drop.
 """
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -122,6 +252,15 @@ MAX_AUTO_RENDER_PAGES = 20
 # docstring for the reasoning behind each number.
 MAX_EXTRACTED_IMAGES = 500
 MAX_IMAGE_DIMENSION = 4000
+
+# Vector-drawing (chart/diagram) extraction — see the module docstring's
+# "VECTOR DRAWINGS" section for the reasoning behind each of these.
+MIN_DRAWING_DIMENSION = 20  # points; a cluster smaller than this in either
+                            # dimension is a rule/underline, not a drawing.
+DRAWING_CLUSTER_GAP = 36    # points; objects this close or closer merge
+                            # into one drawing.
+MAX_EXTRACTED_DRAWINGS = 100  # document-wide ceiling, separate from
+                               # MAX_EXTRACTED_IMAGES — see the docstring.
 
 
 def page_count(source: Path) -> int:
@@ -247,6 +386,152 @@ def _page_image_entries(pf_page, page_height: float, adir: Path, page_no: int,
     return entries, saved, extracted
 
 
+def _bbox_of(obj) -> Tuple[float, float, float, float]:
+    return (obj["x0"], obj["top"], obj["x1"], obj["bottom"])
+
+
+def _inside_any_table(bbox: Tuple[float, float, float, float],
+                       table_bboxes: List[Tuple[float, float, float, float]],
+                       tol: float = 1.0) -> bool:
+    """True if `bbox` lies inside (within float tolerance `tol`) any of
+    `table_bboxes` — the subtraction step: a bordered table's own grid
+    lines/rects must not also be counted as drawing material. See the
+    module docstring's "VECTOR DRAWINGS" section for the measurement behind
+    this (every one of a bordered table's border lines falls inside its
+    find_tables() bbox)."""
+    x0, top, x1, bottom = bbox
+    for tx0, ttop, tx1, tbottom in table_bboxes:
+        if (x0 >= tx0 - tol and x1 <= tx1 + tol and
+                top >= ttop - tol and bottom <= tbottom + tol):
+            return True
+    return False
+
+
+def _non_table_drawing_boxes(page, tables) -> List[Tuple[float, float, float, float]]:
+    """Every line/rect/curve bbox on the page that is NOT part of a detected
+    table — the raw candidate material for drawing clustering."""
+    table_bboxes = [t.bbox for t in tables]
+    boxes: List[Tuple[float, float, float, float]] = []
+    for obj in list(page.lines) + list(page.rects) + list(page.curves):
+        bbox = _bbox_of(obj)
+        if not _inside_any_table(bbox, table_bboxes):
+            boxes.append(bbox)
+    return boxes
+
+
+def _boxes_close(a: Tuple[float, float, float, float],
+                  b: Tuple[float, float, float, float], gap: float) -> bool:
+    """True if two bboxes overlap or are within `gap` points of each other
+    in BOTH axes. An overlapping/touching pair has a negative or zero gap in
+    that axis, which always satisfies "<= gap" — so this only actually
+    separates two objects when they are far apart in at least one
+    dimension, matching how real layouts separate unrelated elements
+    (mostly horizontally, for side-by-side charts; mostly vertically, for
+    stacked sections)."""
+    ax0, atop, ax1, abottom = a
+    bx0, btop, bx1, bbottom = b
+    h_gap = max(ax0, bx0) - min(ax1, bx1)
+    v_gap = max(atop, btop) - min(abottom, bbottom)
+    return h_gap <= gap and v_gap <= gap
+
+
+def _cluster_boxes(boxes: List[Tuple[float, float, float, float]],
+                    gap: float) -> List[Tuple[float, float, float, float]]:
+    """Connected-components clustering of bboxes by proximity — see the
+    module docstring's "VECTOR DRAWINGS" section for why proximity
+    clustering (not "everything on the page is one drawing") is the rule,
+    and why 36pt is the gap. Transitive: A close to B and B close to C
+    merges all three into one cluster even if A and C are not directly
+    close, which is what lets every bar/axis-line of one chart merge into a
+    single drawing without needing a smarter per-pair rule."""
+    n = len(boxes)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _boxes_close(boxes[i], boxes[j], gap):
+                union(i, j)
+
+    groups: dict = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+
+    clusters = []
+    for idxs in groups.values():
+        x0 = min(boxes[i][0] for i in idxs)
+        top = min(boxes[i][1] for i in idxs)
+        x1 = max(boxes[i][2] for i in idxs)
+        bottom = max(boxes[i][3] for i in idxs)
+        clusters.append((x0, top, x1, bottom))
+    return clusters
+
+
+def _page_drawing_entries(page, tables, adir: Path, page_no: int,
+                           budget_remaining: int) -> Tuple[List[Tuple[float, str, str]], List[Path], int]:
+    """Every vector-drawing cluster on one page, as (top, kind, content)
+    entries in pdfplumber's own top-down coordinate space (no y-flip needed
+    here — unlike _page_image_entries, everything in this function comes
+    from pdfplumber, not pdfium), plus the PNGs written and how many of this
+    page's drawings counted against the document-wide MAX_EXTRACTED_DRAWINGS
+    budget. Mirrors _page_image_entries's budget/reporting shape exactly —
+    see its docstring for the "consolidated note, never a silent drop" logic
+    this reuses.
+
+    Clusters are sorted into reading order (top, then left-to-right) before
+    numbering, so drawing_no and the interleaved entry order are both
+    deterministic regardless of the order pdfplumber returns lines/rects/
+    curves in.
+    """
+    boxes = _non_table_drawing_boxes(page, tables)
+    clusters = _cluster_boxes(boxes, DRAWING_CLUSTER_GAP)
+    clusters = [c for c in clusters
+                if (c[2] - c[0]) >= MIN_DRAWING_DIMENSION
+                and (c[3] - c[1]) >= MIN_DRAWING_DIMENSION]
+    clusters.sort(key=lambda c: (c[1], c[0]))
+
+    entries: List[Tuple[float, str, str]] = []
+    saved: List[Path] = []
+    extracted = 0
+    skipped = 0
+    first_skipped_top: Optional[float] = None
+    drawing_no = 0
+    for x0, top, x1, bottom in clusters:
+        drawing_no += 1
+        if extracted >= budget_remaining:
+            skipped += 1
+            if first_skipped_top is None:
+                first_skipped_top = top
+            continue
+        pad = 2.0
+        crop_bbox = (max(x0 - pad, 0.0), max(top - pad, 0.0),
+                     min(x1 + pad, page.width), min(bottom + pad, page.height))
+        image = page.crop(crop_bbox).to_image(resolution=RENDER_DPI)
+        out = doc_cache.page_drawing_path(adir, page_no, drawing_no)
+        image.original.save(out)
+        saved.append(out)
+        extracted += 1
+        entries.append((top, "drawing", f"![page {page_no} drawing {drawing_no}]({out})"))
+    if skipped:
+        entries.append((first_skipped_top, "note",
+            f"*(page {page_no} also contains {skipped} further vector "
+            f"drawing{'s' if skipped != 1 else ''} not extracted — the "
+            f"document-wide limit of {MAX_EXTRACTED_DRAWINGS} drawings was "
+            f"reached; use es_doc_render with pages=\"{page_no}\" to view "
+            "this page.)*"))
+    return entries, saved, extracted
+
+
 def _assemble_page(entries: List[Tuple[float, str, str]]) -> List[str]:
     """entries are (top, kind, content) from BOTH _text_and_table_entries
     and _page_image_entries, unsorted. Sorted here by vertical position,
@@ -294,6 +579,7 @@ def convert(source: Path, adir: Path,
     parts: List[str] = []
     images: List[Path] = []
     extracted_images = 0
+    extracted_drawings = 0
     with pdfplumber.open(source) as pdf, pdfium.PdfDocument(str(source)) as pdfium_doc:
         for idx, page in enumerate(pdf.pages, start=1):
             if pages is not None and idx not in pages:
@@ -313,6 +599,13 @@ def convert(source: Path, adir: Path,
             entries.extend(img_entries)
             images.extend(saved)
             extracted_images += count
+
+            draw_entries, draw_saved, draw_count = _page_drawing_entries(
+                page, tables, adir, idx,
+                MAX_EXTRACTED_DRAWINGS - extracted_drawings)
+            entries.extend(draw_entries)
+            images.extend(draw_saved)
+            extracted_drawings += draw_count
 
             parts.extend(_assemble_page(entries))
     return "\n\n".join(parts), images

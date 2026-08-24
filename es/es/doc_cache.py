@@ -87,6 +87,18 @@ def page_image_path(adir: Path, page_no: int, image_no: Optional[int] = None) ->
     return Path(adir) / f"p{page_no:03d}-i{image_no:02d}.png"
 
 
+def page_drawing_path(adir: Path, page_no: int, drawing_no: int) -> Path:
+    """A rasterized VECTOR drawing (a clustered group of lines/rects/curves —
+    a chart, diagram, or similar — cropped and rendered from a page, as
+    opposed to an embedded raster image lifted out whole). `-dMM`, distinct
+    from both `page_image_path`'s bare `pNNN.png` (whole-page render) and its
+    `-iMM` (embedded image) forms, so all three can coexist in the same
+    artifact directory for the same page without ever colliding: a page can
+    legitimately have an embedded photo AND a vector chart, and each needs
+    its own file."""
+    return Path(adir) / f"p{page_no:03d}-d{drawing_no:02d}.png"
+
+
 def touch(adir: Path) -> None:
     """Mark a document as used. Makes the directory mtime an ACCESS time, so
     the TTL means '24h since last use' rather than '24h since conversion' —

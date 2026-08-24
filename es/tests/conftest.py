@@ -1,5 +1,10 @@
 import socket, subprocess, sys, time
+from pathlib import Path
+
 import pytest, requests
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+PDF_FIXTURES_DIR = FIXTURES_DIR / "pdf"
 
 
 def _free_port():
@@ -207,6 +212,216 @@ def scanned_pdf(tmp_path):
     c.showPage()
     c.save()
     return p
+
+
+@pytest.fixture
+def vector_chart_pdf(tmp_path):
+    """One page: a bar chart drawn ENTIRELY in vector paths (two axis lines
+    plus three filled bars) — no embedded raster image at all. This is the
+    headline case Task 2 closes: a chart pdfplumber's text/table extraction
+    is blind to (no text, no embedded image) and Task 1's image extraction
+    is equally blind to (nothing in page.get_objects(FPDF_PAGEOBJ_IMAGE))."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    p = tmp_path / "vector_chart.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    c.drawString(72, 740, "Revenue")
+    c.line(100, 400, 100, 600)
+    c.line(100, 400, 400, 400)
+    c.rect(120, 400, 30, 80, fill=1)
+    c.rect(170, 400, 30, 150, fill=1)
+    c.rect(220, 400, 30, 60, fill=1)
+    c.drawString(120, 390, "Q1")
+    c.drawString(170, 390, "Q2")
+    c.drawString(220, 390, "Q3")
+    c.showPage()
+    c.save()
+    return p
+
+
+@pytest.fixture
+def lone_rule_pdf(tmp_path):
+    """One page: a single horizontal rule under a heading, and nothing else
+    vector — the size-floor regression guard. A rule line is a real, common
+    idiom (section separators, underlines) and must NOT be rasterized as if
+    it were a drawing."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    p = tmp_path / "lone_rule.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    c.drawString(72, 740, "Section header")
+    c.line(72, 730, 540, 730)
+    c.drawString(72, 700, "Body text below the rule.")
+    c.showPage()
+    c.save()
+    return p
+
+
+@pytest.fixture
+def table_and_chart_pdf(tmp_path):
+    """One page with BOTH a genuinely bordered table (find_tables() detects
+    it, and its border lines must be subtracted from drawing detection) AND
+    a separate vector bar chart lower on the page. Regression fixture for
+    the subtraction step: without it, the table's own border lines would be
+    clustered into a second, spurious drawing alongside the real chart."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+    from reportlab.platypus import Table, TableStyle
+
+    p = tmp_path / "table_and_chart.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    data = [["Name", "Position", "Number"], ["Alice", "Forward", "9"], ["Bob", "Goalie", "1"]]
+    t = Table(data, colWidths=[100, 100, 100])
+    t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 1, colors.black)]))
+    t.wrap(0, 0)
+    t.drawOn(c, 72, 650)
+    c.line(100, 300, 100, 500)
+    c.line(100, 300, 400, 300)
+    c.rect(120, 300, 30, 80, fill=1)
+    c.rect(170, 300, 30, 150, fill=1)
+    c.showPage()
+    c.save()
+    return p
+
+
+@pytest.fixture
+def two_charts_side_by_side_pdf(tmp_path):
+    """One page with TWO SEPARATE bar charts, well apart horizontally — the
+    evidence for the clustering rule: if everything remaining on a page were
+    treated as a single drawing, this page would wrongly produce ONE image
+    spanning (and mostly blank between) both charts instead of two."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    p = tmp_path / "two_charts.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    c.line(100, 400, 100, 600)
+    c.line(100, 400, 250, 400)
+    c.rect(110, 400, 20, 60, fill=1)
+    c.rect(140, 400, 20, 100, fill=1)
+    c.rect(170, 400, 20, 40, fill=1)
+    c.line(350, 400, 350, 600)
+    c.line(350, 400, 500, 400)
+    c.rect(360, 400, 20, 90, fill=1)
+    c.rect(390, 400, 20, 30, fill=1)
+    c.rect(420, 400, 20, 120, fill=1)
+    c.showPage()
+    c.save()
+    return p
+
+
+@pytest.fixture
+def chart_between_text_pdf(tmp_path):
+    """A vector chart sandwiched between two distinguishable blocks of text —
+    used to assert the drawing's Markdown link lands at its POSITION in the
+    reading order, not appended after all the text (same guarantee Task 1
+    gives embedded images; see test_image_position_is_interleaved_with_surrounding_text)."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    p = tmp_path / "chart_between_text.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    c.drawString(72, 740, "INTRO TEXT ABOVE THE CHART")
+    c.line(100, 500, 100, 650)
+    c.line(100, 500, 300, 500)
+    c.rect(120, 500, 30, 100, fill=1)
+    c.rect(170, 500, 30, 60, fill=1)
+    c.drawString(72, 400, "OUTRO TEXT BELOW THE CHART")
+    c.showPage()
+    c.save()
+    return p
+
+
+@pytest.fixture
+def photo_and_chart_pdf(tmp_path):
+    """One page with BOTH an embedded raster photo AND a separate vector
+    chart, at different vertical positions — both must be extracted, each
+    with its own distinct filename (`-iMM` for the photo, `-dMM` for the
+    chart)."""
+    from PIL import Image
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    photo = tmp_path / "photo.png"
+    Image.new("RGB", (200, 100), (100, 150, 200)).save(photo)
+
+    p = tmp_path / "photo_and_chart.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    c.drawImage(str(photo), 72, 620, width=200, height=100)
+    c.line(100, 350, 100, 550)
+    c.line(100, 350, 300, 350)
+    c.rect(120, 350, 30, 100, fill=1)
+    c.rect(170, 350, 30, 60, fill=1)
+    c.showPage()
+    c.save()
+    return p
+
+
+@pytest.fixture
+def realistic_report_page_pdf(tmp_path):
+    """A page built from common REAL, non-chart vector idioms — a header
+    rule, a footer rule, a genuinely bordered table, and a filled background
+    shading band — used to measure how much false-positive noise survives
+    table subtraction and the size floor. Deliberately has no page-spanning
+    border frame (see the task report's False Positives discussion for why
+    that case is a known, accepted limitation rather than one this fixture
+    manufactures to fail)."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+    from reportlab.platypus import Table, TableStyle
+
+    p = tmp_path / "realistic_report_page.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    c.drawString(72, 740, "Quarterly Report")
+    c.line(72, 725, 540, 725)  # header rule
+    data = [["Item", "Q1", "Q2"], ["Widgets", "100", "120"], ["Gadgets", "80", "95"]]
+    t = Table(data, colWidths=[150, 100, 100])
+    t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 1, colors.black)]))
+    t.wrap(0, 0)
+    t.drawOn(c, 72, 600)
+    c.setFillColorRGB(0.9, 0.9, 0.9)
+    c.rect(72, 460, 300, 40, fill=1, stroke=0)  # decorative shading band
+    c.setFillColorRGB(0, 0, 0)
+    c.drawString(80, 475, "Note: shaded band, decorative only")
+    c.line(72, 100, 540, 100)  # footer rule
+    c.drawString(72, 80, "Footer text")
+    c.showPage()
+    c.save()
+    return p
+
+
+@pytest.fixture
+def icml_numpapers_pdf():
+    """A real, small (2.8KB) academic-conference PDF whose one page IS a
+    vector bar chart (42 filled bars, drawn as page.rects, no embedded
+    image) — copied from hermes-agent's own research-paper-writing skill
+    templates (MIT-licensed, ships inside the same container this code
+    runs in). The strongest available positive case: a real document, not
+    a synthetic one."""
+    return PDF_FIXTURES_DIR / "icml_numpapers.pdf"
+
+
+@pytest.fixture
+def colm2025_conference_pdf():
+    """A real 5-page academic paper template (122KB, MIT-licensed, same
+    source as icml_numpapers_pdf) with NO embedded images and NO real
+    tables — used as a false-positive check on ordinary prose pages (rules,
+    underlines, header separators)."""
+    return PDF_FIXTURES_DIR / "colm2025_conference.pdf"
+
+
+@pytest.fixture
+def example_paper_pdf():
+    """A real 7-page academic paper template (193KB, MIT-licensed, same
+    source as icml_numpapers_pdf) containing a genuinely bordered table
+    (detected and subtracted) alongside a real bar chart on the same page —
+    used to confirm table subtraction holds on a real, not synthetic,
+    document."""
+    return PDF_FIXTURES_DIR / "example_paper.pdf"
 
 
 @pytest.fixture
