@@ -454,13 +454,25 @@ def _doc_roots():
 @mcp_envelope
 def es_doc_extract(source: str, image_pages: Optional[str] = None) -> dict:
     """Convert a document — .pdf, .docx, .xlsx, .txt, .md, .csv, .json, or
-    .ics — and return a HANDLE plus a short preview, not the document itself.
-    source is the local path of a file the user uploaded (an absolute path)
-    or a file in the vault, given as "$vault/..." or a vault-relative path
-    (e.g. "Topics/Manual.pdf", same convention as es_read). Always converts
-    (and caches) the whole document — to read only part of it, extract here
-    once and then page through the result with es_read's own `section`
-    (e.g. "page-37"), not by narrowing what gets extracted.
+    .ics — and return a HANDLE, never the document itself. source is the
+    local path of a file the user uploaded (an absolute path) or a file in
+    the vault, given as "$vault/..." or a vault-relative path (e.g.
+    "Topics/Manual.pdf", same convention as es_read). Always converts (and
+    caches) the whole document — to read only part of it, extract here once
+    and then page through the result, not by narrowing what gets extracted.
+
+    WHICH KIND OF THING YOU GET BACK depends on the format, and the receipt's
+    `kind` says which:
+
+    - A SPREADSHEET or CSV (.xlsx, .csv) becomes a QUERYABLE DATABASE, not
+      text. kind is "table" and the receipt carries `tables` — for each
+      sheet, the table name it became, its columns and types, its row count,
+      and which row the header was detected on. There is no preview and
+      nothing to read: ask it questions with es_doc_query and SQL. es_read
+      does not work on these handles and will tell you so.
+    - EVERYTHING ELSE becomes Markdown you page through with es_read (e.g.
+      section="page-37"), and the receipt carries a short `preview` plus the
+      keys described below.
 
     image_pages is a FALLBACK, not a normal step — skip it on a first call.
     Every embedded image and chart a PDF contains is already extracted and
@@ -477,7 +489,9 @@ def es_doc_extract(source: str, image_pages: Optional[str] = None) -> dict:
     source (with or without image_pages) is a conversion cache hit that at
     most does the extra rendering work.
 
-    Returns {doc_id, kind, page_count, preview, complete, page_images, next}.
+    For a table document, returns {doc_id, kind, tables, next} — and nothing
+    else, because a preview of a database means nothing. Otherwise returns
+    {doc_id, kind, page_count, preview, complete, page_images, next}.
     `preview` is only the first ~800 characters — enough to tell what you're
     holding, not to read it. `complete: true` means preview IS the whole
     document and nothing else need be called for the text. `page_images` is
@@ -490,6 +504,45 @@ def es_doc_extract(source: str, image_pages: Optional[str] = None) -> dict:
     "doc:<doc_id>" handle) to read the rest, paged by heading."""
     return docs_cap.extract(source, _doc_roots(), _doc_cache_root(),
                              image_pages=image_pages)
+
+
+@mcp.tool()
+@mcp_envelope
+def es_doc_query(target: str, sql: str) -> dict:
+    """Ask a question of a spreadsheet or CSV that es_doc_extract converted,
+    using SQL. target is the "doc:<id>" handle that call returned.
+
+    ANSWER THE QUESTION IN SQL — do not list rows and count them yourself.
+    "How many transactions over $500 in September" is one
+    SELECT count(*), sum(amount) ... WHERE, returning one row. A SELECT * is
+    almost always the wrong call: it moves the reading problem instead of
+    solving it, and only the first 200 rows come back anyway (`truncated`
+    says so when there were more).
+
+    The table names, their columns and types, and which sheet each came from
+    are all in the es_doc_extract receipt — use them; do not guess a table
+    name from the sheet name, since "Q1 Sales" becomes q1_sales and a second
+    sheet that slugifies the same way becomes q1_sales_2. If you no longer
+    have the receipt, `SHOW TABLES` and `DESCRIBE <table>` both work, and
+    `SELECT * FROM tables_meta` gives the sheet-to-table mapping plus the
+    header row that was detected for each.
+
+    Two extra tables exist alongside the data. `tables_meta` is that mapping.
+    `cells` holds EVERY non-empty cell of every sheet as raw text —
+    (sheet, row, col, ref, value), where ref is the spreadsheet address the
+    user sees ("B7", "AA12"). Reach for `cells` when a column looks wrong:
+    header detection on a messy sheet is a guess, so if a column came back
+    all-NULL, or the column names look like data, cross-check
+    tables_meta.header_row against what that row actually holds in `cells`,
+    and read the real values from there.
+
+    Read-only: only SELECT (plus DESCRIBE / SHOW TABLES / SUMMARIZE), one
+    statement per call. INSERT, UPDATE, DELETE, DROP, CREATE, COPY and ATTACH
+    are all refused and change nothing. Returns {columns, rows, row_count,
+    truncated}. A query still running after 15 seconds is stopped — narrow it
+    or aggregate rather than retrying it unchanged."""
+    resolved = reader.resolve_table(target, _doc_cache_root())
+    return docs_cap.query_tables(resolved["adir"], sql)
 
 
 # es_read's own whole-vs-outline threshold — for a DOCUMENT (kind == "doc":
@@ -741,7 +794,7 @@ def es_read(target: str, section: Optional[str] = None,
         out["more"] = True
         return out
 
-    if large:  # no headings to outline (e.g. a .csv) — page by line instead
+    if large:  # no headings to outline (e.g. a plain .txt) — page by line
         out["content"], out["next_offset"] = _char_bounded_window(md, 0)
         out["more"] = out["next_offset"] is not None
         return out

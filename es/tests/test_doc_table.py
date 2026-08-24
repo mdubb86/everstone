@@ -640,3 +640,136 @@ def test_values_come_back_json_safe(txns, tmp_path):
     out = doc_table.query(adir, "SELECT * FROM d")
     assert out["rows"] == [[1, "2026-01-02"]]
     json.dumps(out)
+
+
+def test_a_write_only_workbook_with_no_declared_dimension_still_builds(tmp_path):
+    """`openpyxl.Workbook(write_only=True)` writes no <dimension> element, so
+    max_column is None and rows arrive at their natural RAGGED lengths
+    (measured: 1, 3, 3, 2). Padding them to a fallback width of 1 would write
+    them out ragged and collapse the file to one VARCHAR column — the same
+    silent data loss, reached by a different route.
+
+    This shape is not exotic: it is what any tool exporting a large report
+    through openpyxl's streaming writer produces."""
+    from openpyxl import Workbook as WB
+    wb = WB(write_only=True)
+    ws = wb.create_sheet("Sheet")
+    ws.append(["Quarterly Revenue Report"])
+    ws.append(["id", "name", "amount"])
+    ws.append([1, "alice", 10.5])
+    ws.append([2, "bob", None])          # ragged: openpyxl drops the trailing cell
+    src = tmp_path / "wo.xlsx"
+    wb.save(src)
+
+    adir = tmp_path / "art"
+    adir.mkdir()
+    t = doc_table.build(src, adir)["tables"][0]
+
+    assert [c["name"] for c in t["columns"]] == ["id", "name", "amount"]
+    assert t["rows"] == 2
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        assert con.execute(
+            f"SELECT sum(amount) FROM {t['table']}").fetchone()[0] == 10.5
+    finally:
+        con.close()
+
+
+def test_a_field_with_an_embedded_newline_stays_one_row(tmp_path):
+    """A quoted CSV field may legitimately contain a literal newline (RFC
+    4180). It must not become two rows — and, just as importantly, the row
+    NUMBERING in `cells` must count logical rows, or every header_row
+    cross-check below such a field would point at the wrong line."""
+    src = _csv_file(tmp_path, 'id,note\n1,"line one\nline two"\n2,plain\n')
+    adir = tmp_path / "art"
+    adir.mkdir()
+    t = doc_table.build(src, adir)["tables"][0]
+    assert t["rows"] == 2
+
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        assert con.execute(
+            f"SELECT note FROM {t['table']} WHERE id = 1").fetchone()[0] == (
+                "line one\nline two")
+        assert con.execute(
+            f"SELECT value FROM {doc_table.CELLS_TABLE} "
+            "WHERE ref = 'B3'").fetchone()[0] == "plain"
+    finally:
+        con.close()
+
+
+def test_a_latin1_csv_is_read_rather_than_rejected(tmp_path):
+    """Exporting a CSV from Excel on Windows produces cp1252, not UTF-8, and
+    DuckDB rejects the whole file at the first accented character. That is a
+    real user's real spreadsheet, so it falls back to latin-1."""
+    src = tmp_path / "cp1252.csv"
+    src.write_bytes("id,name\n1,café\n2,naïve\n".encode("latin-1"))
+    adir = tmp_path / "art"
+    adir.mkdir()
+    t = doc_table.build(src, adir)["tables"][0]
+
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        assert [r[0] for r in con.execute(
+            f"SELECT name FROM {t['table']} ORDER BY id").fetchall()] == ["café", "naïve"]
+        # cells must decode the same way, or the escape hatch would show
+        # mojibake for exactly the rows most worth checking.
+        assert con.execute(
+            f"SELECT value FROM {doc_table.CELLS_TABLE} "
+            "WHERE ref = 'B2'").fetchone()[0] == "café"
+    finally:
+        con.close()
+
+
+def test_every_sheet_of_a_sixty_sheet_workbook_becomes_a_table_with_its_data(tmp_path):
+    """Carried over from doc_office, where the equivalent test guarded a
+    fair-share character budget that could otherwise starve later sheets of
+    everything but their heading. There is no budget any more — nothing is
+    rationed, because nothing is rendered to Markdown — but "sheet 40 is
+    silently empty" is exactly the failure worth keeping a test for."""
+    sheets = {f"Sheet{n:02d}": [["id", "amount"]] + [[i, float(i)] for i in range(1, 21)]
+              for n in range(60)}
+    src = _xlsx(tmp_path, sheets)
+    adir = tmp_path / "art"
+    adir.mkdir()
+    tables = _by_sheet(doc_table.build(src, adir))
+
+    assert len(tables) == 60
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        for sheet, t in tables.items():
+            assert t["rows"] == 20, sheet
+            assert con.execute(
+                f"SELECT sum(amount) FROM {t['table']}").fetchone()[0] == 210.0, sheet
+    finally:
+        con.close()
+
+
+def test_a_formula_cell_with_no_cached_result_is_empty_not_wrong(tmp_path):
+    """`data_only=True` returns Excel's CACHED formula result, and a workbook
+    written by a tool that never opened Excel — openpyxl itself, which is the
+    shape of file a Telegram upload often is — has no cache. The cell is then
+    EMPTY. That is a real limitation, so it is pinned rather than left to be
+    rediscovered: an empty column is at least visibly empty, and `cells`
+    shows the same blank, which is what makes it diagnosable."""
+    from openpyxl import Workbook as WB
+    wb = WB()
+    ws = wb.active
+    ws.title = "Calc"
+    ws.append(["id", "amount", "doubled"])
+    ws.append([1, 10.0, "=B2*2"])
+    src = tmp_path / "formula.xlsx"
+    wb.save(src)
+
+    adir = tmp_path / "art"
+    adir.mkdir()
+    t = doc_table.build(src, adir)["tables"][0]
+
+    con = duckdb.connect(str(adir / doc_table.DB_NAME), read_only=True)
+    try:
+        assert con.execute(f"SELECT doubled FROM {t['table']}").fetchone()[0] is None
+        assert con.execute(
+            f"SELECT count(*) FROM {doc_table.CELLS_TABLE} "
+            "WHERE ref = 'C2'").fetchone()[0] == 0
+    finally:
+        con.close()

@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from es.capabilities import doc_ics, doc_text, docs
+from es.capabilities import doc_ics, doc_table, doc_text, docs
 
 
 # --- fixtures for malformed/unusual PDFs -----------------------------------
@@ -142,16 +142,6 @@ def _full_cached_markdown(out: dict, cache_root) -> str:
 # force self-truncation, rather than relying on a real document crossing it.
 # The property under test is unchanged; only how it is provoked and checked.
 
-def test_self_truncation_is_reported_for_csv(tmp_path, monkeypatch):
-    monkeypatch.setattr(doc_text, "MAX_CHARS", 4_000)
-    rows = "\n".join(f"{i},value-{i}" for i in range(6000))
-    p = tmp_path / "many_rows.csv"
-    p.write_text("id,value\n" + rows + "\n", encoding="utf-8")
-    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    cached = _full_cached_markdown(out, tmp_path)
-    assert "truncated after" in cached
-
-
 def test_self_truncation_is_reported_for_json(tmp_path, monkeypatch):
     monkeypatch.setattr(doc_text, "MAX_CHARS", 4_000)
     import json as jsonlib
@@ -213,88 +203,6 @@ def test_self_truncation_is_reported_for_docx(tmp_path, monkeypatch):
     out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
     cached = _full_cached_markdown(out, tmp_path)
     assert "truncated after" in cached
-
-
-def test_self_truncation_is_reported_for_xlsx(tmp_path, monkeypatch):
-    from openpyxl import Workbook
-    from es.capabilities import doc_office
-    monkeypatch.setattr(doc_office, "MAX_CHARS", 4_000)
-
-    p = tmp_path / "many_rows.xlsx"
-    wb = Workbook()
-    ws = wb.active
-    for i in range(3000):
-        ws.append([f"row{i:05d}", f"val-{i:05d}", f"val-{i:05d}"])
-    wb.save(str(p))
-    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    cached = _full_cached_markdown(out, tmp_path)
-    assert "truncated after" in cached
-
-
-def test_self_truncation_is_reported_for_write_only_xlsx_with_no_dimension(tmp_path, monkeypatch):
-    """Regression guard for a LIVE bug: `openpyxl.Workbook(write_only=True)`
-    never writes a `<dimension>` element to a sheet's XML (see doc_office's
-    module docstring), so this sheet's true row count can never be
-    determined without a full scan — the exact case
-    doc_office._sheet_truncation_note's "total_rows is None" branch exists
-    for. That branch's marker embeds a NESTED parenthetical aside ("...could
-    not be determined (its XML has no declared dimension)"), and before this
-    fix docs.py detected self-truncation with a regex that required NO
-    parentheses at all between "*(" and the closing ")*" — so this exact
-    marker was never detected, and `truncated` came back False.
-
-    Verified live in the running container before this fix: a 5,000-row
-    write_only workbook rendered only 856 rows (the rest silently dropped)
-    and the es_doc_extract envelope reported `truncated: false` — the worst
-    failure mode for this tool, a successful-looking result with wrong
-    content. This is the test that would have caught it.
-
-    doc_office.MAX_CHARS is monkeypatched down for the same reason as the
-    docx/xlsx self-truncation tests above: it is now a generous resource
-    ceiling a 5,000-row sheet never reaches on its own, so provoking
-    self-truncation here means constraining the ceiling, not just building
-    a bigger workbook.
-    """
-    from openpyxl import Workbook
-    from es.capabilities import doc_office
-    monkeypatch.setattr(doc_office, "MAX_CHARS", 4_000)
-
-    p = tmp_path / "write_only_many_rows.xlsx"
-    wb = Workbook(write_only=True)
-    ws = wb.create_sheet("Sheet")
-    for i in range(5000):
-        ws.append([f"row{i:05d}", f"val-{i:05d}", f"val-{i:05d}"])
-    wb.save(str(p))
-
-    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    cached = _full_cached_markdown(out, tmp_path)
-    assert "truncated after" in cached
-    assert "no declared dimension" in cached
-
-
-def test_small_write_only_xlsx_with_no_dimension_is_not_falsely_truncated(tmp_path):
-    """The other half of the write_only regression above: a small
-    dimension-less sheet must not be falsely detected as self-truncated.
-    Found while manually verifying this fix — `doc_office._sheet_truncation_
-    note` used to infer "was this cut short?" from `kept < capped_rows`,
-    where `capped_rows` was silently the bare XLSX_MAX_ROWS fallback ceiling
-    (not this sheet's real size) whenever the dimension was unknown, so even
-    a 2-row write_only sheet satisfied that comparison and was falsely
-    reported as truncated. Fixed alongside the detection bug since both
-    live in the same code path this task touches."""
-    from openpyxl import Workbook
-
-    p = tmp_path / "tiny_write_only.xlsx"
-    wb = Workbook(write_only=True)
-    ws = wb.create_sheet("Sheet")
-    ws.append(["a", "b"])
-    ws.append(["c", "d"])
-    wb.save(str(p))
-
-    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    cached = _full_cached_markdown(out, tmp_path)
-    assert "truncated" not in cached.lower()
-    assert out["complete"] is True
 
 
 def test_extract_purges_stale_artifacts(text_pdf, tmp_path):
@@ -692,15 +600,33 @@ def test_unsupported_extension_names_the_supported_list(tmp_path):
     assert ".pdf" in str(e.value)
 
 
-def test_extract_dispatches_a_csv_to_doc_text_with_no_page_count(csv_file, tmp_path):
+def test_extract_dispatches_a_txt_to_doc_text_with_no_page_count(txt_file, tmp_path):
     """End-to-end through docs.extract (not doc_text.convert directly): a
     flat format must report kind + doc_id like any other converter, but
     page_count stays None — that's the signal (see docs._page_count) that
-    this format has no pages at all, not "zero" or "one"."""
-    out = docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
-    assert out["kind"] == "csv"
+    this format has no pages at all, not "zero" or "one".
+
+    Was written against a .csv, which no longer takes this path at all — it
+    is a table document now (see the receipt-shape test below)."""
+    out = docs.extract(str(txt_file), roots=[txt_file.parent], cache_root=tmp_path)
+    assert out["kind"] == "txt"
     assert out["page_count"] is None
-    assert "| Name | Position | Number |" in out["preview"]
+    assert out["preview"].strip()
+
+
+def test_extract_dispatches_a_csv_to_doc_table_with_a_table_receipt(csv_file, tmp_path):
+    """The other half of dispatch: a .csv is no longer converted to Markdown
+    at all. Its receipt is a DIFFERENT shape on purpose — a schema to write
+    SQL against, with no preview, because a preview of a database is not a
+    useful thing to hand anyone."""
+    out = docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
+    assert set(out) == {"doc_id", "kind", "tables", "next"}
+    assert out["kind"] == "table"
+    assert "es_doc_query" in out["next"]
+
+    table = out["tables"][0]
+    assert table["table"] and table["columns"]
+    assert table["rows"] > 0
 
 
 # --- non-PDF error mapping --------------------------------------------------
@@ -730,16 +656,32 @@ def test_extract_image_pages_rejects_a_non_pdf_with_a_clear_reason(csv_file, tmp
     assert "image_pages" in str(e.value)
 
 
-def test_every_format_returns_the_stable_shape(
-        csv_file, json_file, txt_file, ics_file, docx_file, xlsx_file, text_pdf, tmp_path):
+def test_every_markdown_format_returns_the_stable_shape(
+        json_file, txt_file, ics_file, docx_file, text_pdf, tmp_path):
+    """There are exactly TWO receipt shapes, and this pins the markdown one.
+    .csv/.xlsx are deliberately absent: they are table documents, whose
+    shape is pinned by the test below — a single "every format" assertion
+    covering both would have to be loose enough to pass for either, which is
+    how a receipt silently loses a key."""
     from es.capabilities import docs
     expected = {"doc_id", "kind", "page_count", "preview", "complete",
                 "page_images", "next"}
-    for f in (csv_file, json_file, txt_file, ics_file, docx_file, xlsx_file, text_pdf):
+    for f in (json_file, txt_file, ics_file, docx_file, text_pdf):
         out = docs.extract(str(f), roots=[f.parent], cache_root=tmp_path)
         assert set(out) == expected, f.name
         assert out["preview"].strip(), f.name
         assert out["kind"] == f.suffix.lstrip("."), f.name
+
+
+def test_every_table_format_returns_the_table_shape(csv_file, xlsx_file, tmp_path):
+    from es.capabilities import docs
+    for f in (csv_file, xlsx_file):
+        out = docs.extract(str(f), roots=[f.parent], cache_root=tmp_path)
+        assert set(out) == {"doc_id", "kind", "tables", "next"}, f.name
+        assert out["kind"] == "table", f.name
+        assert out["tables"], f.name
+        for t in out["tables"]:
+            assert set(t) == {"sheet", "table", "rows", "header_row", "columns"}
 
 
 def test_no_converter_leaks_a_raw_library_exception(tmp_path):
@@ -833,14 +775,14 @@ def test_realistic_malformed_documents_do_not_leak_a_raw_library_exception(tmp_p
 
     # 5. .csv with a field > the (raised) field-size limit
     p = tmp_path / "long_field.csv"
-    p.write_text("a,b\n" + ("x" * (docs.CSV_FIELD_SIZE_LIMIT + 1000)) + ",y\n", encoding="utf-8")
+    p.write_text("a,b\n" + ("x" * (doc_table.CSV_FIELD_SIZE_LIMIT + 1000)) + ",y\n", encoding="utf-8")
     cases[".csv field over the size limit"] = p
 
     # 6. .csv with one unbalanced quote that swallows the rest of a large file
     #    into a single field past the size limit — same underlying csv.Error
     #    as case 5, different root cause.
     p = tmp_path / "unbalanced_quote.csv"
-    p.write_text('a,b\n"' + ("y" * (docs.CSV_FIELD_SIZE_LIMIT + 1000)) + "\n", encoding="utf-8")
+    p.write_text('a,b\n"' + ("y" * (doc_table.CSV_FIELD_SIZE_LIMIT + 1000)) + "\n", encoding="utf-8")
     cases[".csv unbalanced quote"] = p
 
     # 7. .json nested deeper than ~1000 levels -> RecursionError
@@ -933,29 +875,36 @@ def test_a_bug_in_doc_office_docx_rendering_is_not_masked_as_corrupt(
         docs.extract(str(docx_file), roots=[docx_file.parent], cache_root=tmp_path)
 
 
-def test_a_bug_in_doc_office_xlsx_rendering_is_not_masked_as_corrupt(
+def test_a_bug_in_doc_table_cell_handling_is_not_masked_as_corrupt(
         xlsx_file, tmp_path, monkeypatch):
-    from es.capabilities import docs, doc_office
+    """doc_table's ParseFailed boundary is scoped to openpyxl's own open and
+    to its LAZY row parse — a bug in our own cell formatting sits outside
+    both and must surface as itself. This is the guard that keeps that
+    scoping honest: `_safe_rows` wraps only `next()`, so the `_cell_text`
+    call that consumes each row can never be caught and relabelled."""
+    from es.capabilities import docs, doc_table
 
-    def boom(*args, **kwargs):
-        raise ValueError("simulated bug in doc_office rendering")
+    def boom(value):
+        raise ValueError("simulated bug in doc_table cell handling")
 
-    monkeypatch.setattr(doc_office, "_render_sheet_rows", boom)
+    monkeypatch.setattr(doc_table, "_cell_text", boom)
 
-    with pytest.raises(ValueError, match="simulated bug in doc_office rendering"):
+    with pytest.raises(ValueError, match="simulated bug in doc_table cell handling"):
         docs.extract(str(xlsx_file), roots=[xlsx_file.parent], cache_root=tmp_path)
 
 
-def test_a_bug_in_doc_text_csv_rendering_is_not_masked_as_corrupt(
+def test_a_bug_in_doc_table_naming_is_not_masked_as_corrupt(
         csv_file, tmp_path, monkeypatch):
-    from es.capabilities import docs, doc_text
+    """The .csv half: nothing in doc_table's own table-naming logic is inside
+    a ParseFailed boundary either."""
+    from es.capabilities import docs, doc_table
 
-    def boom(cells, width):
-        raise ValueError("simulated bug in doc_text rendering")
+    def boom(name, used, reserved):
+        raise ValueError("simulated bug in doc_table naming")
 
-    monkeypatch.setattr(doc_text, "format_row", boom)
+    monkeypatch.setattr(doc_table, "_slug", boom)
 
-    with pytest.raises(ValueError, match="simulated bug in doc_text rendering"):
+    with pytest.raises(ValueError, match="simulated bug in doc_table naming"):
         docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
 
 
@@ -979,44 +928,65 @@ def test_a_bug_in_doc_text_json_rendering_is_not_masked_as_corrupt(
 
 def test_cross_format_cache_collision_is_fixed(text_pdf, tmp_path):
     """The exact repro from the review: a real PDF's bytes, saved once under
-    a .csv extension and once under a .pdf extension, must NOT share a
-    doc_id/artifact — each is read as its OWN format (a .csv reading of PDF
-    bytes is garbage-but-real CSV output, not the PDF's actual content), so
-    unifying their cache entries would silently hand back whichever format
-    was converted first for the full 24h TTL."""
+    a second extension and once under .pdf, must NOT share a doc_id/artifact
+    — each is read as its OWN format (a .md reading of PDF bytes is
+    garbage-but-real text output, not the PDF's actual content), so unifying
+    their cache entries would silently hand back whichever format was
+    converted first for the full 24h TTL.
+
+    Originally written with .csv as the second extension. It is .md now
+    because a .csv is no longer converted to Markdown at all: DuckDB rejects
+    PDF bytes outright rather than producing garbage-but-real output, which
+    is a better outcome but makes the file useless for demonstrating a
+    COLLISION between two successful conversions. That rejection is asserted
+    separately below."""
     from es.capabilities import docs
     content = text_pdf.read_bytes()
-    as_csv = tmp_path / "same.csv"
+    as_md = tmp_path / "same.md"
     as_pdf = tmp_path / "same.pdf"
-    as_csv.write_bytes(content)
+    as_md.write_bytes(content)
     as_pdf.write_bytes(content)
 
-    csv_out = docs.extract(str(as_csv), roots=[tmp_path], cache_root=tmp_path)
+    md_out = docs.extract(str(as_md), roots=[tmp_path], cache_root=tmp_path)
     pdf_out = docs.extract(str(as_pdf), roots=[tmp_path], cache_root=tmp_path)
 
-    assert csv_out["doc_id"] != pdf_out["doc_id"]
-    assert csv_out["kind"] == "csv"
+    assert md_out["doc_id"] != pdf_out["doc_id"]
+    assert md_out["kind"] == "md"
     assert pdf_out["kind"] == "pdf"
     assert pdf_out["page_count"] == 2
     assert "Fall Season Schedule" in pdf_out["preview"]
-    assert "Fall Season Schedule" not in csv_out["preview"]
+    assert "Fall Season Schedule" not in md_out["preview"]
 
     # Each format landed in its own artifact directory, keyed by its own id.
-    assert (tmp_path / ".es" / csv_out["doc_id"] / "doc.md").is_file()
+    assert (tmp_path / ".es" / md_out["doc_id"] / "doc.md").is_file()
     assert (tmp_path / ".es" / pdf_out["doc_id"] / "doc.md").is_file()
 
-    # Order independence: read .pdf first, THEN .csv, and re-check both are
+    # Order independence: read .pdf first, THEN .md, and re-check both are
     # still correct — the bug reproduced in either order.
     other_root = tmp_path / "reversed"
     other_root.mkdir()
     as_pdf2 = other_root / "same.pdf"
-    as_csv2 = other_root / "same.csv"
+    as_md2 = other_root / "same.md"
     as_pdf2.write_bytes(content)
-    as_csv2.write_bytes(content)
+    as_md2.write_bytes(content)
     pdf_out2 = docs.extract(str(as_pdf2), roots=[other_root], cache_root=tmp_path)
-    csv_out2 = docs.extract(str(as_csv2), roots=[other_root], cache_root=tmp_path)
+    md_out2 = docs.extract(str(as_md2), roots=[other_root], cache_root=tmp_path)
     assert pdf_out2["kind"] == "pdf" and "Fall Season Schedule" in pdf_out2["preview"]
-    assert csv_out2["kind"] == "csv" and "Fall Season Schedule" not in csv_out2["preview"]
+    assert md_out2["doc_id"] == md_out["doc_id"]
+
+
+def test_binary_bytes_named_csv_are_reported_unreadable_not_converted_to_mojibake(
+        text_pdf, tmp_path):
+    """A .csv now goes to DuckDB, which refuses a file it cannot decode. That
+    refusal has to survive the latin-1 fallback added for cp1252 exports:
+    latin-1 decodes ANY byte sequence, so without a guard this file would
+    "succeed" and produce a table of garbage — a confidently wrong answer
+    instead of an error."""
+    from es.capabilities import docs
+    as_csv = tmp_path / "actually_a_pdf.csv"
+    as_csv.write_bytes(text_pdf.read_bytes())
+    with pytest.raises(docs.UnreadableDocument):
+        docs.extract(str(as_csv), roots=[tmp_path], cache_root=tmp_path)
 
 
 def test_cross_format_cache_collision_is_fixed_for_zero_byte_files(tmp_path):
@@ -1033,7 +1003,7 @@ def test_cross_format_cache_collision_is_fixed_for_zero_byte_files(tmp_path):
     assert csv_out["doc_id"] != txt_out["doc_id"]
 
 
-def test_extract_same_extension_repeat_is_still_a_cache_hit(csv_file, tmp_path, monkeypatch):
+def test_extract_same_extension_repeat_is_still_a_cache_hit(txt_file, tmp_path, monkeypatch):
     """Guard against the format-aware doc_id fix regressing the ORIGINAL
     cache-hit property for the common case: the same file, same extension,
     extracted twice must still convert only once."""
@@ -1047,12 +1017,35 @@ def test_extract_same_extension_repeat_is_still_a_cache_hit(csv_file, tmp_path, 
 
     monkeypatch.setattr(docs.doc_text, "convert", spy)
 
-    first = docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
-    second = docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
+    first = docs.extract(str(txt_file), roots=[txt_file.parent], cache_root=tmp_path)
+    second = docs.extract(str(txt_file), roots=[txt_file.parent], cache_root=tmp_path)
 
     assert len(calls) == 1
     assert first["doc_id"] == second["doc_id"]
     assert first["preview"] == second["preview"]
+
+
+def test_extract_repeat_is_a_cache_hit_for_a_table_document_too(csv_file, tmp_path,
+                                                                monkeypatch):
+    """The table branch has its own cache gate (tables.json, not doc.md), so
+    the property has to be re-established for it rather than inherited: a
+    rebuild would be silent, correct-looking, and pure waste — DuckDB
+    reparsing a 40,000-row spreadsheet on every question asked of it."""
+    from es.capabilities import docs
+    calls = []
+    original = docs.doc_table.build
+
+    def spy(*args, **kwargs):
+        calls.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(docs.doc_table, "build", spy)
+
+    first = docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
+    second = docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
+
+    assert len(calls) == 1
+    assert first == second, "a cache hit must reproduce the receipt exactly"
 
 
 # --- extract() is a receipt, not the document (Task 1) ---------------------

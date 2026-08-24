@@ -1,6 +1,14 @@
-"""Word (.docx) and Excel (.xlsx) documents -> Markdown.
+"""Word (.docx) documents -> Markdown.
 
-EMBEDDED IMAGES (.docx only — see the "XLSX IMAGES" note far below):
+`.xlsx` used to live here too. It does not any more: a spreadsheet is
+TABULAR data, and doc_table.py converts it to a DuckDB database the agent
+queries with SQL (es_doc_query) instead of a Markdown pipe table it has to
+page through. Everything this module used to carry for that format — the
+sheet-heading structure, the fair-share per-sheet budget, the XLSX_MAX_ROWS/
+COLS structural caps, the dimension-less-sheet handling, and the note on
+why .xlsx embedded images were out of scope — went with it.
+
+EMBEDDED IMAGES:
 governed by the same rule doc_pdf.py's module docstring states for PDFs:
 every kind of content in a document comes out as the thing it is, an image
 extracted because it exists, not because it scored above a threshold. A
@@ -88,20 +96,6 @@ short first by MAX_CHARS never reaches that point, which is fine — the
 MAX_CHARS truncation marker already explains why the rest of the document,
 images included, wasn't processed.
 
-XLSX IMAGES (investigated, NOT implemented — recorded here so the decision
-doesn't have to be re-researched): an `.xlsx` absolutely can carry embedded
-raster images too — a logo or photo floated over a sheet
-(`xl/drawings/drawingN.xml`, backed by `xl/media/*`, the exact same
-DrawingML anchoring model `.docx` uses for its own `<w:drawing>`) and a
-chart object (`xl/charts/chartN.xml`, a nativechart definition, not a
-raster image at all — nothing to "extract" as a file the way a photo is).
-Deliberately out of scope here: a later plan converts spreadsheets to a
-queryable database (`es_doc_query`, not markdown/es_read — see docs.py's
-`TABLE_KINDS` note) rather than a markdown table, so any embedded-image
-work done against `_convert_xlsx`'s current markdown-table output would be
-thrown away once that lands. `_convert_xlsx` therefore still always
-returns `(markdown, [])`, unchanged.
-
 .docx: walked in DOCUMENT ORDER, not python-docx's separate `.paragraphs`/
 `.tables` lists — those are two independent flat lists that do not preserve
 how paragraphs and tables were actually interleaved in the source (a table
@@ -119,51 +113,10 @@ the document's own outline becomes the `##`-boundary structure the later
 paging reader depends on (see docs.py's CONVERTERS docstring); a non-heading
 paragraph is emitted as plain text.
 
-.xlsx: one `## <sheet name>` heading per worksheet — the natural (and only)
-structural unit a spreadsheet has, which is exactly what makes a workbook
-pageable by that same reader. Rows render as a pipe table via doc_support.
-
-Every sheet converts IN FULL now — MAX_CHARS is a generous resource ceiling
-(see below), not a context-window budget, so in practice every sheet's
-heading AND every one of its rows survive. The fair-share machinery this
-paragraph used to describe as the fix for "sheet 2 and 3 vanish entirely"
-is kept anyway, as the BACKSTOP for the (now rare, but not impossible —
-dozens of enormous sheets can still exhaust even a 50MB ceiling) case where
-the ceiling genuinely is hit: every sheet's heading is emitted
-UNCONDITIONALLY, and `_convert_xlsx` fair-shares whatever budget remains
-across the CURRENT sheet and every sheet still to come (recomputed fresh
-each iteration, so a sheet that uses less than its share leaves the surplus
-for later ones, rather than a fixed up-front split wasting budget a short
-sheet didn't need) — so even in that backstop case every sheet still gets a
-heading, discoverable from es_read's outline. `_render_sheet_rows` also
-always shows a sheet's first row regardless of remaining budget, which in
-the overwhelmingly common case IS real content — but this is honestly a
-"first row" guarantee, not a "real content" one: a sheet whose own row 1 is
-entirely blank (no cells written on it at all — e.g. real data starting at
-row 2) would show that blank row instead, if the ceiling were ever tight
-enough to cut it off before row 2. A prior review flagged the module
-docstring's older wording ("at least one row of REAL content") as
-overstating this guarantee for exactly that reason; described accurately
-here rather than restated. See
-test_xlsx_later_sheets_reachable_when_first_sheet_exhausts_budget (now
-exercising this backstop directly, via a monkeypatched MAX_CHARS, since the
-real default ceiling is far too generous for a workbook of ordinary test
-size to ever ration).
-
-Formula cells are read as the FORMULA TEXT (`data_only=False`), never the
-cached result (`data_only=True`). A workbook saved by any tool that never ran
-Excel's calculation engine — including openpyxl itself, which is exactly the
-shape of file a Telegram upload is likely to be — has NO cached value for a
-formula cell at all: `data_only=True` against such a file silently renders
-those cells as blank, not as "no cache available". The formula text is
-always present and deterministic; a cache that only sometimes exists is not
-a foundation this module can build predictable behavior on.
-
-Both formats truncate at a whole-BLOCK boundary against a shared RESOURCE
-ceiling (MAX_CHARS below) — a whole paragraph/table for .docx, a whole row
-for .xlsx — mirroring doc_text.MAX_CHARS / doc_ics.MAX_ICS_CHARS: neither
-format here has PDF-style "## Page N" boundaries to cut at, so each
-truncates itself before returning. MAX_CHARS is deliberately NOT sized to
+Truncation happens at a whole-BLOCK boundary (a whole paragraph or table)
+against a RESOURCE ceiling, MAX_CHARS below — mirroring doc_text.MAX_CHARS /
+doc_ics.MAX_ICS_CHARS: this format has no PDF-style "## Page N" boundaries to
+cut at, so it truncates itself before returning. MAX_CHARS is deliberately NOT sized to
 fit inside one MCP response — es_doc_extract's own response is now a small
 receipt (a fixed-size preview plus a `doc:<id>` handle), never the document
 itself, so there is no response-sized budget for this ceiling to clear at
@@ -174,26 +127,7 @@ MAX_CHARS's own comment for the sizing rationale. Every ordinary document —
 including every deliberately oversized one this module's own test suite
 builds — converts in full and never reaches it.
 
-XLSX_MAX_ROWS/XLSX_MAX_COLS are a SEPARATE, structural cap on top of that
-ceiling: a sheet's reported used range can be dramatically larger than its
-real content (a single stray value at, say, ZZ10000 reports a 10000-row x
-702-column used range for what is, in substance, two cells of data), and
-that must be bounded before the character ceiling ever gets a chance to
-look at it, or a single pathological sheet could force iterating tens of
-thousands of all-blank rows for no reason. They are set to Excel's OWN
-real per-sheet maximums (1,048,576 rows, 16,384 columns — XFD) rather than
-a tuned smaller number: a legitimate sheet's real `max_row`/`max_column`
-can never exceed them (openpyxl itself refuses to write past those
-indices), so for any real, honestly-dimensioned sheet these caps are true
-no-ops — every sheet converts fully — and they bind ONLY the fallback case
-(dimension unknown, or a corrupt/adversarial `<dimension>` claiming more
-than the format allows) where they take over as the outer iteration bound.
-Measured (see doc_office's test suite): even that worst case — no known
-dimension, iterating the full 1,048,576-row fallback on a narrow (2-column)
-sheet — completes in ~1.3s; a wide worst case is bounded far sooner by the
-character ceiling itself (a 50-column-wide, full-height sparse sheet hit
-MAX_CHARS after ~329k of 1,048,576 rows in ~1.9s). DOCX_MAX_TABLE_ROWS is
-the .docx analogue: it bounds the cost of rendering a SINGLE table block,
+DOCX_MAX_TABLE_ROWS is a SEPARATE, structural cap on top of that ceiling: it bounds the cost of rendering a SINGLE table block,
 independent of MAX_CHARS, for the same reason (see `_table_block`) — kept
 at its original tuned value (2000) since it protects against a genuinely
 separate, real per-block cost (each table row means constructing real
@@ -256,27 +190,6 @@ that a pathological document could still contain more blocks than any
 resource ceiling should render in full — the lazy walk plus
 DOCX_MAX_TABLE_ROWS bound the COST of touching such a document, not just
 the characters it emits.
-
-.xlsx: `ws.max_row`/`ws.max_column` in `read_only` mode come from the sheet
-XML's `<dimension>` element — and are `None`, not `0`, when that element is
-absent. This is not exotic: `openpyxl.Workbook(write_only=True)` (a
-mainstream way tools generate large spreadsheets — pandas/ETL exports
-included) never writes `<dimension>` at all. A prior version of this module
-read `total_rows = ws.max_row or 0`, so `None or 0` produced `0`, which was
-then read as "genuinely empty sheet" and short-circuited before a single row
-was ever iterated — a verified DATA-LOSS bug: a 300,000-row write_only
-workbook converted to a bare `"## Sheet"` heading with no error, no
-truncation marker, and `{ok: true}`. `_render_sheet_rows` below never trusts
-`ws.max_row`/`ws.max_column` as a presence signal any more — only actually
-iterating and observing a row (`saw_any`) proves a sheet has content, dimension
-or no dimension. `ws.calculate_dimension(force=True)` was considered as a fix
-and measured at ~7.9s / a full read-only pass over a 300,000-row sheet (it
-walks every row to find the true extent) — paying that cost just to print an
-accurate row count would reintroduce the same O(sheet size) cost this module
-otherwise avoids by rendering read_only rows lazily, so it is deliberately
-never called here. When the sheet's true dimension is unknown, this module
-reports what it can prove (rows actually rendered, and whether more exist
-past the structural cap) without fabricating an exact total.
 """
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
@@ -289,8 +202,6 @@ from docx.opc.exceptions import PackageNotFoundError
 from docx.oxml.ns import qn
 from docx.table import Table
 from lxml.etree import XMLSyntaxError
-from openpyxl import load_workbook
-from openpyxl.utils.exceptions import InvalidFileException
 
 from es import doc_cache
 from es.capabilities.doc_support import (ParseFailed, format_cell, format_row,
@@ -309,10 +220,10 @@ from es.capabilities.doc_support import (ParseFailed, format_cell, format_row,
 # small fixed-size receipt (a preview plus a handle) regardless of how big
 # the source document is, so there is no response budget for this ceiling to
 # clear; it protects only what gets cached and paged, never what gets
-# returned. A .docx/.xlsx is a zip, so MAX_DOCUMENT_BYTES only bounds the
+# returned. A .docx is a zip, so MAX_DOCUMENT_BYTES only bounds the
 # COMPRESSED input size — a pathological file could still try to inflate far
 # past this ceiling, which is exactly why this ceiling exists at all (see
-# also the lazy .docx walk and the per-table/per-sheet structural caps
+# also the lazy .docx walk and the per-table structural cap
 # below, which bound the COST of touching such a file, not just the
 # characters it emits).
 MAX_CHARS = 50_000_000
@@ -328,43 +239,35 @@ MAX_EXTRACTED_IMAGES = 500
 # rule this exists to enforce).
 # --------------------------------------------------------------------------
 #
-# python-docx and openpyxl each raise their OWN exception type for a parse
-# failure — PackageNotFoundError (python-docx, which itself normalizes a
-# bad/missing zip into this one type), BadZipFile (openpyxl, which does NOT
-# normalize it), InvalidFileException (openpyxl's own filename-extension
-# guard — included for defense in depth even though docs.py's dispatch
-# already only ever routes a real .xlsx path here, so it should never
-# actually fire in practice), OSError (python-docx's own "no valid workbook/
-# document part" case), ParseError (openpyxl's read_only streaming reader
-# uses the stdlib xml.etree parser regardless of lxml being installed),
-# XMLSyntaxError (python-docx uses lxml), KeyError (a valid zip missing
-# "[Content_Types].xml" entirely — both libraries do a plain dict-style
-# archive lookup), and AttributeError (a valid zip whose
-# "[Content_Types].xml" parses but has no default namespace, so python-docx's
-# lxml class lookup never upgrades it to its own CT_Types wrapper, and the
-# next attribute access on it fails). All nine are verified empirically (not
-# guessed) against real python-docx/openpyxl behavior for every ordinary
-# "wrong/damaged file" shape (a renamed extension, a partial download) — see
-# tests/test_docs.py's realistic-malformed-documents case.
+# python-docx raises several DIFFERENT exception types for a parse failure —
+# PackageNotFoundError (its own normalization of a bad/missing zip),
+# BadZipFile (which it does NOT always normalize), OSError ("no valid
+# document part"), XMLSyntaxError (it parses with lxml), KeyError (a valid
+# zip missing "[Content_Types].xml" entirely — a plain dict-style archive
+# lookup), and AttributeError (a valid zip whose "[Content_Types].xml"
+# parses but has no default namespace, so lxml's class lookup never upgrades
+# it to python-docx's own CT_Types wrapper and the next attribute access on
+# it fails). All verified empirically (not guessed) against real python-docx
+# behavior for every ordinary "wrong/damaged file" shape — a renamed
+# extension, a partial download; see tests/test_docs.py's
+# realistic-malformed-documents case. (openpyxl's own set is a superset of
+# these and now lives in doc_table.py, which owns .xlsx.)
 #
-# This tuple is used ONLY around the two open/parse call sites below
-# (_open_docx, _open_xlsx, and the lazy per-row XML parse in
-# _safe_row_iter) — never around this module's own rendering logic (body
-# walking, sheet/table formatting, budget tracking). A bug in THAT code
-# that happens to raise one of these same ordinary types (a typo'd dict
-# key, an attribute on a None) must surface as itself, not get relabeled
-# "corrupt file" — see doc_support.ParseFailed's docstring for why the
-# BOUNDARY, not the exception type, is what keeps the two apart.
-_PARSE_ERRORS = (PackageNotFoundError, InvalidFileException, BadZipFile,
-                 OSError, ValueError, ParseError, XMLSyntaxError,
-                 KeyError, AttributeError)
+# This tuple is used ONLY around the open/parse call site below (_open_docx)
+# — never around this module's own rendering logic (body walking, table
+# formatting, budget tracking). A bug in THAT code that happens to raise one
+# of these same ordinary types (a typo'd dict key, an attribute on a None)
+# must surface as itself, not get relabeled "corrupt file" — see
+# doc_support.ParseFailed's docstring for why the BOUNDARY, not the
+# exception type, is what keeps the two apart.
+_PARSE_ERRORS = (PackageNotFoundError, BadZipFile, OSError, ValueError,
+                 ParseError, XMLSyntaxError, KeyError, AttributeError)
 
 # The OLE2/CFBF container signature (MS-CFB) — every legitimate, unencrypted
-# .docx/.xlsx is a zip archive; a password-protected one is instead stored in
+# .docx is a zip archive; a password-protected one is instead stored in
 # this legacy container format (the same one .doc/.xls used), which is how
-# real Office password-protection actually works, not a guess. Neither
-# python-docx nor openpyxl exposes a distinct "needs a password" exception —
-# both simply fail to open the file as a zip, indistinguishable by exception
+# real Office password-protection actually works, not a guess. python-docx
+# exposes no distinct "needs a password" exception — it simply fails to open the file as a zip, indistinguishable by exception
 # type alone from ordinary corruption (verified empirically against both
 # libraries) — so this sniffs the file's own magic bytes instead.
 _OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
@@ -379,77 +282,37 @@ def _is_ole2_container(source: Path) -> bool:
 
 
 def _raise_parse_failed(source: Path, exc: Exception) -> None:
-    """Always raises ParseFailed. Shared by both formats: neither
-    python-docx nor openpyxl distinguishes "needs a password" from ordinary
-    corruption by exception type, so both route through the same OLE2 sniff
-    (see _is_ole2_container above)."""
+    """Always raises ParseFailed. python-docx does not distinguish "needs a
+    password" from ordinary corruption by exception type, so the OLE2 sniff
+    (see _is_ole2_container above) is what tells them apart. doc_table.py
+    carries its own copy of this for .xlsx rather than importing it: two
+    converter modules depending on each other is exactly the coupling
+    doc_support exists to avoid, and openpyxl's error set is not
+    python-docx's."""
     if _is_ole2_container(source):
         raise ParseFailed(
             f"{source.name} is password-protected — es cannot open "
-            "encrypted Word/Excel documents; ask the user for an unlocked "
-            "copy", encrypted=True) from exc
+            "encrypted Word documents; ask the user for an unlocked copy",
+            encrypted=True) from exc
     raise ParseFailed(
-        f"{source.name} could not be read as a Word/Excel document — it "
-        "may be corrupt, truncated, or not actually a .docx/.xlsx file; "
-        "ask the user to resend it") from exc
+        f"{source.name} could not be read as a Word document — it may be "
+        "corrupt, truncated, or not actually a .docx file; ask the user to "
+        "resend it") from exc
 
 
 def _open_docx(source: Path) -> Document:
     """The ONLY place .docx parsing can fail: verified empirically that
     python-docx's `Document()` eagerly parses the entire package (zip +
-    every XML part it needs) at open time — unlike openpyxl's read_only
-    mode (see _open_xlsx/_safe_row_iter below), nothing about the walk in
-    _convert_docx re-enters the library's own parser."""
+    every XML part it needs) at open time — nothing about the walk in
+    _convert_docx re-enters the library's own parser, so this is the ONLY
+    place .docx parsing can fail. (Contrast doc_table's _safe_rows: openpyxl
+    read_only mode defers a sheet's own parse to iteration, so that format
+    needs a second boundary this one does not.)"""
     try:
         return Document(str(source))
     except _PARSE_ERRORS as e:
         _raise_parse_failed(source, e)
 
-
-def _open_xlsx(source: Path):
-    """Opens the workbook-level parts (workbook.xml, styles, shared
-    strings) eagerly — but NOT a sheet's own XML, which read_only mode
-    streams lazily (see _safe_row_iter: a truncated sheet1.xml only raises
-    while actually ITERATING that sheet's rows, verified empirically, never
-    here)."""
-    try:
-        return load_workbook(str(source), data_only=False, read_only=True)
-    except _PARSE_ERRORS as e:
-        _raise_parse_failed(source, e)
-
-
-def _safe_row_iter(row_iter, source: Path):
-    """Wrap ONLY the underlying iterator's own `next()` call — the exact
-    point where openpyxl's read_only reader lazily parses the next chunk of
-    a sheet's XML (verified empirically: a truncated sheet1.xml raises
-    `xml.etree.ElementTree.ParseError` mid-iteration, not at `load_workbook()`
-    time — read_only mode defers a SHEET's own parse to iteration even
-    though the workbook-level parts are already parsed by then). Every
-    caller's own row-processing logic (format_cell/format_row, budget
-    tracking, `saw_any`/`kept` bookkeeping) stays entirely outside this
-    function and outside its try block, reached only via the values this
-    generator yields — so a bug in that logic can never be caught here and
-    relabeled "corrupt file"."""
-    while True:
-        try:
-            row = next(row_iter)
-        except StopIteration:
-            return
-        except _PARSE_ERRORS as e:
-            _raise_parse_failed(source, e)
-        yield row
-
-# Per-sheet structural caps — see module docstring. Independent of MAX_CHARS.
-# Set to Excel's OWN real per-sheet maximums (the last row/column index the
-# file format itself can represent — "XFD" is column 16,384) rather than a
-# smaller tuned number: any honestly-dimensioned real sheet's true max_row/
-# max_column can never exceed these, so for full conversion of real-world
-# spreadsheets they never actually bind — they exist purely as the fallback
-# iteration bound for a dimension-less sheet (see _render_sheet_rows) or a
-# corrupt/adversarial `<dimension>` claiming more rows/columns than the
-# format allows.
-XLSX_MAX_ROWS = 1_048_576
-XLSX_MAX_COLS = 16_384
 
 # Per-table structural cap for .docx — see module docstring. A single
 # pathological table (e.g. a 20,000-row spreadsheet paste) would otherwise be
@@ -967,259 +830,15 @@ def _convert_docx(source: Path, adir: Path) -> Tuple[str, List[Path]]:
     return md, extractor.saved
 
 
-# --------------------------------------------------------------------------
-# .xlsx
-# --------------------------------------------------------------------------
-
-def _render_sheet_rows(ws, budget: int, source: Path) -> Tuple[str, int, Optional[int], bool, bool]:
-    """Render up to XLSX_MAX_ROWS x XLSX_MAX_COLS of `ws` as one pipe table
-    (first row as the header), stopping early if the running character
-    `budget` is exhausted first. Returns (markdown, kept_rows, total_rows,
-    hit_row_cap, hit_budget).
-
-    `hit_row_cap`/`hit_budget` say explicitly WHY iteration stopped short
-    (mutually exclusive by construction: the loop below checks the
-    structural cap before ever pricing a row against `budget`, so at most
-    one of them is ever True for a single call) — `_sheet_truncation_note`
-    used to reconstruct this by comparing `kept` against a returned
-    "capped_rows" value that meant two different things depending on
-    whether the sheet's dimension was known (min(known_rows,
-    XLSX_MAX_ROWS) when known, but just the bare XLSX_MAX_ROWS fallback
-    ceiling when not — NOT the same thing as "how many rows this sheet
-    actually has"). That mismatch was a real bug: a tiny write_only sheet
-    (1 real row, no <dimension>) was reported as "truncated after 1 of
-    5000 rows" even though nothing was cut, because `kept < capped_rows`
-    (1 < 5000) looked exactly like a budget cut. Returning the actual
-    reason directly removes the need to infer it at all.
-
-    `ws.max_row`/`ws.max_column` are `None` (not `0`) when the sheet's XML
-    has no `<dimension>` element at all — e.g. every sheet written by
-    `openpyxl.Workbook(write_only=True)`. This function NEVER treats that
-    metadata as proof of anything: only actually iterating and observing a
-    row (`saw_any` below) proves the sheet has content. A sheet that DOES
-    declare a dimension but has zero real cells (openpyxl's default
-    `max_row == max_col == 1` for a brand new empty sheet) still yields no
-    rows when iterated — `saw_any` is what tells that case apart from "one
-    row of real, if blank, content" too.
-
-    `total_rows` in the return value is `None` when the sheet's true row
-    count could not be determined without a full scan (dimension unknown,
-    and iteration was cut short by either the structural row cap or the
-    character budget before reaching the sheet's actual end) — see the
-    module docstring for why this function deliberately never calls
-    `ws.calculate_dimension(force=True)` to resolve that. Callers must
-    handle `total_rows is None` rather than assume an int.
-    """
-    known_rows = ws.max_row
-    known_cols = ws.max_column
-    # Fall back to the row structural cap itself as the iteration bound when
-    # the dimension is unknown (or, degenerately, reported as 0) — this
-    # keeps the read_only parser's own early-stop (it never reads past
-    # max_row) doing the bounding, instead of this function ever attempting
-    # to iterate an unbounded sheet.
-    row_cap = min(known_rows, XLSX_MAX_ROWS) if known_rows else XLSX_MAX_ROWS
-    if known_cols:
-        capped_cols = min(known_cols, XLSX_MAX_COLS)
-    else:
-        # Column count unknown too. Forcing every row to XLSX_MAX_COLS wide
-        # (16,384 — Excel's own column maximum, "XFD") here would be its own
-        # budget-exhausting bug: every row, including ones with two real
-        # cells, would be padded out to 16,384 pipe-table columns, so the
-        # FIRST such row alone could burn a large chunk of the character
-        # ceiling and starve every row after it — that's not hypothetical,
-        # it's what happened (against the much smaller original budget)
-        # before this fallback existed.
-        # Peeking at row 1's own actual width is a light, bounded probe (one
-        # single-row read, not a full-sheet scan) and is representative for
-        # the common case this guards against (a write_only/no-<dimension>
-        # workbook whose rows are written with a consistent shape, e.g. via
-        # repeated `ws.append([...])` calls). A later row genuinely wider
-        # than row 1 will have its extra columns dropped, same as any sheet
-        # whose real width exceeds XLSX_MAX_COLS today.
-        first_row = next(_safe_row_iter(
-            ws.iter_rows(min_row=1, max_row=1, values_only=True), source), None)
-        capped_cols = min(len(first_row), XLSX_MAX_COLS) if first_row else XLSX_MAX_COLS
-
-    lines: List[str] = []
-    used = 0
-    kept = 0
-    saw_any = False
-    idx = 0
-    stopped_on_budget = False
-    # Ask for one row PAST row_cap purely to detect "does more content exist
-    # beyond the structural cap" — cheap, because the read_only parser stops
-    # as soon as it sees a row index past this bound, so this never costs a
-    # full-sheet scan even when the dimension is unknown.
-    #
-    # Wrapped through _safe_row_iter, not iterated directly: read_only mode
-    # parses a sheet's own XML lazily, one row at a time, so a truncated/
-    # malformed sheet1.xml raises HERE, mid-iteration — never at
-    # load_workbook() time (see _open_xlsx/_safe_row_iter's docstrings).
-    for idx, row in enumerate(_safe_row_iter(
-            ws.iter_rows(min_row=1, max_row=row_cap + 1,
-                         min_col=1, max_col=capped_cols,
-                         values_only=True), source), start=1):
-        saw_any = True
-        if idx > row_cap:
-            break
-        cells = [format_cell("" if v is None else str(v)) for v in row]
-        pieces = [format_row(cells, capped_cols)]
-        if kept == 0:
-            pieces.append("|" + "|".join([" --- "] * capped_cols) + "|")
-        cost = sum(len(p) + 1 for p in pieces)
-        if kept > 0 and used + cost > budget:
-            stopped_on_budget = True
-            break
-        lines.extend(pieces)
-        used += cost
-        kept += 1
-
-    if not saw_any:
-        return "", 0, 0, False, False
-
-    if known_rows is not None:
-        total_rows: Optional[int] = known_rows
-    elif stopped_on_budget:
-        total_rows = None  # cut short by the budget; true extent still unknown
-    elif idx > row_cap:
-        total_rows = None  # more than row_cap rows exist; exact count unknown
-    else:
-        total_rows = idx  # generator ran to completion at/under the cap — that IS the true count
-
-    hit_row_cap = idx > row_cap
-    return "\n".join(lines), kept, total_rows, hit_row_cap, stopped_on_budget
-
-
-def _sheet_truncation_note(kept: int, total_rows: Optional[int],
-                            hit_row_cap: bool, hit_budget: bool) -> Optional[str]:
-    """Returns the marker's DETAIL text only — no "truncated" prefix, no
-    "*(...)*" wrapping — so _convert_xlsx can wrap it through
-    doc_support.truncation_marker without duplicating the shared sentinel
-    word by hand. None means nothing was truncated at all.
-
-    `hit_row_cap`/`hit_budget` come straight from `_render_sheet_rows` (see
-    its docstring) rather than being re-derived from `kept` vs. a "capped
-    rows" count here — that reconstruction used to be wrong for a
-    dimension-less sheet smaller than XLSX_MAX_ROWS (every real row
-    rendered, nothing cut) because the value standing in for "this sheet's
-    expected size" was actually just the structural cap's fallback
-    ceiling, not this sheet's real size. `XLSX_MAX_ROWS` is read directly
-    from the module constant rather than threaded through as a parameter,
-    since it is the same fixed number in every case where `hit_row_cap` is
-    True (see `_render_sheet_rows`'s docstring: reaching the row cap only
-    ever means XLSX_MAX_ROWS was the binding limit)."""
-    if not hit_row_cap and not hit_budget:
-        return None  # nothing was cut short by either limit
-    if hit_budget:
-        if total_rows is not None and total_rows > XLSX_MAX_ROWS:
-            # both limits are in play — say so, rather than reporting the
-            # row-per-sheet cap as if it were this sheet's real size (that
-            # would hide the true row count behind the structural cap).
-            return (f"after {kept} of {total_rows} rows — the "
-                    "character limit for this document was reached first; "
-                    f"this sheet also exceeds the {XLSX_MAX_ROWS}-row-per-"
-                    "sheet limit")
-        if total_rows is None:
-            return (f"after {kept} rows shown — the character "
-                    "limit for this document was reached; this sheet's "
-                    "total row count could not be determined (its XML has "
-                    "no declared dimension)")
-        return (f"after {kept} of {total_rows} rows shown — the "
-                "character limit for this document was reached")
-    # hit_row_cap and not hit_budget: the structural cap is always what was
-    # actually hit here (XLSX_MAX_ROWS — see _render_sheet_rows's docstring).
-    if total_rows is None:
-        return (f"after {XLSX_MAX_ROWS} rows — this sheet exceeds "
-                f"the {XLSX_MAX_ROWS}-row-per-sheet limit (its exact total "
-                "is unknown: this sheet's XML has no declared dimension)")
-    return (f"after {XLSX_MAX_ROWS} of {total_rows} rows — this "
-            f"sheet exceeds the {XLSX_MAX_ROWS}-row-per-sheet limit")
-
-
-def _convert_xlsx(source: Path) -> str:
-    # read_only mode streams rows lazily straight out of the underlying zip
-    # archive — the workbook (and archive) must stay open for the ENTIRE
-    # sheet-by-sheet render loop below, not just long enough to list
-    # `worksheets`, or the first `iter_rows` call on any sheet raises
-    # "Attempt to use ZIP archive that was already closed".
-    wb = _open_xlsx(source)
-    try:
-        worksheets = list(wb.worksheets)
-        if not worksheets:
-            return "*(this workbook has no sheets)*"
-
-        n = len(worksheets)
-        lines: List[str] = []
-        used = 0
-        for i, ws in enumerate(worksheets):
-            # The heading is unconditional — see the module docstring's
-            # "sheet reachability" note. No early exit here, unlike every
-            # other budget check in this module: a document with no earlier
-            # boundary to stop at is exactly the shape we cannot afford for
-            # a MULTI-sheet workbook, since a missing heading isn't just
-            # truncated content — it's a sheet the agent can never even
-            # discover exists.
-            header = f"## {ws.title}"
-            header_cost = len(header) + (2 if lines else 0)
-            if lines:
-                lines.append("")
-            lines.append(header)
-            used += header_cost
-
-            # Fair-share whatever budget remains across this sheet and every
-            # sheet still to come (recomputed fresh each iteration, not a
-            # fixed 1/n split decided up front) — a sheet that needs less
-            # than its share leaves the surplus for the sheets after it. This
-            # is what keeps a short "## Summary"/"## Notes" sheet from being
-            # squeezed by an even split sized for a much bigger sheet.
-            remaining_sheets = n - i
-            sheet_budget = max(0, (MAX_CHARS - used) // remaining_sheets)
-
-            table_md, kept, total_rows, hit_row_cap, hit_budget = _render_sheet_rows(
-                ws, sheet_budget, source)
-            if table_md:
-                lines.append("")
-                lines.append(table_md)
-                used += len(table_md) + 2
-
-            note = _sheet_truncation_note(kept, total_rows, hit_row_cap, hit_budget)
-            if note:
-                lines.append("")
-                marker = truncation_marker(
-                    f"{note} — this file has no page range to resume "
-                    "from, so ask for a narrower export if the rest is "
-                    "needed")
-                lines.append(marker)
-                used += len(marker) + 2
-                # Deliberately NOT a `break`: every remaining sheet still
-                # gets its own heading (and, via _render_sheet_rows's
-                # first-row-always-shown rule, at least one row) even though
-                # this sheet's own share is spent — see the module
-                # docstring. The per-sheet fair-share above already prices
-                # that in for the sheets still to come.
-    finally:
-        wb.close()
-
-    return "\n".join(lines)
-
-
 def convert(source: Path, adir: Path,
             pages: Optional[List[int]] = None, **_ignored) -> Tuple[str, List[Path]]:
-    """`.docx` returns (markdown, extracted_image_paths) — see the module
-    docstring's "EMBEDDED IMAGES" note: every embedded raster image is
-    extracted to a sibling file under `adir` and linked inline at its
-    position. `.xlsx` returns (markdown, []) unchanged — see the module
-    docstring's "XLSX IMAGES" note for why that format's embedded images are
-    deliberately out of scope for now.
+    """Returns (markdown, extracted_image_paths) — see the module docstring's
+    "EMBEDDED IMAGES" note: every embedded raster image is extracted to a
+    sibling file under `adir` and linked inline at its position.
 
     `pages` is accepted for signature parity with every other converter
-    (docs.extract calls all of them uniformly) but unused: neither format
-    implements `page_count`/`render`, so docs.py never lets an explicit
-    `pages` argument reach here.
+    (docs.extract calls all of them uniformly) but unused: this format
+    implements neither `page_count` nor `render`, so docs.py never lets an
+    explicit `pages` argument reach here.
     """
-    ext = source.suffix.lower()
-    if ext == ".docx":
-        return _convert_docx(source, adir)
-    if ext == ".xlsx":
-        return _convert_xlsx(source), []
-    raise KeyError(ext)
+    return _convert_docx(source, adir)
