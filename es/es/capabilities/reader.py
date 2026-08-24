@@ -1,7 +1,7 @@
 """Resolve an es_read `target` string to Markdown plus source metadata.
 
 This is the one place "what to read" turns into "here is the markdown", so
-that capabilities/read.py's pure primitives (outline/section/window/query)
+that capabilities/read.py's pure primitives (outline/section/window/search)
 have exactly one source of text to operate over, regardless of whether the
 underlying thing is a vault note or a converted document. No parsing of the
 Markdown itself happens here — that's read.py's job; this module is purely
@@ -58,15 +58,14 @@ class DocHandleExpired(Exception):
 class TableKindNotReadable(Exception):
     """Raised when a `doc:<id>` handle's recorded kind is table-shaped
     (docs.TABLE_KINDS) — es_read pages MARKDOWN (read.py's outline/section/
-    window/query machinery all assume prose with optional "## " headings),
+    window/search machinery all assume prose with optional "## " headings),
     so a table-kind handle must error here rather than come back as a null-
     filled or empty envelope. The message always names es_doc_query (the
     tool a table handle is meant to be read through instead) as the remedy.
 
-    No converter produces this kind yet — see docs.TABLE_KINDS's docstring
-    for why the guard exists ahead of need. Today this can only fire against
-    a handle a test constructs directly (docs._write_full_extract(...,
-    kind="table")); once a real converter emits "table", it fires for real.
+    Not a nicety: a table artifact has no doc.md at all (read_cached() gates
+    it on tables.json and the database instead), so without this the agent
+    would be told a perfectly good spreadsheet was an expired handle.
     """
     es_code = "doc_table_kind"
 

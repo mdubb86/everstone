@@ -72,7 +72,7 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   - **Tabular data** — `.csv`/`.xlsx` are NOT documents: `doc_table.py` converts
     them to a DuckDB database and `es_doc_query(target, sql)` runs bounded
     read-only SQL against it. See "Tabular data: `es_doc_query`" below.
-  - **Read** — `es_read(target, section=None, query=None, offset=None)` is the one
+  - **Read** — `es_read(target, section=None, search=None, offset=None)` is the one
     pageable read over both vault notes and `es_doc_extract`-converted documents.
     See "One read path: `es_read`" below for why this replaced `es_notes_read`
     rather than becoming yet another per-tool text branch.
@@ -426,7 +426,7 @@ agent reaches for first, being wrong points it at the other one.
 
 ### One read path: `es_read`
 
-`es_read(target, section=None, query=None, offset=None)` (`es/es/capabilities/reader.py` +
+`es_read(target, section=None, search=None, offset=None)` (`es/es/capabilities/reader.py` +
 `es/es/capabilities/read.py`) replaced `es_notes_read` as the **only** way the agent reads a
 vault note, and is *also* the only way it reads a document previously converted by
 `es_doc_extract`. `target` is a vault-relative path, a topic name (the same convention
@@ -436,8 +436,8 @@ string plus a `kind` (`"note"` or `"doc"`), and hands that string to `read.py`'s
 format-agnostic primitives: `outline` (every ATX heading `#` through `######`, in order — a
 converter's `## Page N` and a note's own `# Title`/`### Sub` are all entries), `section` (one
 heading's body, its own subsections included), `window` (page by raw line, for structure-free
-content like a plain `.txt` that has no headings at all), and `query` (case-insensitive full-text
-search). `query` returns *matching outline entries* — the id a follow-up `section` call needs,
+content like a plain `.txt` that has no headings at all), and `search` (case-insensitive
+full-text search). `search` returns *matching outline entries* — the id a follow-up `section` call needs,
 not raw snippets — except for content with no headings at all, where there is no section to
 name and it returns `{offset, line}` hits the agent pages to with `offset` instead.
 

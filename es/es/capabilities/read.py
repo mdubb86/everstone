@@ -1,5 +1,5 @@
 """Pure Markdown reading primitives: outline, section extraction, line
-windowing, and text query — over a Markdown string already produced by
+windowing, and text search — over a Markdown string already produced by
 `es_doc_extract` (or any other Markdown, e.g. a vault note).
 
 No I/O, no cache, no vault knowledge, no MCP wiring here — this module only
@@ -270,17 +270,17 @@ class LineHit(TypedDict):
     line: str
 
 
-# Cap on how many {"offset","line"} entries a flat-content query returns (see
-# `query` below). A needle that appears on nearly every line of a very long
+# Cap on how many {"offset","line"} entries a flat-content search returns (see
+# `search` below). A needle that appears on nearly every line of a very long
 # flat document (a repeated log-style token in a big .csv/.txt) would
 # otherwise turn "find this" back into "here is most of the document again,
 # one line at a time" — exactly the dump-it-all-at-once outcome offset
-# paging exists to avoid. The agent can always re-query with a more specific
+# paging exists to avoid. The agent can always search again with a more specific
 # term, or page from the last reported offset, if it needs more than this.
 _MAX_LINE_HITS = 50
 
 
-def query(md: str, text: str) -> List[dict]:
+def search(md: str, text: str) -> List[dict]:
     """Search `md` for `text`, case-insensitively, and return something the
     caller can act on next — the exact shape depends on whether `md` HAS
     headings:
@@ -323,7 +323,7 @@ def query(md: str, text: str) -> List[dict]:
     level — NOT `section()`'s same-or-shallower rule — so a match inside a
     nested subsection is attributed to that subsection alone, not also to
     every ancestor whose `section()` text happens to contain it because it
-    includes the subsection. Without this, a query would report a parent
+    includes the subsection. Without this, a search would report a parent
     section as "matching" purely because its printed body happens to embed
     a child heading's own matching text — redundant with the child hit and,
     worse, ordered ahead of it in outline order.

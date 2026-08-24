@@ -131,13 +131,10 @@ def test_resolve_doc_handle_survives_a_missing_images_sidecar(text_pdf, cache_ro
 
 # --- table-kind handles are refused, not silently read as Markdown ------
 #
-# No converter produces a table kind yet (see docs.TABLE_KINDS's docstring:
-# a later plan converts .csv/.xlsx into a queryable DuckDB database instead,
-# addressed by a new es_doc_query tool rather than es_read) — so these tests
-# fabricate the artifact state directly, writing meta.json's `kind` straight
-# through docs._write_full_extract, the same way a real converter eventually
-# will. That is fine: the point is proving reader.py's rejection path is
-# already correct before that converter exists to trigger it for real.
+# doc_table produces this kind for every .csv/.xlsx, so these tests drive a
+# real conversion. The rejection matters more than it looks: a table artifact
+# has no doc.md at all, so without it es_read would report a perfectly good
+# spreadsheet as an expired handle.
 
 def _seed_table_doc(cache_root, csv_text: str = "col_a,col_b\n1,2\n") -> str:
     """A REAL table document, converted by the real converter.
@@ -350,7 +347,7 @@ def test_es_read_section_returns_only_that_section(wired_cache):
 def test_es_read_query_returns_matching_ids(wired_vault):
     wired_vault.write_topic(
         "Team", body="## Roster\n\nNo mention here.\n\n## Nickname\n\nThe Fury.\n")
-    out = mcp_server.es_read("Team", query="fury")
+    out = mcp_server.es_read("Team", search="fury")
     assert out["ok"] is True
     data = out["data"]
     assert [s["title"] for s in data["outline"]] == ["Nickname"]
@@ -360,7 +357,7 @@ def test_es_read_query_returns_matching_ids(wired_vault):
 
 def test_es_read_query_with_no_hits_explains_what_to_try(wired_vault):
     wired_vault.write_topic("Team", body="## Roster\n\nNothing relevant.\n")
-    out = mcp_server.es_read("Team", query="zebra")
+    out = mcp_server.es_read("Team", search="zebra")
     assert out["ok"] is True
     data = out["data"]
     assert data["outline"] == []
@@ -403,10 +400,7 @@ def test_es_read_expired_doc_handle(wired_cache):
 def test_es_read_table_kind_handle_errors_not_a_null_envelope(wired_cache):
     """es_read on a table-kind handle must come back as a genuine error
     envelope (ok=False, a real es_code naming es_doc_query as the remedy) —
-    never ok=True with content/outline left null, and never an empty read.
-    No converter produces this kind yet (see reader.TableKindNotReadable's
-    docstring), so the handle is fabricated directly via
-    docs._write_full_extract(..., kind="table")."""
+    never ok=True with content/outline left null, and never an empty read."""
     did = _seed_table_doc(wired_cache)
     out = mcp_server.es_read(f"doc:{did}")
     assert out["ok"] is False
@@ -455,8 +449,8 @@ def test_es_read_envelope_key_set_is_identical_across_all_modes(wired_vault, wir
         mcp_server.es_read("Small"),
         mcp_server.es_read(big_cal),
         mcp_server.es_read(big_cal, section=section_id),
-        mcp_server.es_read(big_cal, query="Event 3"),
-        mcp_server.es_read(big_cal, query="no-such-text-anywhere"),
+        mcp_server.es_read(big_cal, search="Event 3"),
+        mcp_server.es_read(big_cal, search="no-such-text-anywhere"),
     ]
     for out in modes:
         assert out["ok"] is True

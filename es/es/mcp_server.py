@@ -695,7 +695,7 @@ def _char_bounded_window(md: str, offset: int) -> Tuple[str, Optional[int]]:
 @mcp.tool()
 @mcp_envelope
 def es_read(target: str, section: Optional[str] = None,
-            query: Optional[str] = None, offset: Optional[int] = None) -> dict:
+            search: Optional[str] = None, offset: Optional[int] = None) -> dict:
     """Read a vault note or a document previously extracted by es_doc_extract,
     paged by heading so a long one doesn't have to come back all at once.
 
@@ -710,7 +710,7 @@ def es_read(target: str, section: Optional[str] = None,
     subsections included). "Long" is a higher bar for a vault note (authored
     by the user, naturally bounded) than for a document es_doc_extract
     converted (arrives at whatever size its source happened to be) — an
-    ordinary journal/topic note almost always comes back whole. query
+    ordinary journal/topic note almost always comes back whole. search
     full-text searches headings + bodies, case-insensitively, in `outline`
     — the shape depends on whether the document has headings at all: WITH
     headings, matches come back as outline entries ({id, title, level},
@@ -751,11 +751,11 @@ def es_read(target: str, section: Optional[str] = None,
         "next_offset": None,
     }
 
-    if query is not None:
-        hits = read_cap.query(md, query)
+    if search is not None:
+        hits = read_cap.search(md, search)
         out["outline"] = hits
         if not hits:
-            out["content"] = (f"No section matched {query!r}. Call es_read with no "
+            out["content"] = (f"No section matched {search!r}. Call es_read with no "
                               "arguments to see the outline, or try a different word.")
         return out
 

@@ -83,16 +83,16 @@ def test_window_at_the_exact_end_reports_no_next_offset():
 
 
 def test_query_returns_matching_sections_with_ids():
-    hits = read.query(DOC, "second")
+    hits = read.search(DOC, "second")
     assert len(hits) == 1 and hits[0]["title"] == "Page 2"
 
 
 def test_query_matches_heading_text_too():
-    assert read.query(DOC, "Sub of")[0]["title"] == "Sub of page 2"
+    assert read.search(DOC, "Sub of")[0]["title"] == "Sub of page 2"
 
 
 def test_query_with_no_hits_returns_empty():
-    assert read.query(DOC, "zebra") == []
+    assert read.search(DOC, "zebra") == []
 
 
 def test_document_with_no_headings_has_an_empty_outline():
@@ -133,7 +133,7 @@ def test_heading_named_preamble_is_reachable_by_its_own_distinct_id():
 
 
 def test_query_for_the_real_preamble_section_resolves_to_its_own_id_not_the_true_preamble():
-    hits = read.query(PREAMBLE_COLLISION_DOC, "THE REAL")
+    hits = read.search(PREAMBLE_COLLISION_DOC, "THE REAL")
     assert len(hits) == 1
     assert hits[0]["id"] != read.PREAMBLE_ID
     assert hits[0]["title"] == "Preamble"
@@ -143,7 +143,7 @@ def test_query_for_the_real_preamble_section_resolves_to_its_own_id_not_the_true
 
 
 def test_query_matches_preamble_text_in_a_document_that_also_has_headings():
-    hits = read.query(DOC, "Intro line")
+    hits = read.search(DOC, "Intro line")
     assert hits == [{"id": read.PREAMBLE_ID, "title": "Preamble", "level": 0}]
 
 
@@ -154,7 +154,7 @@ def test_query_over_flat_content_with_no_headings_returns_line_offsets():
         "nothing to see here",
         "another Acme mention",
     ])
-    hits = read.query(doc, "acme")
+    hits = read.search(doc, "acme")
     assert hits == [
         {"offset": 1, "line": "Acme delivered the package"},
         {"offset": 3, "line": "another Acme mention"},
@@ -163,20 +163,20 @@ def test_query_over_flat_content_with_no_headings_returns_line_offsets():
 
 def test_query_over_flat_content_with_no_match_is_still_an_empty_list():
     doc = "the quick brown fox\nnothing else\n"
-    assert read.query(doc, "zebra") == []
+    assert read.search(doc, "zebra") == []
 
 
 def test_query_flat_content_hits_are_distinguishable_from_sectioned_hits():
-    flat_hits = read.query("Acme appears here.\nAcme again.\n", "acme")
+    flat_hits = read.search("Acme appears here.\nAcme again.\n", "acme")
     assert all("offset" in h and "id" not in h for h in flat_hits)
 
-    sectioned_hits = read.query(DOC, "second")
+    sectioned_hits = read.search(DOC, "second")
     assert all("id" in h and "offset" not in h for h in sectioned_hits)
 
 
 def test_query_over_flat_content_caps_the_number_of_line_hits():
     doc = "\n".join("acme mention" for _ in range(500))
-    hits = read.query(doc, "acme")
+    hits = read.search(doc, "acme")
     assert len(hits) == read._MAX_LINE_HITS
 
 
