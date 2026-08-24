@@ -1,5 +1,107 @@
 """Word (.docx) and Excel (.xlsx) documents -> Markdown.
 
+EMBEDDED IMAGES (.docx only — see the "XLSX IMAGES" note far below):
+governed by the same rule doc_pdf.py's module docstring states for PDFs:
+every kind of content in a document comes out as the thing it is, an image
+extracted because it exists, not because it scored above a threshold. A
+`.docx` photo used to be silently invisible to the agent (this module
+returned `(markdown, [])` unconditionally); now every embedded raster image
+is extracted to a sibling file and linked inline at its position in the
+body's document order, mirroring how doc_pdf interleaves `_page_image_entries`
+into `_assemble_page` — see `_iter_body_blocks` below for the .docx
+equivalent.
+
+ORIGINAL BYTES, NOT A RE-RENDER: a `.docx` package stores the image's own
+original file (`word/media/imageN.<ext>`) — unlike a PDF, where an
+embedded image's ON-PAGE appearance can be rotated/scaled/masked by a
+separate placement matrix, so doc_pdf.py has to ask pdfium to RENDER the
+object to reproduce that appearance faithfully (see doc_pdf's "CROP-RENDER
+VS STREAM EXTRACTION" note). WordprocessingML has no equivalent placement
+matrix for an inline picture's pixel content — `<w:drawing>` positions and
+sizes the image as a whole (via `<wp:extent>`/`<a:xfrm>`), but never
+resamples or re-encodes the underlying picture — so extracting
+`ImagePart.blob` directly (python-docx's own decoded access to those exact
+bytes) is both CHEAPER (no decode-then-render pass, just a bytes read
+already sitting in memory from opening the package) and higher-fidelity
+(the original compressed file, not a re-encoded copy) than rendering would
+be. `ImagePart.image.ext` is kept as the output file's own extension
+(png/jpeg/gif/bmp/...) instead of forcing everything to `.png`, for the
+same reason: it costs nothing extra and avoids a lossy re-encode for a
+lossy source format (a re-saved JPEG is not bit-identical to the original).
+
+WHERE AN IMAGE LINK LANDS: a paragraph's own inline images are emitted
+right after that paragraph's text block (or as their own block, if the
+paragraph has no text at all — the common shape python-docx's own
+`add_picture` produces, and the shape a Telegram-forwarded Word doc with
+an inserted photo actually has). A TABLE CELL's image is handled
+differently: emitted as its own block immediately AFTER the whole table,
+never inside a pipe-table cell. A Markdown link inside a cell
+(`| ![x](path) |`) is syntactically a table cell like any other, but if
+the image sits alongside real cell text, or the path contains a `|`-free
+but otherwise arbitrary string, the risk of subtly misaligning the row is
+real and not worth it for a value doc_office.py already avoids elsewhere —
+`format_cell` exists precisely because arbitrary text can break a pipe
+table (escaping embedded `|`, collapsing embedded newlines). Simpler and
+safer to keep pipe-table cells to their existing plain-text contract and
+name the image's origin explicitly instead: `_table_block` emits
+`![embedded image N — table row R, column C](path)` after the table, so
+the agent still learns both that the image exists and which cell it came
+from, without touching the table's own syntax at all.
+
+DUPLICATE IMAGES: the SAME embedded image (the same `r:embed` relationship
+id, e.g. a letterhead logo placed at both the top and bottom of a
+template) is written to disk exactly ONCE, and every occurrence in the
+document links to that same file — never re-extracted, and never counted a
+second time against MAX_EXTRACTED_IMAGES. This is not a "same file appears
+twice, is that one item or two" ambiguity — it is the SAME relationship id,
+i.e. python-docx's own model already asserts these are one underlying image
+part, not two independently-inserted ones (two independent insertions of
+visually-identical bytes, e.g. pasting the same photo twice, get their OWN
+relationship ids and are extracted/counted as two separate images, exactly
+as their two separate appearances in the reading order warrant). Writing
+the same bytes to disk twice would be pure waste with no benefit: the agent
+gets the same picture either way, and the markdown still shows two links
+(one at each position the image actually appears), each correctly pointing
+at that one file — the "extracted because it exists" rule is about every
+APPEARANCE in the reading order being represented, not about paying to
+duplicate bytes that are provably identical by construction.
+
+MAX_EXTRACTED_IMAGES (.docx's own, NOT doc_pdf.MAX_EXTRACTED_IMAGES): a
+separate constant, deliberately not imported from doc_pdf, for the same
+reason doc_pdf.MAX_EXTRACTED_DRAWINGS is kept separate from
+doc_pdf.MAX_EXTRACTED_IMAGES — two independent modules, with genuinely
+different per-item costs (a `.docx` extraction is a bytes copy already in
+memory; a PDF extraction is pdfium rendering an object), coupling one
+module's ceiling to another's module-level constant for no reason beyond
+"the number happens to match today" is exactly the kind of unrelated
+coupling this codebase avoids elsewhere. Set to the same value as
+doc_pdf's (500) anyway, on the same reasoning: generous headroom above any
+real Word document's realistic embedded-photo count (a report or log with
+dozens to a couple hundred inline photos) while remaining a real, finite
+bound. Hitting it is reported IN-BAND exactly once, at the end of the
+document (see `_iter_body_blocks`'s final `if extractor.skipped` block) —
+never a silent drop. Unlike doc_pdf, there is no per-page lookahead here (a
+`.docx` body is one flat stream, not pages iterated with a known
+remaining-content-on-this-page bound), so the count of skipped images is
+only known once the whole body has actually been walked; a document cut
+short first by MAX_CHARS never reaches that point, which is fine — the
+MAX_CHARS truncation marker already explains why the rest of the document,
+images included, wasn't processed.
+
+XLSX IMAGES (investigated, NOT implemented — recorded here so the decision
+doesn't have to be re-researched): an `.xlsx` absolutely can carry embedded
+raster images too — a logo or photo floated over a sheet
+(`xl/drawings/drawingN.xml`, backed by `xl/media/*`, the exact same
+DrawingML anchoring model `.docx` uses for its own `<w:drawing>`) and a
+chart object (`xl/charts/chartN.xml`, a nativechart definition, not a
+raster image at all — nothing to "extract" as a file the way a photo is).
+Deliberately out of scope here: a later plan converts spreadsheets to a
+queryable database (`es_doc_query`, not markdown/es_read — see docs.py's
+`TABLE_KINDS` note) rather than a markdown table, so any embedded-image
+work done against `_convert_xlsx`'s current markdown-table output would be
+thrown away once that lands. `_convert_xlsx` therefore still always
+returns `(markdown, [])`, unchanged.
+
 .docx: walked in DOCUMENT ORDER, not python-docx's separate `.paragraphs`/
 `.tables` lists — those are two independent flat lists that do not preserve
 how paragraphs and tables were actually interleaved in the source (a table
@@ -190,6 +292,7 @@ from lxml.etree import XMLSyntaxError
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
+from es import doc_cache
 from es.capabilities.doc_support import (ParseFailed, format_cell, format_row,
                                           truncation_marker)
 
@@ -213,6 +316,12 @@ from es.capabilities.doc_support import (ParseFailed, format_cell, format_row,
 # below, which bound the COST of touching such a file, not just the
 # characters it emits).
 MAX_CHARS = 50_000_000
+
+# .docx embedded-image extraction ceiling — deliberately its OWN constant,
+# not doc_pdf.MAX_EXTRACTED_IMAGES, even though it is set to the same value.
+# See the module docstring's "MAX_EXTRACTED_IMAGES" note for why coupling
+# this module's ceiling to doc_pdf's would be the wrong kind of coupling.
+MAX_EXTRACTED_IMAGES = 500
 
 # --------------------------------------------------------------------------
 # Parse-step error mapping (see doc_support.ParseFailed for the boundary
@@ -365,6 +474,9 @@ _W_TYPE = qn("w:type")
 _W_PPR = qn("w:pPr")
 _W_PSTYLE = qn("w:pStyle")
 _W_VAL = qn("w:val")
+_W_DRAWING = qn("w:drawing")
+_A_BLIP = qn("a:blip")
+_R_EMBED = qn("r:embed")
 
 
 # --------------------------------------------------------------------------
@@ -426,11 +538,28 @@ def _build_heading_levels(document: Document) -> Dict[Optional[str], int]:
     return levels
 
 
-def _run_text(r) -> str:
+def _run_text(r, image_rids: Optional[List[str]] = None) -> str:
     """Reimplements `docx.oxml.text.run.CT_R.text` (join each inner-content
     child's text equivalent) WITHOUT its `self.xpath("w:br | w:cr | ...")`
     call — see `_paragraph_text`'s docstring for why that call is expensive
-    enough per-paragraph to matter and how this was verified equivalent."""
+    enough per-paragraph to matter and how this was verified equivalent.
+
+    `image_rids`, when given, collects any embedded-image relationship ids
+    found on a `<w:drawing>` child of this run (see `_drawing_blip_rids`) —
+    folded into this SAME walk rather than a second pass over `r`'s
+    children, because a second full walk (one for text, one for images)
+    measurably reintroduces the class of per-paragraph cost this function
+    exists to avoid: measured directly, adding a SEPARATE
+    `_paragraph_image_rids`-style function (its own `iterchildren()` pass
+    per paragraph/run, called after `_paragraph_block`) added ~1s to full
+    conversion of the 300,000-plain-paragraph fixture (~1.6s -> ~2.5s on
+    this machine) purely from walking every run's children twice — even
+    though not one of those paragraphs has a `<w:drawing>` at all. Folding
+    the check into THIS walk instead (one extra `elif` per child, evaluated
+    only when every earlier branch already missed) measured back down to
+    ~1.4-1.9s, i.e. no measurable regression against the pre-image
+    baseline. `image_rids=None` (the default) skips that `elif`'s condition
+    outright rather than allocating/threading a list no caller asked for."""
     parts = []
     for e in r.iterchildren():
         tag = e.tag
@@ -451,10 +580,12 @@ def _run_text(r) -> str:
             parts.append("\n")
         elif tag == _W_NOBREAKHYPHEN:
             parts.append("-")
+        elif image_rids is not None and tag == _W_DRAWING:
+            image_rids.extend(_drawing_blip_rids(e))
     return "".join(parts)
 
 
-def _paragraph_text(p) -> str:
+def _paragraph_text(p, image_rids: Optional[List[str]] = None) -> str:
     """Reimplements `Paragraph.text` (join each direct `w:r`/`w:hyperlink`
     child's text) by walking the already-parsed lxml tree directly, instead
     of through python-docx's `CT_P.text`/`CT_R.text`/`CT_Hyperlink.text`
@@ -480,16 +611,20 @@ def _paragraph_text(p) -> str:
     tag names. Verified equivalent to `Paragraph.text` output-for-output
     against this module's own docx fixtures plus dedicated line-break/tab/
     hyperlink cases (see test_doc_office.py).
+
+    `image_rids`, when given, is threaded through to `_run_text` so a
+    paragraph's embedded images are collected in the SAME pass as its text
+    — see `_run_text`'s docstring for why that matters at scale.
     """
     parts = []
     for e in p.iterchildren():
         tag = e.tag
         if tag == _W_R:
-            parts.append(_run_text(e))
+            parts.append(_run_text(e, image_rids))
         elif tag == _W_HYPERLINK:
             for r in e.iterchildren():
                 if r.tag == _W_R:
-                    parts.append(_run_text(r))
+                    parts.append(_run_text(r, image_rids))
     return "".join(parts)
 
 
@@ -516,14 +651,107 @@ def _paragraph_style_id(p) -> Optional[str]:
     return pStyle.get(_W_VAL)
 
 
-def _paragraph_block(p, heading_levels: Dict[Optional[str], int]) -> Optional[str]:
-    text = _paragraph_text(p).strip()
+def _paragraph_block(p, heading_levels: Dict[Optional[str], int],
+                      image_rids: Optional[List[str]] = None) -> Optional[str]:
+    """`image_rids`, when given, is passed straight through to
+    `_paragraph_text` so the caller gets this paragraph's embedded-image
+    relationship ids (in document order) as a side effect of the SAME text
+    walk `_paragraph_block` already has to do — see `_run_text`'s docstring
+    for why a second, separate walk over the same paragraph is avoided."""
+    text = _paragraph_text(p, image_rids).strip()
     if not text:
         return None
     level = heading_levels.get(_paragraph_style_id(p))
     if level:
         return f"{'#' * level} {text}"
     return text
+
+
+# --------------------------------------------------------------------------
+# .docx embedded images — see the module docstring's "EMBEDDED IMAGES" note.
+# --------------------------------------------------------------------------
+
+def _drawing_blip_rids(drawing) -> List[str]:
+    """Every `r:embed` relationship id inside one `<w:drawing>` element, in
+    document order. `drawing.iter(_A_BLIP)` is a native lxml walk (no xpath
+    expression to compile) over just this one drawing's own subtree — cheap
+    and only ever invoked once a `<w:drawing>` has already been found, never
+    per paragraph/run that doesn't have one. Almost every real `<w:drawing>`
+    holds exactly one `<a:blip>` (one inline/anchored picture), but this
+    doesn't assume that — a drawing wrapping a picture-fill shape or a
+    multi-image group is walked the same way, and an `<a:blip>` with no
+    `r:embed` attribute at all (a blip that references a blob directly
+    rather than a relationship — rare, but valid OOXML) is simply skipped
+    rather than yielding a bogus None id."""
+    return [rid for rid in (b.get(_R_EMBED) for b in drawing.iter(_A_BLIP))
+            if rid]
+
+
+def _cell_image_rids(cell) -> List[str]:
+    """Every embedded-image relationship id inside one table cell, found by
+    walking the cell's own underlying `<w:tc>` element (`cell._tc` —
+    python-docx's private-but-stable handle onto it; this module already
+    reaches into an underlying lxml element the same way for
+    `document.element.body`). Bounded by the same DOCX_MAX_TABLE_ROWS cap as
+    the rest of `_table_block`'s per-row work — a row beyond that cap is
+    never reached, so this never runs for it either."""
+    return [rid for drawing in cell._tc.iter(_W_DRAWING)
+            for rid in _drawing_blip_rids(drawing)]
+
+
+class _ImageExtractor:
+    """Per-document state for `.docx` embedded-image extraction, threaded
+    through `_iter_body_blocks`/`_table_block`: the running extraction-order
+    counter (also the file-name index — see doc_cache.office_image_path),
+    an `r:embed` id -> (already-written Path, index) cache (see the module
+    docstring's "DUPLICATE IMAGES" note for why a repeated rId must never be
+    re-extracted or re-counted), and how many images were skipped once
+    MAX_EXTRACTED_IMAGES was reached (reported in-band once, at the end of
+    the document — see `_iter_body_blocks`).
+    """
+
+    def __init__(self, document: Document, adir: Path):
+        self._related_parts = document.part.related_parts
+        self._adir = adir
+        self._by_rid: Dict[str, Tuple[Path, int]] = {}
+        self.count = 0
+        self.skipped = 0
+        self.saved: List[Path] = []
+
+    def extract(self, rid: str) -> Optional[Tuple[Path, int]]:
+        """Returns (path, 1-based extraction index) for `rid`'s image, or
+        None if it can't/shouldn't be extracted (an unresolvable rid, a
+        related part that isn't actually an image, or — only for a
+        genuinely NEW image — the document-wide ceiling already reached).
+        A repeated rid always succeeds regardless of the ceiling: it costs
+        no new extraction, just another link to a file already on disk."""
+        cached = self._by_rid.get(rid)
+        if cached is not None:
+            return cached
+        if self.count >= MAX_EXTRACTED_IMAGES:
+            self.skipped += 1
+            return None
+        part = self._related_parts.get(rid)
+        image = getattr(part, "image", None)
+        if image is None:
+            return None
+        ext = image.ext or "png"
+        if not ext.isalnum() or len(ext) > 10:
+            # Defense in depth: `ext` is derived from the package's own part
+            # name (see doc_cache.office_image_path's docstring) and is
+            # never expected to contain anything but ordinary extension
+            # characters — but this is still a value read from an untrusted
+            # input file, and it's about to become part of a filesystem
+            # path, so an unexpected shape (e.g. a stray "/") falls back to
+            # a safe, fixed extension rather than being trusted verbatim.
+            ext = "bin"
+        self.count += 1
+        out = doc_cache.office_image_path(self._adir, self.count, ext)
+        out.write_bytes(image.blob)
+        result = (out, self.count)
+        self._by_rid[rid] = result
+        self.saved.append(out)
+        return result
 
 
 # Reserved headroom subtracted from the budget handed to `_table_block`, so
@@ -533,7 +761,8 @@ def _paragraph_block(p, heading_levels: Dict[Optional[str], int]) -> Optional[st
 _TABLE_MARKER_RESERVE = 300
 
 
-def _table_block(table: Table, budget: int) -> Optional[str]:
+def _table_block(table: Table, budget: int,
+                  extractor: _ImageExtractor) -> Tuple[Optional[str], List[str]]:
     """Render `table` as a pipe table, bounded by BOTH DOCX_MAX_TABLE_ROWS
     (a structural per-table row cap) AND `budget` (the character budget
     still available in the document at the point this table was reached) —
@@ -555,8 +784,17 @@ def _table_block(table: Table, budget: int) -> Optional[str]:
     the analogous first-row-width guess this module makes for a
     dimension-less .xlsx sheet, which is a heuristic because a spreadsheet
     has no such guarantee.
+
+    Returns (markdown, image_blocks): `image_blocks` is a list of Markdown
+    image-link lines for every embedded image found in a KEPT row's cells
+    (never a row beyond either cap — an unlisted row's images are no more
+    reachable than its text), meant to be emitted by the caller AFTER the
+    table's own markdown, never inside a cell — see the module docstring's
+    "WHERE AN IMAGE LINK LANDS" note for why a cell's own pipe-table syntax
+    is never touched.
     """
     lines: List[str] = []
+    image_blocks: List[str] = []
     used = 0
     kept = 0
     width: Optional[int] = None
@@ -566,7 +804,8 @@ def _table_block(table: Table, budget: int) -> Optional[str]:
         if i >= DOCX_MAX_TABLE_ROWS:
             row_cap_hit = True
             break
-        cells = [format_cell(cell.text) for cell in row.cells]
+        row_cells = list(row.cells)
+        cells = [format_cell(cell.text) for cell in row_cells]
         if width is None:
             width = len(cells)
         pieces = [format_row(cells, width)]
@@ -579,9 +818,17 @@ def _table_block(table: Table, budget: int) -> Optional[str]:
         lines.extend(pieces)
         used += cost
         kept += 1
+        for col, cell in enumerate(row_cells, start=1):
+            for rid in _cell_image_rids(cell):
+                extracted = extractor.extract(rid)
+                if extracted is not None:
+                    path, idx = extracted
+                    image_blocks.append(
+                        f"![embedded image {idx} — table row {i + 1}, "
+                        f"column {col}]({path})")
 
     if not lines:
-        return None
+        return None, image_blocks
 
     md = "\n".join(lines)
     if row_cap_hit:
@@ -592,27 +839,38 @@ def _table_block(table: Table, budget: int) -> Optional[str]:
         md += "\n\n" + truncation_marker(
             f"after {kept} rows — the character "
             "limit for this document was reached")
-    return md
+    return md, image_blocks
 
 
 def _iter_body_blocks(document: Document, remaining_budget,
-                       heading_levels: Dict[Optional[str], int]) -> Iterator[str]:
+                       heading_levels: Dict[Optional[str], int],
+                       extractor: _ImageExtractor) -> Iterator[str]:
     """Yield blocks from `document.element.body`'s direct children IN ORDER,
-    LAZILY — handling each `<w:p>` via `_paragraph_block` and mapping each
-    `<w:tbl>` to a python-docx `Table` — see the module docstring for why
-    walking the body directly (and not `document.paragraphs`/
-    `document.tables`) is the only way to keep the source's true
-    interleaving. Anything else under `<w:body>` (e.g. the trailing
-    `<w:sectPr>` section-properties element) is silently skipped — it
-    carries no displayable content.
+    LAZILY — handling each `<w:p>` via `_paragraph_block` (which also
+    collects the paragraph's embedded images, in the SAME text walk — see
+    `_run_text`'s docstring) and mapping each `<w:tbl>` to a python-docx
+    `Table` — see the module docstring for why walking the body directly
+    (and not `document.paragraphs`/`document.tables`) is the only way to
+    keep the source's true interleaving. Anything else under `<w:body>`
+    (e.g. the trailing `<w:sectPr>` section-properties element) is silently
+    skipped — it carries no displayable content.
+
+    A `<w:p>`'s own embedded images are yielded as separate blocks
+    immediately AFTER its text block (or on their own, if the paragraph has
+    no text — the shape `Document.add_picture` produces) — this is what
+    puts an inline image at its position in the document, between whatever
+    came before and after it, the same interleaving `_assemble_page` gives a
+    PDF page's images (see the module docstring's "WHERE AN IMAGE LINK
+    LANDS" note).
 
     A `<w:p>` is passed to `_paragraph_block` as its raw lxml element, NOT
     wrapped in a python-docx `Paragraph` — nothing here needs the wrapper
-    any more (`_paragraph_block` reads both the style id and the text
-    straight off the XML; see `_build_heading_levels` and `_paragraph_text`
-    for why going through `Paragraph.style`/`Paragraph.text` was the actual
-    cost). `Table`/`Row`/`Cell` ARE still used for `<w:tbl>`, since only the
-    heading/text paths were profiled as hot — see `_table_block`.
+    any more (`_paragraph_block` reads the style id, the text, AND any
+    embedded images straight off the XML; see `_build_heading_levels` and
+    `_paragraph_text` for why going through `Paragraph.style`/
+    `Paragraph.text` was the actual cost). `Table`/`Row`/`Cell` ARE still
+    used for `<w:tbl>`, since only the heading/text paths were profiled as
+    hot — see `_table_block`.
 
     This is a generator, not a list, on purpose: `_table_block` (real,
     proportional-to-content work — walking every kept row's cells) is the
@@ -633,22 +891,44 @@ def _iter_body_blocks(document: Document, remaining_budget,
     the caller and threaded through rather than rebuilt here — this
     function runs once per `<w:p>`, so rebuilding it here would reintroduce
     exactly the "per paragraph, not per document" cost this fix removes.
+
+    A final "images not extracted" note (if `extractor.skipped`) is yielded
+    only AFTER the whole body has been walked — see the module docstring's
+    "MAX_EXTRACTED_IMAGES" note for why the skipped count can only be known
+    at that point, unlike doc_pdf's per-page lookahead.
     """
     for child in document.element.body.iterchildren():
         if child.tag == _W_P:
-            block = _paragraph_block(child, heading_levels)
+            image_rids: List[str] = []
+            block = _paragraph_block(child, heading_levels, image_rids)
+            if block:
+                yield block
+            for rid in image_rids:
+                extracted = extractor.extract(rid)
+                if extracted is not None:
+                    path, idx = extracted
+                    yield f"![embedded image {idx}]({path})"
         elif child.tag == _W_TBL:
             budget = max(0, remaining_budget() - _TABLE_MARKER_RESERVE)
-            block = _table_block(Table(child, document), budget)
+            table_md, table_images = _table_block(
+                Table(child, document), budget, extractor)
+            if table_md:
+                yield table_md
+            for image_block in table_images:
+                yield image_block
         else:
             continue
-        if block:
-            yield block
+    if extractor.skipped:
+        yield (f"*(this document also contains {extractor.skipped} further "
+               f"embedded image{'s' if extractor.skipped != 1 else ''} not "
+               f"extracted — the document-wide limit of "
+               f"{MAX_EXTRACTED_IMAGES} images was reached.)*")
 
 
-def _convert_docx(source: Path) -> str:
+def _convert_docx(source: Path, adir: Path) -> Tuple[str, List[Path]]:
     document = _open_docx(source)
     heading_levels = _build_heading_levels(document)
+    extractor = _ImageExtractor(document, adir)
 
     lines: List[str] = []
     used = 0
@@ -658,7 +938,7 @@ def _convert_docx(source: Path) -> str:
     def remaining_budget() -> int:
         return MAX_CHARS - used
 
-    for block in _iter_body_blocks(document, remaining_budget, heading_levels):
+    for block in _iter_body_blocks(document, remaining_budget, heading_levels, extractor):
         cost = len(block) + (2 if kept > 0 else 0)  # blank line before it
         if kept > 0 and used + cost > MAX_CHARS:
             truncated = True
@@ -670,7 +950,7 @@ def _convert_docx(source: Path) -> str:
         kept += 1
 
     if kept == 0:
-        return "*(this document has no readable text or tables)*"
+        return "*(this document has no readable text or tables)*", extractor.saved
 
     md = "\n".join(lines)
     if truncated:
@@ -684,7 +964,7 @@ def _convert_docx(source: Path) -> str:
             "limit was reached; this document has no page range to "
             "resume from, so ask for a narrower excerpt if more is "
             "needed")
-    return md
+    return md, extractor.saved
 
 
 # --------------------------------------------------------------------------
@@ -923,22 +1203,23 @@ def _convert_xlsx(source: Path) -> str:
     return "\n".join(lines)
 
 
-_HANDLERS = {
-    ".docx": _convert_docx,
-    ".xlsx": _convert_xlsx,
-}
-
-
 def convert(source: Path, adir: Path,
             pages: Optional[List[int]] = None, **_ignored) -> Tuple[str, List[Path]]:
-    """Return (markdown, []) — see the module docstring's images note:
-    embedded .docx images are not extracted here (tracked as a follow-up),
-    so this always returns an empty image list, same as doc_text/doc_ics.
+    """`.docx` returns (markdown, extracted_image_paths) — see the module
+    docstring's "EMBEDDED IMAGES" note: every embedded raster image is
+    extracted to a sibling file under `adir` and linked inline at its
+    position. `.xlsx` returns (markdown, []) unchanged — see the module
+    docstring's "XLSX IMAGES" note for why that format's embedded images are
+    deliberately out of scope for now.
 
-    `pages`/`adir` are accepted for signature parity with every other
-    converter (docs.extract calls all of them uniformly) but unused: neither
-    format implements `page_count`/`render`, so docs.py never lets an
-    explicit `pages` argument reach here.
+    `pages` is accepted for signature parity with every other converter
+    (docs.extract calls all of them uniformly) but unused: neither format
+    implements `page_count`/`render`, so docs.py never lets an explicit
+    `pages` argument reach here.
     """
-    handler = _HANDLERS[source.suffix.lower()]
-    return handler(source), []
+    ext = source.suffix.lower()
+    if ext == ".docx":
+        return _convert_docx(source, adir)
+    if ext == ".xlsx":
+        return _convert_xlsx(source), []
+    raise KeyError(ext)

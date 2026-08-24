@@ -21,6 +21,133 @@ def test_docx_tables_render_as_pipe_tables(docx_file, tmp_path):
     assert "| Kit | $65 |" in md
 
 
+# --------------------------------------------------------------------------
+# Embedded images — every image comes out as the thing it is (a file, linked
+# inline at its position), because it exists, not because it scored above a
+# threshold. Mirrors doc_pdf's own image-extraction test shape.
+# --------------------------------------------------------------------------
+
+def test_docx_inline_image_extracted_and_linked_between_paragraphs(
+        docx_with_inline_image, tmp_path):
+    md, images = doc_office.convert(docx_with_inline_image, tmp_path)
+
+    assert len(images) == 1
+    assert images[0].exists()
+    assert images[0].suffix == ".png"
+
+    first_idx = md.index("FIRST paragraph")
+    image_idx = md.index("![embedded image 1]")
+    last_idx = md.index("LAST paragraph")
+    assert first_idx < image_idx < last_idx
+
+
+def test_docx_no_images_means_no_files_and_no_links(docx_file, tmp_path):
+    """docx_file (the base fixture) has headings/paragraphs/a table but no
+    embedded pictures at all — must not fabricate a file or a link."""
+    md, images = doc_office.convert(docx_file, tmp_path)
+    assert images == []
+    assert "![" not in md
+
+
+def test_docx_two_images_two_files_two_links_in_document_order(
+        docx_with_two_images, tmp_path):
+    md, images = doc_office.convert(docx_with_two_images, tmp_path)
+
+    assert len(images) == 2
+    assert images[0] != images[1]
+    for img in images:
+        assert img.exists()
+
+    first_link_idx = md.index("![embedded image 1]")
+    between_idx = md.index("BETWEEN THE TWO PHOTOS")
+    second_link_idx = md.index("![embedded image 2]")
+    assert first_link_idx < between_idx < second_link_idx
+
+
+def test_docx_table_cell_image_emitted_after_table_not_inside_cell(
+        docx_with_table_cell_image, tmp_path):
+    """A Markdown link inside a pipe-table cell risks corrupting the table's
+    own syntax (see the module docstring's "WHERE AN IMAGE LINK LANDS"
+    note) — so a cell's image is reported as its own block AFTER the whole
+    table, naming which row/column it came from, rather than embedded in
+    the cell itself."""
+    md, images = doc_office.convert(docx_with_table_cell_image, tmp_path)
+
+    assert len(images) == 1
+    assert images[0].exists()
+
+    # The cell itself stays plain text — no link, no broken pipe syntax.
+    table_line = next(line for line in md.splitlines()
+                       if line.startswith("| Widget"))
+    assert "![" not in table_line
+    assert table_line.count("|") == 3  # "| Widget |  |" — unbroken
+
+    # The image is reported after the table, naming its cell.
+    table_idx = md.index("| Widget")
+    image_idx = md.index("![embedded image 1")
+    assert table_idx < image_idx
+    assert "row 2, column 2" in md
+
+
+def test_docx_duplicate_image_relationship_writes_one_file_two_links(
+        docx_with_duplicated_image_relationship, tmp_path):
+    """The SAME `r:embed` relationship id referenced from two paragraphs
+    (e.g. a letterhead logo at the top and bottom of a template) is the SAME
+    underlying image part by construction — python-docx's own model already
+    asserts this, it isn't an ambiguous "same bytes, is that one image or
+    two" judgment call. Writing it to disk twice would be pure waste with
+    no benefit to the agent (same picture either way); each of the two
+    APPEARANCES in the reading order still gets its own link, both pointing
+    at the one file that was actually written."""
+    md, images = doc_office.convert(
+        docx_with_duplicated_image_relationship, tmp_path)
+
+    assert len(images) == 1
+    assert images[0].exists()
+    assert md.count("![embedded image 1]") == 2
+
+    para_a_idx = md.index("Para A")
+    first_link_idx = md.index("![embedded image 1]")
+    para_b_idx = md.index("Para B")
+    second_link_idx = md.rindex("![embedded image 1]")
+    assert para_a_idx < first_link_idx < para_b_idx < second_link_idx
+
+
+def test_docx_image_extraction_ceiling_is_enforced_and_reported_in_band(
+        tmp_path, monkeypatch):
+    """A pathological document (far more embedded images than any real one
+    would carry) must not write an unbounded number of files — and hitting
+    the ceiling must be reported IN-BAND, never a silent drop. Monkeypatches
+    the ceiling down (mirroring doc_pdf's own ceiling test) rather than
+    building 500+ real images, which would make this test both slow and an
+    unfaithful stand-in for the real limit's *shape*, not its exact value."""
+    import io
+    from docx import Document
+    from PIL import Image
+
+    monkeypatch.setattr(doc_office, "MAX_EXTRACTED_IMAGES", 3)
+
+    p = tmp_path / "many_images.docx"
+    d = Document()
+    for i in range(5):
+        photo = io.BytesIO()
+        Image.new("RGB", (10, 10), (i, i, i)).save(photo, format="PNG")
+        photo.seek(0)
+        d.add_paragraph(f"before photo {i}")
+        d.add_picture(photo)
+    d.save(str(p))
+
+    md, images = doc_office.convert(p, tmp_path)
+
+    assert len(images) == 3  # only the ceiling's worth actually written
+    assert "![embedded image 1]" in md
+    assert "![embedded image 3]" in md
+    assert "![embedded image 4]" not in md
+    assert "2 further" in md
+    assert "not extracted" in md
+    assert "limit of 3 images" in md
+
+
 def test_docx_preserves_document_order(tmp_path):
     """python-docx exposes paragraphs and tables as SEPARATE lists that do not
     preserve their interleaved order. A table between two paragraphs must come

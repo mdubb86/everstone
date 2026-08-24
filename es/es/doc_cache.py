@@ -99,6 +99,28 @@ def page_drawing_path(adir: Path, page_no: int, drawing_no: int) -> Path:
     return Path(adir) / f"p{page_no:03d}-d{drawing_no:02d}.png"
 
 
+def office_image_path(adir: Path, image_no: int, ext: str) -> Path:
+    """One embedded image extracted from a `.docx` (see doc_office.py).
+
+    A `.docx` has no page concept the way a PDF does, so there is no `pNNN`
+    to key off of — this is numbered by a single flat RUNNING INDEX across
+    the whole document, in extraction (document) order, zero-padded so
+    lexical order matches that order the same way `pNNN`/`pNNN-iMM` do for a
+    PDF.
+
+    `ext` preserves the image part's OWN on-disk extension (png/jpeg/gif/
+    ...) rather than forcing a PNG re-encode: a `.docx` package stores the
+    original image FILE, unlike a PDF page (which has no single "original
+    file" a rendered/rotated embedded image was ever decoded from at its
+    on-page appearance) — extracting those bytes unchanged is both cheaper
+    and higher-fidelity than any re-render, so the file this writes is
+    literally the same bytes the package already contains and should keep
+    that file's own extension. See doc_office.py's module docstring for the
+    measurement behind this choice.
+    """
+    return Path(adir) / f"img{image_no:03d}.{ext}"
+
+
 def touch(adir: Path) -> None:
     """Mark a document as used. Makes the directory mtime an ACCESS time, so
     the TTL means '24h since last use' rather than '24h since conversion' —

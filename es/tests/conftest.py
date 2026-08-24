@@ -478,6 +478,125 @@ def docx_file(tmp_path):
 
 
 @pytest.fixture
+def docx_with_inline_image(tmp_path):
+    """Heading, paragraph, an inline embedded photo (its own paragraph — the
+    shape `Document.add_picture` produces), paragraph — used to assert the
+    image's link lands BETWEEN the two prose paragraphs, not appended after
+    everything."""
+    import io
+    from docx import Document
+    from PIL import Image
+
+    photo = io.BytesIO()
+    Image.new("RGB", (60, 40), (10, 20, 30)).save(photo, format="PNG")
+    photo.seek(0)
+
+    p = tmp_path / "with_image.docx"
+    d = Document()
+    d.add_heading("Season Overview", level=1)
+    d.add_paragraph("FIRST paragraph before the photo.")
+    d.add_picture(photo)
+    d.add_paragraph("LAST paragraph after the photo.")
+    d.save(str(p))
+    return p
+
+
+@pytest.fixture
+def docx_with_two_images(tmp_path):
+    """Two distinct embedded photos, each in its own paragraph, with a
+    distinguishable marker paragraph between them — both must be extracted
+    to separate files and linked in document order."""
+    import io
+    from docx import Document
+    from PIL import Image
+
+    photo1 = io.BytesIO()
+    Image.new("RGB", (30, 30), (200, 0, 0)).save(photo1, format="PNG")
+    photo1.seek(0)
+    photo2 = io.BytesIO()
+    Image.new("RGB", (30, 30), (0, 0, 200)).save(photo2, format="PNG")
+    photo2.seek(0)
+
+    p = tmp_path / "two_images.docx"
+    d = Document()
+    d.add_paragraph("before both photos")
+    d.add_picture(photo1)
+    d.add_paragraph("BETWEEN THE TWO PHOTOS")
+    d.add_picture(photo2)
+    d.add_paragraph("after both photos")
+    d.save(str(p))
+    return p
+
+
+@pytest.fixture
+def docx_with_table_cell_image(tmp_path):
+    """A table with an inline photo embedded in one cell's own paragraph —
+    used to confirm the image is reported AFTER the table (never inside a
+    pipe-table cell, which would corrupt the table's own syntax)."""
+    import io
+    from docx import Document
+    from PIL import Image
+
+    photo = io.BytesIO()
+    Image.new("RGB", (30, 30), (9, 9, 9)).save(photo, format="PNG")
+    photo.seek(0)
+
+    p = tmp_path / "table_image.docx"
+    d = Document()
+    d.add_paragraph("Roster")
+    t = d.add_table(rows=2, cols=2)
+    t.cell(0, 0).text = "Item"
+    t.cell(0, 1).text = "Photo"
+    t.cell(1, 0).text = "Widget"
+    t.cell(1, 1).paragraphs[0].add_run().add_picture(photo)
+    d.save(str(p))
+    return p
+
+
+@pytest.fixture
+def docx_with_duplicated_image_relationship(tmp_path):
+    """The SAME embedded-image relationship id referenced from TWO separate
+    paragraphs (built by literally duplicating the `<w:drawing>`-bearing
+    paragraph's XML onto a second paragraph, reusing its `r:embed` id) — the
+    realistic shape of e.g. a letterhead logo placed at both the top and
+    bottom of a template. Used to confirm this writes ONE file, not two, and
+    that the SAME index is linked from both positions."""
+    import copy
+    import io
+    from docx import Document
+    from docx.oxml.ns import qn
+    from PIL import Image
+
+    photo = io.BytesIO()
+    Image.new("RGB", (20, 20), (1, 2, 3)).save(photo, format="PNG")
+    photo.seek(0)
+
+    first = tmp_path / "single.docx"
+    d = Document()
+    d.add_paragraph("Para A")
+    d.add_picture(photo)
+    d.add_paragraph("Para B")
+    d.save(str(first))
+
+    d2 = Document(str(first))
+    body = d2.element.body
+    drawing_para = next(
+        c for c in body.iterchildren()
+        if c.tag == qn("w:p") and c.findall(".//" + qn("w:drawing")))
+    dup_para = copy.deepcopy(drawing_para)
+    sect_pr = body.find(qn("w:sectPr"))
+    if sect_pr is not None:
+        body.remove(sect_pr)
+    body.append(dup_para)
+    if sect_pr is not None:
+        body.append(sect_pr)
+
+    p = tmp_path / "duplicated.docx"
+    d2.save(str(p))
+    return p
+
+
+@pytest.fixture
 def xlsx_file(tmp_path):
     from openpyxl import Workbook
     p = tmp_path / "roster.xlsx"
