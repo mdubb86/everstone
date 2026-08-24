@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import time
 
 import pytest
@@ -1054,6 +1055,50 @@ def test_preview_is_capped(tmp_path):
     assert out["complete"] is False
 
 
+def test_preview_chars_is_pinned_at_800():
+    """The docstring on PREVIEW_CHARS promises the agent "the first ~800
+    characters" (see mcp_server.es_doc_extract's own docstring) — both
+    boundary tests here are written RELATIVE to the constant, so nothing
+    else in the suite would notice if it silently drifted (e.g. 800 -> 200).
+    Pin the literal directly."""
+    assert docs.PREVIEW_CHARS == 800
+
+
+def test_preview_never_splits_a_markdown_image_link(tmp_path):
+    """The now-deleted _safe_hard_cut existed exactly to stop a truncation
+    cut from landing inside a "![page N](path)" link — that property moved
+    to `preview` (the only place extract() still cuts text) but nothing
+    guarded it there. Reproduced empirically: every scanned PDF of 7+ pages
+    ends an 800-char raw slice mid-path once the cache path is
+    production-length. A short tmp_path-rooted cache_root is NOT long
+    enough to reproduce this (each "![page N](...)" link is too short to
+    straddle the 800-char boundary) — this test deliberately nests the
+    cache_root under a realistic prefix
+    (.../hermes/profiles/everstone/cache/documents/.es/<id>/pNNN.png) to
+    match cella's actual on-disk path depth."""
+    from PIL import Image
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    png = tmp_path / "scan.png"
+    Image.new("RGB", (400, 300), (200, 200, 200)).save(png)
+    pdf = tmp_path / "scanned9.pdf"
+    c = canvas.Canvas(str(pdf), pagesize=letter)
+    for _ in range(9):
+        c.drawImage(str(png), 72, 400, width=400, height=300)
+        c.showPage()
+    c.save()
+
+    cache_root = (tmp_path / "opt" / "data" / "hermes" / "profiles" /
+                  "everstone" / "cache" / "documents")
+    cache_root.mkdir(parents=True)
+
+    out = docs.extract(str(pdf), roots=[tmp_path], cache_root=cache_root)
+    assert out["complete"] is False  # otherwise the cut never fires at all
+    assert not re.search(r"!\[[^\]]*\]\([^)]*$", out["preview"]), \
+        "preview ended inside an unterminated markdown image link"
+
+
 def test_complete_is_true_when_the_preview_is_the_whole_document(tmp_path):
     p = tmp_path / "short.txt"
     p.write_text("Practice moved to Thursday.\n", encoding="utf-8")
@@ -1075,6 +1120,19 @@ def test_complete_is_exact_at_the_boundary(tmp_path):
 
 def test_next_names_the_tool_and_the_handle(text_pdf, tmp_path):
     out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
+    assert "es_read" in out["next"]
+    assert out["doc_id"] in out["next"], "the agent should copy the handle, not build it"
+
+
+def test_next_names_the_handle_on_the_incomplete_branch_too(tmp_path):
+    """text_pdf (~130 chars) only ever exercises the complete=True branch of
+    `next` — every long document (the common case) takes the OTHER branch,
+    which was untested: a mutation dropping the handle there left every
+    existing test passing."""
+    p = tmp_path / "long.txt"
+    p.write_text("x" * 5000, encoding="utf-8")
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert out["complete"] is False
     assert "es_read" in out["next"]
     assert out["doc_id"] in out["next"], "the agent should copy the handle, not build it"
 

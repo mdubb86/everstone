@@ -104,6 +104,26 @@ def truncation_marker(detail: str) -> str:
     return f"{TRUNCATION_SENTINEL} {detail})*"
 
 
+def rfind_safe_cut(text: str, limit: int) -> int:
+    """Return a cut index <= min(limit, len(text)) that falls on a line
+    boundary — the last newline at or before `limit` — so slicing `text` at
+    the returned index can never land inside a single-line token such as a
+    Markdown image link (`![page N](path)`, always emitted on one line by
+    doc_pdf.convert). Falls back to `limit` itself when no newline exists
+    before it (the whole span up to `limit` is one unbroken line) — a
+    nicety when a line boundary is available, not a guarantee independent
+    of the text's shape.
+
+    Shared by mcp_server._cap_content (capping `es_read`'s returned content)
+    and docs.extract()'s `preview` cut — both need "cut near a character
+    budget without slicing a token in half", so one function owns the
+    rfind rather than two independently-maintained copies of it.
+    """
+    limit = max(0, min(limit, len(text)))
+    cut = text.rfind("\n", 0, limit)
+    return cut if cut > 0 else limit
+
+
 def table_to_markdown(table: List[List[Optional[str]]]) -> str:
     """Render one extracted table (a list of rows, each a list of cells) as
     a Markdown pipe table with a header separator. Returns "" for an

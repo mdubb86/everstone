@@ -754,3 +754,29 @@ def test_es_read_xlsx_outline_mode_returns_first_sheet_content_not_null(tmp_path
     assert len(data["outline"]) == 2
     assert data["content"] is not None
     assert "row0" in data["content"]
+
+
+# --- section="page-N" is the promised replacement for the deleted `pages`
+# argument (docs.extract's own comment: "section=\"page-37\" through es_read
+# already expresses that intent") — its predecessor test (page-subset
+# extraction) was deleted along with `pages`, and nothing else in the suite
+# exercises reaching a PAGE well past the old front-of-document budgets.
+
+def test_es_read_section_reaches_a_deep_pdf_page(wired_cache):
+    """A page whose own content starts well past 40,000 characters into
+    doc.md must still be reachable by `section="page-N"` — es_read pages the
+    FULL cached document, not just some early prefix of it."""
+    parts = []
+    for i in range(1, 51):
+        parts.append(f"## Page {i}\n\nFiller text unique to page {i}. " + ("x" * 900))
+    md = "\n\n".join(parts)
+    deep_start = md.index("## Page 45")
+    assert deep_start > 40_000, "fixture must actually exercise a deep offset"
+    target = _seed_doc(wired_cache, md, ext=".pdf")
+
+    out = mcp_server.es_read(target, section="page-45")
+    assert out["ok"] is True
+    data = out["data"]
+    assert "Filler text unique to page 45." in data["content"]
+    assert "page 44" not in data["content"]
+    assert "page 46" not in data["content"]

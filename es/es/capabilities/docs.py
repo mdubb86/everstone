@@ -436,9 +436,10 @@ def _read_meta_kind(adir: Path) -> Optional[str]:
     if not meta.is_file():
         return None
     try:
-        return json.loads(meta.read_text(encoding="utf-8")).get("kind")
+        k = json.loads(meta.read_text(encoding="utf-8")).get("kind")
     except (OSError, ValueError, AttributeError):
         return None
+    return k if isinstance(k, str) else None
 
 
 def read_cached(adir: Path) -> Optional[dict]:
@@ -480,12 +481,19 @@ def _write_full_extract(adir: Path, markdown: str, images: List[Path],
     working unchanged — read_cached() already treats a missing meta.json the
     same permissive way it treats a missing images.json (see
     _read_meta_kind)."""
-    (adir / DOC_MD_NAME).write_text(markdown, encoding="utf-8")
-    (adir / DOC_IMAGES_MANIFEST).write_text(
-        json.dumps([str(i) for i in images]), encoding="utf-8")
+    # meta.json is written FIRST, doc.md LAST: read_cached() gates a cache
+    # HIT on doc.md's presence alone (_read_cached_markdown), so a crash
+    # between these writes must never leave a doc.md readable without its
+    # kind already recorded — that window is harmless today (an unknown
+    # kind reads as markdown, which happens to be correct for every kind
+    # CONVERTERS produces now) but would silently serve a future "table"
+    # artifact to es_read as prose if doc.md ever became readable first.
     if kind is not None:
         (adir / DOC_META_NAME).write_text(
             json.dumps({"kind": kind}), encoding="utf-8")
+    (adir / DOC_IMAGES_MANIFEST).write_text(
+        json.dumps([str(i) for i in images]), encoding="utf-8")
+    (adir / DOC_MD_NAME).write_text(markdown, encoding="utf-8")
 
 
 def extract(source: str, roots, cache_root: Path) -> dict:
@@ -525,7 +533,15 @@ def extract(source: str, roots, cache_root: Path) -> dict:
     # agent identify what it's holding and decide whether it needs to call
     # es_read at all.
     complete = len(markdown) <= PREVIEW_CHARS
-    preview = markdown[:PREVIEW_CHARS]
+    # A raw markdown[:PREVIEW_CHARS] slice can land inside a single-line
+    # "![page N](path)" image link (doc_pdf emits one per rendered/scanned
+    # page) — with production-length cache paths this happens for every
+    # scanned PDF of 7+ pages, handing the agent a truncated, unusable path
+    # on its very first interaction with the document. Only cut with
+    # doc_support.rfind_safe_cut (never slicing mid-line) when a cut is
+    # actually needed — when `complete` is already true, `preview` must
+    # stay the untouched, full markdown, not a newline-trimmed copy of it.
+    preview = markdown if complete else markdown[:doc_support.rfind_safe_cut(markdown, PREVIEW_CHARS)]
     # Always names BOTH the tool and the handle — even when complete=true —
     # so the agent copies `next` verbatim rather than constructing a
     # "doc:<id>" string itself (a transcription slip there is exactly the

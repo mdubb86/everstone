@@ -586,9 +586,7 @@ def _cap_content(text: str, resume_hint: str) -> str:
     # over. `limit` is where the KEPT text must end so text + marker still
     # fits inside the cap.
     limit = max(0, _CONTENT_CHAR_CAP - len(marker))
-    cut = text.rfind("\n", 0, limit)
-    if cut <= 0:
-        cut = limit
+    cut = doc_support.rfind_safe_cut(text, limit)
     return text[:cut] + marker
 
 
