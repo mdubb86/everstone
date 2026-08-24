@@ -56,13 +56,20 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
     list_delete/clear), backed by `es.tasks_client.TasksClient` (caldav, in-process).
   - **Calendar** — `es_cal_*` (agenda/search/conflicts/add/edit/delete) → **Google
     Calendar API directly** (`google-api-python-client`); gcalcli was dropped.
-  - **Notes** — `es_notes_*` (journal/topic/topics/read/list) → the Obsidian vault
-    via `es.vault_client.VaultClient` (see "Notes vault & LiveSync" below).
+  - **Notes** — `es_notes_*` (journal/topic/topics/edit/attach/list) → the Obsidian
+    vault via `es.vault_client.VaultClient` (see "Notes vault & LiveSync" below).
+    Reading a note is no longer one of these tools — see `es_read` below.
   - **Documents** — `es_doc_extract(source, pages=None)` / `es_doc_render(source, pages)`
-    read PDFs the agent otherwise has no way to open (no terminal, no OCR skill) —
-    backed by `es.capabilities.docs` (confinement/caching/dispatch), `doc_pdf.py`
-    (pdfplumber + pypdfium2), and `doc_cache.py` (the artifact cache). See
-    "Document reading & the doc cache" below.
+    read eight formats the agent otherwise has no way to open (no terminal, no OCR
+    skill): `.pdf`, `.docx`, `.xlsx`, `.txt`, `.md`, `.csv`, `.json`, `.ics` — backed
+    by `es.capabilities.docs` (confinement/caching/dispatch), one converter module
+    per format (`doc_pdf.py`; `doc_office.py` for `.docx`/`.xlsx`; `doc_text.py` for
+    the four flat formats; `doc_ics.py`), and `doc_cache.py` (the artifact cache).
+    See "Document reading & the doc cache" below.
+  - **Read** — `es_read(target, section=None, query=None, offset=None)` is the one
+    pageable read over both vault notes and `es_doc_extract`-converted documents.
+    See "One read path: `es_read`" below for why this replaced `es_notes_read`
+    rather than becoming yet another per-tool text branch.
   - **Contacts / web** — `es_contacts_search` (read-only Google contacts) and a
     web-fetch tool (`trafilatura`).
   - **Maps** — reads via Google Maps Platform (`es_maps_geocode` / `search` / `place` /
@@ -257,32 +264,65 @@ vault is simply invisible to `es`. That directory is the filesystem end of a thr
 
 ## Document reading & the doc cache
 
-`es_doc_extract`/`es_doc_render` (`es/es/capabilities/docs.py`) let the agent read a PDF the
+`es_doc_extract`/`es_doc_render` (`es/es/capabilities/docs.py`) let the agent read a file the
 user sent, since the agent has no terminal and no OCR skill to fall back on (Hermes's own
 attachment note suggests both — neither exists in this profile; the tool is the actual path).
+Eight formats are supported today — `.pdf`, `.docx`, `.xlsx`, `.txt`, `.md`, `.csv`, `.json`,
+`.ics` — dispatched from a single table, `docs.CONVERTERS`, keyed by lowercased extension;
+`SUPPORTED` is *derived* from that table rather than hand-maintained beside it, so a format can
+never claim to be supported without a converter actually behind it. Adding a ninth format is
+meant to be a pure addition — one new converter module plus one new table entry — never a
+change to `extract()`/`render()` themselves.
 
-- **Output is Markdown, not raw text.** `doc_pdf.convert()` (pdfplumber) walks pages in order;
-  a page whose text layer is effectively empty (below `BLANK_PAGE_CHARS`) is treated as
-  image-only and rasterized (pypdfium2) to a sibling PNG, linked inline as
-  `![page N](path)` — the agent reads that PNG with `vision_analyze`, no separate escalation
-  protocol needed. A text page with a large embedded image (a chart, a diagram) still gets a
-  pointer comment suggesting `es_doc_render` for that page, since its meaning may be the image,
-  not the extracted prose. `es_doc_render` does the same rasterization on demand for specific
-  pages, for when extracted text came back useless (a scanned form, a map).
+- **Output is Markdown, not raw text — and every converter emits a `## ` heading everywhere the
+  SOURCE has real structure.** This is the load-bearing design choice the rest of this section
+  depends on. `doc_pdf` emits `## Page N` per page; `doc_office` emits one heading per Word
+  heading (`.docx`) or one per worksheet (`.xlsx`, emitted UNCONDITIONALLY even for an empty
+  sheet — a sheet silently dropped for having nothing under its own heading would be
+  indistinguishable from a sheet that was never read); `doc_ics` synthesizes one heading per
+  calendar EVENT, deliberately not per day — grouping by day is a property of how someone
+  chose to *display* a schedule, not of the schedule itself, and would make the reader's paging
+  granularity depend on an accident of formatting rather than the feed's own structure. Formats
+  with no real structure — `.txt`, `.md` (as authored), `.csv`, `.json`, all served by
+  `doc_text.py` — deliberately emit NONE: inventing a heading (e.g. `"## Rows 1-100"`) over an
+  arbitrary byte range would counterfeit the one signal a reader is meant to trust ("a `##`
+  heading marks a real section"). This is *why* `es_read` (below) can page any converted
+  document by heading with no format-specific logic of its own — the format-specific work
+  already happened once, inside the converter, at conversion time.
+- `doc_pdf.convert()` (pdfplumber) walks pages in order; a page whose text layer is effectively
+  empty (below `BLANK_PAGE_CHARS`) is treated as image-only and rasterized (pypdfium2) to a
+  sibling PNG, linked inline as `![page N](path)` — the agent reads that PNG with
+  `vision_analyze`, no separate escalation protocol needed. A text page with a large embedded
+  image (a chart, a diagram) still gets a pointer comment suggesting `es_doc_render` for that
+  page, since its meaning may be the image, not the extracted prose. `es_doc_render` does the
+  same rasterization on demand for specific pages, for when extracted text came back useless
+  (a scanned form, a map) — it is **PDF-only**: every other format has no `render()` to dispatch
+  to (`hasattr(mod, "render")` is the capability check — the same "presence of the optional
+  attribute IS the capability" convention `page_count` uses to mean "this format has pages at
+  all"). `.docx`/`.xlsx` and the four flat formats have no page concept to rasterize, so
+  `es_doc_render` refuses them by name rather than failing confusingly deeper in page-range
+  logic. Also not there yet: `.docx`'s own embedded images are not extracted — `doc_office.py`'s
+  `convert()` always returns an empty image list for both formats it serves; tracked as a
+  follow-up, not silently dropped.
 - **Artifacts live in `.es/<doc_id>/` *inside* Hermes's own per-profile document cache**
   (`cache/documents/` under the profile dir) rather than a separate directory — `doc_cache.py`
   namespaces under it instead of duplicating it. This is safe specifically because Hermes's own
   `_cleanup_cache_dir` iterates cache files only and never recurses into subdirectories, so it
   will never see (or purge) anything under `.es/`; conversely, `es`'s own purge only ever walks
-  its `.es/` namespace, never Hermes's inbound files beside it. `doc_id` is a content hash
-  (sha256 of the file, truncated), so re-reading the same upload is a cache hit, not a
-  re-conversion.
+  its `.es/` namespace, never Hermes's inbound files beside it. `doc_id` is a hash of the file's
+  content **and its format** (`ext.encode() + b"\0" + <file bytes>`), not content alone: the same
+  bytes read as two different formats (a PDF once mistakenly uploaded/extracted as `.csv`) are
+  two different, independently-correct documents — different `kind`, different markdown,
+  different `page_count` — so folding only the content into the hash would let whichever format
+  got extracted first silently poison the cache for every later request of the *other* format,
+  for the full TTL.
 - **The cache TTL is 24h since last ACCESS, not creation.** `doc_cache.touch()` bumps an
-  artifact directory's mtime on every cache hit (extract, render, even a repeat read), and
-  `purge()` evicts only directories whose mtime is older than the TTL. A creation-based clock
-  would delete a document out from under a conversation that's still actively reading it
-  (asking follow-up questions about page 12 an hour after the first extract); measuring last
-  use instead means a document only expires once nobody has touched it for a full day.
+  artifact directory's mtime on every cache hit (extract, render, and now every `es_read` of a
+  `doc:<id>` target too — see below), and `purge()` evicts only directories whose mtime is older
+  than the TTL. A creation-based clock would delete a document out from under a conversation
+  that's still actively reading it (asking follow-up questions about page 12 an hour after the
+  first extract); measuring last use instead means a document only expires once nobody has
+  touched it for a full day.
 - **Path confinement is the actual security boundary here, not `access_hook`.** `source` is an
   agent-supplied string; `paths.resolve_readable` confines it to `config.readable_source_dirs()`
   — the attachment source dirs (where Telegram uploads land) plus the vault root — resolving
@@ -290,6 +330,88 @@ attachment note suggests both — neither exists in this profile; the tool is th
   as a path-existence oracle outside those roots. That check matters because `access_hook`
   grants full tool trust in DMs; without confinement in `docs.py`/`paths.py`, a DM user could ask
   the agent to read arbitrary files elsewhere on the container's filesystem.
+
+### One read path: `es_read`
+
+`es_read(target, section=None, query=None, offset=None)` (`es/es/capabilities/reader.py` +
+`es/es/capabilities/read.py`) replaced `es_notes_read` as the **only** way the agent reads a
+vault note, and is *also* the only way it reads a document previously converted by
+`es_doc_extract`. `target` is a vault-relative path, a topic name (the same convention
+`es_notes_journal`/`es_notes_topic` already use), or a `doc:<id>` handle returned by
+`es_doc_extract`. `reader.py` resolves whichever form `target` takes down to one Markdown
+string plus a `kind` (`"note"` or `"doc"`), and hands that string to `read.py`'s pure,
+format-agnostic primitives: `outline` (every ATX heading `#` through `######`, in order — a
+converter's `## Page N` and a note's own `# Title`/`### Sub` are all entries), `section` (one
+heading's body, its own subsections included), `window` (page by raw line, for structure-free
+content like a `.csv` that has no headings at all), and `query` (case-insensitive full-text
+search). `query` returns *matching outline entries* — the id a follow-up `section` call needs,
+not raw snippets — except for content with no headings at all, where there is no section to
+name and it returns `{offset, line}` hits the agent pages to with `offset` instead.
+
+A short target comes back whole (`more=false`); a long one comes back as an outline, plus the
+preamble or, when the document opens straight onto a heading, its first section — and
+`more=true`. "Long" is a much higher bar for a note (16,000 characters — authored by a person,
+naturally bounded, and usually better served by an answer than an outline) than for a document
+(4,000 characters — a converted document arrives at whatever size its source format happened to
+be, and the threshold has to stay tight enough that a season's calendar feed crosses it rather
+than sliding through as "small enough to return whole"; the real 117-event feed measures ~8,200
+characters, so 4,000 catches it with room to spare).
+
+**Whatever mode is taken, `content` itself is capped at 32,000 characters** with an in-band
+marker, and that cap is not decoration. Hermes spills any MCP result past
+`DEFAULT_MCP_RESULT_SIZE_CHARS` (50,000) to a file, leaving only a preview in context — and
+this agent has no file tools, so it cannot open the spillover. An uncapped read of a large note
+would hand the agent a preview of content it is structurally unable to retrieve. 32,000 rather
+than the full 50,000 because `outline` shares the envelope, and a 117-entry outline is itself
+several thousand characters.
+
+**Why one read path — not a reader grown per capability — is the load-bearing decision here.**
+Before `es_read` existed, `es_web_fetch` grew its own inline branch for returning long text-ish
+bodies (calendar feeds, JSON/XML, plain text) verbatim, truncated at 40,000 characters with a
+marker stating plainly that there was no way to fetch the rest — a second, ad hoc pageable-ish
+reader, built to fill exactly the gap `es_read` was already designed to fill. It was built,
+reviewed, merged, and then deleted (`702d339`) once the duplication was recognised: the right
+fix for "this tool needs to hand back long content" is *always* "read it through `es_read`",
+never a bespoke truncate-and-hope branch bolted onto whichever tool needed it that day. Nobody
+should re-add it. `es_web_fetch` today stays deliberately thin — extracted prose for
+`text/html`, `thin=true` plus a `note` for everything else, no `cached_path`/`doc`/`truncated`
+fields at all — precisely so that a future "fetch a document from the web and read it properly"
+need routes through `es_doc_extract`/`es_read`, not through a second copy of the pagination
+logic this section just described. If a change ever adds truncation-with-a-marker to some new
+tool's own return value, that is the signal to stop and reconsider: `es_read` is where paging
+lives now.
+
+### `es_web_fetch`'s address guard
+
+`es_web_fetch` returns response bodies (extracted text, or at minimum a content-type) to the
+agent, which makes it a read primitive for anything reachable from the container — not just
+public sites — once any body can come back (before text passthrough existed, a non-HTML body
+was simply discarded, which made this inert). `url_guard.check_url()` (`es/es/url_guard.py`)
+resolves the target host and inspects the ADDRESSES it resolves to, not the string — a
+public-looking name whose A record is `127.0.0.1` is blocked just the same. It blocks: loopback
+(v4 + v6), IPv4 link-local (which covers cloud metadata, `169.254.0.0/16`) and its IPv6
+equivalent, RFC1918 (`10/8`, `172.16/12`, `192.168/16`), CGNAT (`100.64.0.0/10` — also
+Tailscale's own range), unique-local IPv6, NAT64, and IPv4-mapped/6to4/Teredo IPv6 literals —
+those last three encode an IPv4 address inside an IPv6 wrapper, and `::ffff:127.0.0.1` verifiably
+bypassed an earlier version of this guard for exactly that reason (checking the IPv6 form
+against IPv4 ranges never matches unless it's unwrapped first). It fails **closed**: a host
+that won't resolve, resolves to nothing, or resolves to an address that can't be parsed is
+refused rather than attempted. `_http_get` calls `check_url` explicitly on the initial request
+*and* registers it as an httpx **request** event hook — which httpx fires once per hop,
+including every redirect it follows — so a public URL that redirects to an
+internal one is caught at the hop, not just up front — the explicit call means the refusal
+isn't hook-dependent even before the first request goes out.
+
+The blocked-ranges list is a deliberate, hand-picked enumeration, **not** Python's broader
+`ipaddress.is_private`/`is_reserved` predicates. Those predicates also cover the IANA
+documentation/TEST-NET ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) and the
+benchmark range (`198.18.0.0/15`) — ranges where nothing listens, so blocking them buys no
+security anywhere. That distinction is not academic here: the devm dev VM's (and the sandbox's)
+transparent-egress DNS resolves **every** public hostname to `192.0.2.1`, a TEST-NET-1 address —
+a guard built on `is_private` would block every real fetch in dev while protecting nothing
+extra in prod. Not covered yet: `es_web_fetch` doesn't cache what it fetches the way
+`es_doc_extract` does — a repeat fetch of the same URL is a fresh request, not a cache hit, and
+there is no `doc:<id>` handle to hand a fetched page over to `es_read`.
 
 ## Config & env model
 

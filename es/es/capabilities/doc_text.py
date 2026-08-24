@@ -21,6 +21,16 @@ cuts at "## Page N" boundaries) and none of these formats emit those
 markers, so it cannot truncate them sensibly — every converter in this
 module truncates ITSELF, at a boundary meaningful to its own format (a whole
 CSV row, a whole line of text/JSON), before returning. See MAX_CHARS below.
+
+MAX_CHARS is a RESOURCE ceiling, not a context-window budget: the whole
+converted document is written to `doc.md` (a 24h-TTL cache) and paged from
+there by es_read, so bounding what gets STORED to fit inside one MCP
+response would only destroy data nothing needs destroyed — es_doc_extract's
+own response is already trimmed separately (docs.MAX_MARKDOWN_CHARS), and
+that trim no longer implies loss now that the untrimmed result lives in
+`doc.md`. MAX_CHARS below exists only to stop a genuinely pathological
+document from writing an unbounded amount to disk / making es_read's
+per-heading outline unusably large — see the constant's own comment.
 """
 import csv
 import io
@@ -43,29 +53,51 @@ _CSV_FIELD_SIZE_LIMIT_MB = 10
 # Character budget shared by every converter in this module (CSV rows,
 # text/Markdown/JSON lines), enforced by truncating at a whole-ROW or
 # whole-LINE boundary — never mid-row/mid-line, since a half-written one
-# reads as corrupt data, not as "there's more". Chosen to land comfortably
-# inside docs.MAX_MARKDOWN_CHARS (40_000): duplicated here rather than
-# imported, because docs.py imports this module at load time to populate
-# CONVERTERS, and this module importing back from docs.py to read that
-# constant would run while docs.py is still mid-import. Keep the two in
-# sync by hand if either changes.
+# reads as corrupt data, not as "there's more".
 #
-# A plain COUNT cap alone (e.g. "first 2000 rows"/"first 2000 lines") was
-# rejected: a wide CSV or a file of long lines can blow the character budget
-# in far fewer than 2000, and a narrow/short one could safely fit many more
-# — the actual risk this cap manages is markdown size landing in the
-# agent's context, not row/line count. A 40,000-row CSV export, or a
-# multi-megabyte JSON/log file, is entirely plausible in the real world; the
-# agent's context is not sized for it, so once the budget is spent this
-# simply stops and says so, rather than pretending a full dump is fine.
-MAX_CHARS = 30_000
+# This is a RESOURCE ceiling ("this document is absurd"), not a
+# context-window budget — that distinction is the whole reason this number
+# is no longer 30_000. It used to be sized to land under
+# docs.MAX_MARKDOWN_CHARS (40_000) back when es_doc_extract's response was
+# the only thing that ever saw this converter's output; now the full result
+# is written to `doc.md` (a 24h-TTL cache) and paged by es_read, so a
+# context-sized cap here just throws away rows/lines nothing needed thrown
+# away — measured live, a 3,000-row CSV lost everything past row ~1,300.
+#
+# Sized against the one real constraint upstream of this module: a document
+# larger than docs.MAX_DOCUMENT_BYTES (50 MB) is refused before conversion
+# ever runs. For CSV/text/Markdown, this module's own Markdown output runs
+# close to 1:1 with the source's byte size (the pipe-table format adds a
+# few characters of punctuation per cell, not per-cell padding), so a 50 MB
+# input converts to roughly 50 MB of Markdown. JSON is the one format that
+# can genuinely grow under conversion — re-serializing with `indent=2` adds
+# real bytes a minified source didn't have — but even a multi-times blowup
+# of a 50 MB input lands in the tens of millions of characters, not
+# hundreds. 20_000_000 (20M characters, ~20 MB) sits well above any
+# document this module will realistically ever see (a 3,000-row roster
+# export is a few hundred KB; a 40,000-row CSV export is still only a few
+# MB) while remaining a real, bounded ceiling: at 20 MB, `doc.md`'s disk
+# cost and es_read's outline stay reasonable even in the worst realistic
+# case, and something that still exceeds it is genuinely pathological, not
+# just "a large document".
+#
+# Duplicated here rather than imported from docs.py, because docs.py
+# imports this module at load time to populate CONVERTERS, and this module
+# importing back from docs.py to read MAX_DOCUMENT_BYTES would run while
+# docs.py is still mid-import. Keep the two in sync by hand if either
+# changes.
+MAX_CHARS = 20_000_000
 
 # The remedy for hitting MAX_CHARS is the same non-answer for every one of
 # these formats: unlike a PDF's `pages="N-M"`, there is no sub-range these
 # flat formats support re-requesting narrower — so every marker below says
 # that explicitly rather than gesturing at a resume mechanism that doesn't
 # exist for this format (the same honesty docs._truncate_markdown itself
-# uses for a PDF's oversized first page).
+# uses for a PDF's oversized first page). Content past MAX_CHARS genuinely
+# never exists anywhere (it is cut before `doc.md` is ever written), unlike
+# es_doc_extract's own separate RESPONSE-level trim — which es_read can page
+# past — so "no resume" stays an honest thing for this marker to say even
+# though the document as a whole is otherwise fully cached and pageable.
 _NO_RESUME = "has no page range to resume from"
 
 

@@ -63,6 +63,12 @@ one-off event: the event's own block says so in-band, e.g.
 "(repeats weekly, 30 times)" / "(repeats every 2 weeks, until Dec 20,
 2026)" / "(repeats monthly, no end date)", and the feed summary line
 counts how many events are recurring, e.g. "12 events (3 recurring)".
+
+MAX_ICS_CHARS is a RESOURCE ceiling, not a context-window budget: the full
+converted feed is written to `doc.md` (a 24h-TTL cache) and paged from
+there by es_read, so cutting the STORED result down to fit inside one MCP
+response would only destroy events nothing needed destroyed. See the
+constant's own comment for the number and reasoning.
 """
 from collections import Counter
 from datetime import datetime, time
@@ -76,15 +82,37 @@ from es.capabilities import cal_support
 from es.capabilities.doc_support import truncation_marker
 
 # Character budget for the rendered feed, enforced by truncating at a whole
-# EVENT boundary (never mid-event). Mirrors doc_text.MAX_CHARS's
-# reasoning and its distance under docs.MAX_MARKDOWN_CHARS (40_000): this
-# module truncates itself (docs._truncate_markdown only knows "## Page N"
-# PDF-style boundaries, not per-event ones), and 30_000 leaves enough margin
-# that docs.py's own outer truncation never has to fire a second time. A
-# realistic 117-event feed (the PlayMetrics case this module exists for)
-# comes in well under this — see the module's own manual size check in the
-# task report, not asserted here since a real feed isn't a unit-test fixture.
-MAX_ICS_CHARS = 30_000
+# EVENT boundary (never mid-event) — this module truncates itself because
+# docs._truncate_markdown only knows "## Page N" PDF-style boundaries, not
+# per-event ones.
+#
+# This is a RESOURCE ceiling ("this feed is absurd"), not a context-window
+# budget — it used to be 30_000, sized to land under docs.MAX_MARKDOWN_CHARS
+# (40_000) back when es_doc_extract's response was the only thing that ever
+# saw this converter's output. Now the full result is written to `doc.md`
+# and paged by es_read, so that old budget just threw away events nothing
+# needed thrown away — measured live, a 500-event feed lost everything past
+# event ~219.
+#
+# Sized against the one real constraint upstream: a feed larger than
+# docs.MAX_DOCUMENT_BYTES (50 MB) is refused before conversion ever runs,
+# and this module's own per-event rendering (a heading + a few metadata
+# lines) does not meaningfully inflate a feed's raw size the way, say,
+# JSON pretty-printing can — so a 50 MB .ics could in the extreme produce
+# tens of millions of characters of Markdown. But a REAL calendar feed
+# (a club/school season, even a multi-team one spanning a school year) is
+# realistically hundreds to a few thousand VEVENTs — a realistic 500-event
+# feed with substantial per-event descriptions converts to well under
+# 250,000 characters (see this module's own measured numbers). 5_000_000
+# (5M characters, ~5 MB) leaves roughly a 20x margin over that, while
+# staying well short of the tens-of-millions-of-characters territory a
+# genuinely pathological feed (an absurd event count, or descriptions that
+# are themselves huge blobs of text) would reach — and unlike doc_text's
+# flat formats, this module emits one "## " heading PER EVENT, so es_read's
+# outline for this document grows in lockstep with event count; keeping the
+# ceiling tighter than doc_text's here also keeps that outline from growing
+# unreasonably large in the one format where it scales that way.
+MAX_ICS_CHARS = 5_000_000
 
 
 def _home_tz() -> str:

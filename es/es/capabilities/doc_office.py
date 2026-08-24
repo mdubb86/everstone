@@ -21,6 +21,33 @@ paragraph is emitted as plain text.
 structural unit a spreadsheet has, which is exactly what makes a workbook
 pageable by that same reader. Rows render as a pipe table via doc_support.
 
+Every sheet converts IN FULL now — MAX_CHARS is a generous resource ceiling
+(see below), not a context-window budget, so in practice every sheet's
+heading AND every one of its rows survive. The fair-share machinery this
+paragraph used to describe as the fix for "sheet 2 and 3 vanish entirely"
+is kept anyway, as the BACKSTOP for the (now rare, but not impossible —
+dozens of enormous sheets can still exhaust even a 50MB ceiling) case where
+the ceiling genuinely is hit: every sheet's heading is emitted
+UNCONDITIONALLY, and `_convert_xlsx` fair-shares whatever budget remains
+across the CURRENT sheet and every sheet still to come (recomputed fresh
+each iteration, so a sheet that uses less than its share leaves the surplus
+for later ones, rather than a fixed up-front split wasting budget a short
+sheet didn't need) — so even in that backstop case every sheet still gets a
+heading, discoverable from es_read's outline. `_render_sheet_rows` also
+always shows a sheet's first row regardless of remaining budget, which in
+the overwhelmingly common case IS real content — but this is honestly a
+"first row" guarantee, not a "real content" one: a sheet whose own row 1 is
+entirely blank (no cells written on it at all — e.g. real data starting at
+row 2) would show that blank row instead, if the ceiling were ever tight
+enough to cut it off before row 2. A prior review flagged the module
+docstring's older wording ("at least one row of REAL content") as
+overstating this guarantee for exactly that reason; described accurately
+here rather than restated. See
+test_xlsx_later_sheets_reachable_when_first_sheet_exhausts_budget (now
+exercising this backstop directly, via a monkeypatched MAX_CHARS, since the
+real default ceiling is far too generous for a workbook of ordinary test
+size to ever ration).
+
 Formula cells are read as the FORMULA TEXT (`data_only=False`), never the
 cached result (`data_only=True`). A workbook saved by any tool that never ran
 Excel's calculation engine — including openpyxl itself, which is exactly the
@@ -30,20 +57,47 @@ those cells as blank, not as "no cache available". The formula text is
 always present and deterministic; a cache that only sometimes exists is not
 a foundation this module can build predictable behavior on.
 
-Both formats truncate at a whole-BLOCK boundary against a shared character
-budget (MAX_CHARS below) — a whole paragraph/table for .docx, a whole row for
-.xlsx — mirroring doc_text.MAX_CHARS / doc_ics.MAX_ICS_CHARS: docs.py's own
-_truncate_markdown only knows PDF-style "## Page N" boundaries, so neither
-format here can rely on it and each truncates itself before returning.
+Both formats truncate at a whole-BLOCK boundary against a shared RESOURCE
+ceiling (MAX_CHARS below) — a whole paragraph/table for .docx, a whole row
+for .xlsx — mirroring doc_text.MAX_CHARS / doc_ics.MAX_ICS_CHARS: docs.py's
+own _truncate_markdown only knows PDF-style "## Page N" boundaries, so
+neither format here can rely on it and each truncates itself before
+returning. MAX_CHARS is deliberately NOT sized to fit inside one MCP
+response (that job now belongs entirely to docs.MAX_MARKDOWN_CHARS, applied
+in docs.py against the RETURNED excerpt only) — it exists so that a
+genuinely pathological document (a zip-bomb-style .docx, a workbook someone
+managed to inflate to gigabytes of text) still can't make doc.md, and
+therefore es_read's outline, unbounded; see MAX_CHARS's own comment for the
+sizing rationale. Every ordinary document — including every deliberately
+oversized one this module's own test suite builds — converts in full and
+never reaches it.
+
 XLSX_MAX_ROWS/XLSX_MAX_COLS are a SEPARATE, structural cap on top of that
-budget: a sheet's reported used range can be dramatically larger than its
+ceiling: a sheet's reported used range can be dramatically larger than its
 real content (a single stray value at, say, ZZ10000 reports a 10000-row x
 702-column used range for what is, in substance, two cells of data), and
-that must be bounded before the character budget ever gets a chance to look
-at it, or a single pathological sheet could force iterating tens of
-thousands of all-blank rows for no reason. DOCX_MAX_TABLE_ROWS is the .docx
-analogue: it bounds the cost of rendering a SINGLE table block, independent
-of MAX_CHARS, for the same reason (see `_table_block`).
+that must be bounded before the character ceiling ever gets a chance to
+look at it, or a single pathological sheet could force iterating tens of
+thousands of all-blank rows for no reason. They are set to Excel's OWN
+real per-sheet maximums (1,048,576 rows, 16,384 columns — XFD) rather than
+a tuned smaller number: a legitimate sheet's real `max_row`/`max_column`
+can never exceed them (openpyxl itself refuses to write past those
+indices), so for any real, honestly-dimensioned sheet these caps are true
+no-ops — every sheet converts fully — and they bind ONLY the fallback case
+(dimension unknown, or a corrupt/adversarial `<dimension>` claiming more
+than the format allows) where they take over as the outer iteration bound.
+Measured (see doc_office's test suite): even that worst case — no known
+dimension, iterating the full 1,048,576-row fallback on a narrow (2-column)
+sheet — completes in ~1.3s; a wide worst case is bounded far sooner by the
+character ceiling itself (a 50-column-wide, full-height sparse sheet hit
+MAX_CHARS after ~329k of 1,048,576 rows in ~1.9s). DOCX_MAX_TABLE_ROWS is
+the .docx analogue: it bounds the cost of rendering a SINGLE table block,
+independent of MAX_CHARS, for the same reason (see `_table_block`) — kept
+at its original tuned value (2000) since it protects against a genuinely
+separate, real per-block cost (each table row means constructing real
+python-docx cell/paragraph/run objects to read `.text`, proportional to
+table size, not a redundant per-access lookup like the paragraph-style
+issue below).
 
 .docx conversion is deliberately LAZY end to end (`_iter_body_blocks` is a
 generator; `_convert_docx` stops pulling from it the moment MAX_CHARS is
@@ -52,14 +106,54 @@ unbounded-cost bug, not a style preference. Measured before the fix, walking
 `document.element.body` fully and formatting every block before truncating
 cost ~0.4ms/paragraph — 3.7s at 10,000 paragraphs, 111.65s at 300,000 (a
 plain 0.84 MB .docx, well inside MAX_DOCUMENT_BYTES) — because
-`Paragraph.style` does a linear style-collection lookup on every call, and
-that cost was paid for every block in the document even though only a small
-prefix of the OUTPUT ever survives the character budget. After the fix the
-same 300,000-paragraph document converts in well under a second: cost is
-O(kept blocks), not O(document size). A `.docx` is a zip, so
-MAX_DOCUMENT_BYTES only bounds the COMPRESSED size (a zip bomb can inflate
-far past it) — this lazy walk plus the per-table row cap below are the real
-defence, not the byte ceiling.
+`Paragraph.style` does a linear style-collection lookup on every call
+(re-walking and re-type-converting every `<w:style>` in the document's
+styles part from scratch, per paragraph — see `_build_heading_levels`'s
+docstring for the full profiling breakdown), and that cost was paid for
+every block in the document. This made the lazy generator load-bearing:
+stopping the walk the moment MAX_CHARS was spent was the only thing keeping
+that cost from being paid for the WHOLE document.
+
+That per-access style cost is now fixed at its root (`_build_heading_levels`
+resolves every style id to a heading level ONCE, per document, not per
+paragraph — see its docstring for the measured before/after). Profiling
+full (unbudgeted) conversion after that fix turned up a SECOND per-call
+cost of the same shape — `Paragraph.text`/`CT_P.text` internally calling
+`self.xpath(...)` on every paragraph — fixed the same way: `_paragraph_text`
+and `_paragraph_style_id` below re-walk the already-parsed lxml tree
+directly (plain `iterchildren()`/`find()`/`get()` calls against
+pre-resolved Clark-notation tag names) instead of going through
+python-docx's own text/style element properties, which re-resolve their
+own tag names and re-run an xpath expression on every single call. See
+each function's own docstring for the exact profiling numbers and the
+equivalence check against python-docx's own output.
+
+With all three per-access costs removed, full (unbudgeted) conversion of a
+300,000-paragraph, single-run-per-paragraph .docx measured (this machine,
+same file for both sides of the comparison) at:
+
+    paragraphs   before (unbudgeted, per-call style+text)   after
+    10,000       4.062s                                     0.064s
+    100,000      40.714s                                    0.624s
+    300,000      124.301s                                   1.978s
+
+(the "before" column re-measures, on this machine, the same per-call
+`Paragraph.style`/`Paragraph.text` walk this module used before today's
+fix — independently reproducing the 111.65s/300,000-paragraph figure a
+prior profiling pass reported on different hardware, same order of
+magnitude). ~63-65x faster across the board — i.e. full conversion is now
+fast enough that MAX_CHARS (now a generous
+resource ceiling rather than a small context budget — see above) is never
+reached in practice for a document of this shape; see
+test_docx_huge_paragraph_count_converts_quickly_and_bounded. The lazy
+generator is kept regardless — it is still correct, still cheap, and still
+the real defence against a still-plausible unbounded case: a `.docx` is a
+zip, so MAX_DOCUMENT_BYTES only bounds the COMPRESSED size (a zip bomb can
+inflate far past it), and fixing these per-access costs does not change
+that a pathological document could still contain more blocks than any
+resource ceiling should render in full — the lazy walk plus
+DOCX_MAX_TABLE_ROWS bound the COST of touching such a document, not just
+the characters it emits.
 
 .xlsx: `ws.max_row`/`ws.max_column` in `read_only` mode come from the sheet
 XML's `<dimension>` element — and are `None`, not `0`, when that element is
@@ -83,15 +177,15 @@ reports what it can prove (rows actually rendered, and whether more exist
 past the structural cap) without fabricating an exact total.
 """
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 from xml.etree.ElementTree import ParseError
 from zipfile import BadZipFile
 
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.opc.exceptions import PackageNotFoundError
 from docx.oxml.ns import qn
 from docx.table import Table
-from docx.text.paragraph import Paragraph
 from lxml.etree import XMLSyntaxError
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
@@ -99,8 +193,24 @@ from openpyxl.utils.exceptions import InvalidFileException
 from es.capabilities.doc_support import (ParseFailed, format_cell, format_row,
                                           truncation_marker)
 
-# Shared by both formats — see module docstring.
-MAX_CHARS = 30_000
+# A real RESOURCE ceiling, not a context-window budget — see the module
+# docstring's "convert fully, bound resources not context" note. Shared by
+# both formats, same as the old MAX_CHARS it replaces. Sized generously (the
+# same order of magnitude as docs.MAX_DOCUMENT_BYTES, the 50MB upstream input
+# cap) rather than to fit inside one MCP response: doc.md is a 24h-TTL cache
+# entry es_read pages by section/line, not something returned whole, so the
+# only real costs a full conversion imposes are disk (cheap at this size) and
+# the size of es_read's outline (built from "## " headings — still trivially
+# fast to scan at tens of megabytes). This is deliberately NOT sized to just
+# clear docs.MAX_MARKDOWN_CHARS (40_000, an MCP-response-sized number) —
+# that cap still runs, in docs.py, against the RETURNED excerpt only, never
+# against what gets cached; the two budgets protect different things now.
+# A .docx/.xlsx is a zip, so MAX_DOCUMENT_BYTES only bounds the COMPRESSED
+# input size — a pathological file could still try to inflate far past this
+# ceiling, which is exactly why this ceiling exists at all (see also the
+# lazy .docx walk and the per-table/per-sheet structural caps below, which
+# bound the COST of touching such a file, not just the characters it emits).
+MAX_CHARS = 50_000_000
 
 # --------------------------------------------------------------------------
 # Parse-step error mapping (see doc_support.ParseFailed for the boundary
@@ -219,8 +329,16 @@ def _safe_row_iter(row_iter, source: Path):
         yield row
 
 # Per-sheet structural caps — see module docstring. Independent of MAX_CHARS.
-XLSX_MAX_ROWS = 5000
-XLSX_MAX_COLS = 256
+# Set to Excel's OWN real per-sheet maximums (the last row/column index the
+# file format itself can represent — "XFD" is column 16,384) rather than a
+# smaller tuned number: any honestly-dimensioned real sheet's true max_row/
+# max_column can never exceed these, so for full conversion of real-world
+# spreadsheets they never actually bind — they exist purely as the fallback
+# iteration bound for a dimension-less sheet (see _render_sheet_rows) or a
+# corrupt/adversarial `<dimension>` claiming more rows/columns than the
+# format allows.
+XLSX_MAX_ROWS = 1_048_576
+XLSX_MAX_COLS = 16_384
 
 # Per-table structural cap for .docx — see module docstring. A single
 # pathological table (e.g. a 20,000-row spreadsheet paste) would otherwise be
@@ -233,23 +351,174 @@ _HEADING_LEVELS = {f"Heading {n}": n for n in range(1, 7)}
 
 _W_P = qn("w:p")
 _W_TBL = qn("w:tbl")
+_W_R = qn("w:r")
+_W_HYPERLINK = qn("w:hyperlink")
+_W_T = qn("w:t")
+_W_TAB = qn("w:tab")
+_W_BR = qn("w:br")
+_W_CR = qn("w:cr")
+_W_NOBREAKHYPHEN = qn("w:noBreakHyphen")
+_W_PTAB = qn("w:ptab")
+_W_TYPE = qn("w:type")
+_W_PPR = qn("w:pPr")
+_W_PSTYLE = qn("w:pStyle")
+_W_VAL = qn("w:val")
 
 
 # --------------------------------------------------------------------------
 # .docx
 # --------------------------------------------------------------------------
 
-def _heading_level(paragraph: Paragraph) -> Optional[int]:
-    style = paragraph.style
-    name = style.name if style is not None else None
-    return _HEADING_LEVELS.get(name)
+def _build_heading_levels(document: Document) -> Dict[Optional[str], int]:
+    """Resolve every PARAGRAPH style's id to a heading level (1-6) ONCE, up
+    front — the fix for the profiled cost of `Paragraph.style`.
+
+    Measured (cProfile, 100,000 plain paragraphs with no explicit style —
+    so every access falls through to the "resolve the document's DEFAULT
+    paragraph style" branch): `Paragraph.style` costs ~82.7s of the walk's
+    85.1s total. Almost none of that is python-docx re-parsing anything —
+    it is `CT_Styles.default_for` re-walking and re-type-converting EVERY
+    `<w:style>` element in the styles part, from scratch, on every single
+    paragraph (`_iter_styles` -> `style.type` -> an enum `from_xml` lookup,
+    per style, per paragraph — 20M+ calls for 100k paragraphs against a
+    template with ~200 styles). The `get_by_id` path taken when a paragraph
+    DOES carry an explicit style id is cheaper per call (an lxml `xpath()`
+    call rather than a full re-scan) but still re-resolves from scratch
+    every time, and still shows up in the profile (~8s of the same 100k-call
+    run). Either way, the shared root cause is the same: python-docx treats
+    "what heading level is this paragraph" as free to recompute per access,
+    when the document's styles part does not change during this walk.
+
+    The fix: read each paragraph's raw style id straight off its own XML
+    (`_paragraph_style_id` below: `<w:p>` -> `./w:pPr/w:pStyle/@w:val` via
+    direct `find()`/`get()` calls, no XPath, no re-walking the styles part)
+    and look it up in THIS dict, built by walking `document.styles` exactly
+    ONCE per document. `document.styles` and each `style.name`/`style_id`/
+    `type` are cheap per-style property reads (no XPath either) — see the
+    profiling above, where building this map for the whole document cost
+    ~1ms. Re-measured after this change: the same 100,000-paragraph walk
+    (id lookup + dict.get, no `Paragraph.style` at all) dropped from ~85s
+    to ~0.26s.
+
+    `levels[None]` is set only when the document's own DEFAULT paragraph
+    style (`Styles.default(WD_STYLE_TYPE.PARAGRAPH)` — what a `<w:p>` with
+    no explicit `<w:pStyle>` actually renders as, per the WordprocessingML
+    spec) happens to itself be a heading style — mirroring exactly what
+    `Paragraph.style`'s own fallback did, just resolved once instead of
+    per paragraph. That is vanishingly rare in practice (nobody sets
+    "Heading 1" as their document's default body style) but costs nothing
+    extra to get right.
+    """
+    levels: Dict[Optional[str], int] = {}
+    for style in document.styles:
+        if style.type != WD_STYLE_TYPE.PARAGRAPH:
+            continue
+        level = _HEADING_LEVELS.get(style.name)
+        if level is not None:
+            levels[style.style_id] = level
+    default_style = document.styles.default(WD_STYLE_TYPE.PARAGRAPH)
+    if default_style is not None:
+        default_level = levels.get(default_style.style_id)
+        if default_level is not None:
+            levels[None] = default_level
+    return levels
 
 
-def _paragraph_block(paragraph: Paragraph) -> Optional[str]:
-    text = paragraph.text.strip()
+def _run_text(r) -> str:
+    """Reimplements `docx.oxml.text.run.CT_R.text` (join each inner-content
+    child's text equivalent) WITHOUT its `self.xpath("w:br | w:cr | ...")`
+    call — see `_paragraph_text`'s docstring for why that call is expensive
+    enough per-paragraph to matter and how this was verified equivalent."""
+    parts = []
+    for e in r.iterchildren():
+        tag = e.tag
+        if tag == _W_T:
+            parts.append(e.text or "")
+        elif tag == _W_TAB or tag == _W_PTAB:
+            parts.append("\t")
+        elif tag == _W_BR:
+            # CT_Br.type defaults to "textWrapping" (python-docx's
+            # OptionalAttribute default) when `w:type` is absent from the
+            # XML — a bare `e.get(...)` would instead default to None,
+            # which is NOT "textWrapping" and would silently drop every
+            # ordinary line break (the overwhelmingly common case: Word
+            # only ever writes an explicit w:type for a page/column break).
+            br_type = e.get(_W_TYPE)
+            parts.append("\n" if br_type is None or br_type == "textWrapping" else "")
+        elif tag == _W_CR:
+            parts.append("\n")
+        elif tag == _W_NOBREAKHYPHEN:
+            parts.append("-")
+    return "".join(parts)
+
+
+def _paragraph_text(p) -> str:
+    """Reimplements `Paragraph.text` (join each direct `w:r`/`w:hyperlink`
+    child's text) by walking the already-parsed lxml tree directly, instead
+    of through python-docx's `CT_P.text`/`CT_R.text`/`CT_Hyperlink.text`
+    properties — each of which calls `self.xpath(...)` internally, and
+    (like `Paragraph.style` — see `_build_heading_levels`) pays lxml's
+    XPath-expression overhead on EVERY call rather than once.
+
+    This was the SECOND hot spot found by profiling full conversion after
+    the style-lookup fix (see the module docstring's profiling numbers):
+    at 100,000 trivial paragraphs, `CT_P.xpath`/`CT_R.xpath` together cost
+    ~2.7s of a ~4.1s total — larger than every other cost in the walk
+    combined, including this module's own code. Unlike the style fix, this
+    cost can't be hoisted "once per document" (each paragraph's text is
+    genuinely unique), so the fix here is a cheaper implementation of the
+    SAME lookup, not caching it — a plain `iterchildren()` + tag-equality
+    walk, with no xpath expression to compile or evaluate, replicating the
+    exact semantics of `CT_R.text`/`CT_Hyperlink.text`/`CT_P.text`:
+    `w:t` -> its own text (or "" if empty), `w:tab`/`w:ptab` -> "\\t",
+    `w:cr` -> "\\n", `w:br` -> "\\n" unless it declares a non-default
+    (page/column) `w:type`, `w:noBreakHyphen` -> "-", every other run
+    inner-content element (drawings, field codes, ...) contributes nothing
+    — matching `CT_R.text`'s own xpath, which only ever selects those six
+    tag names. Verified equivalent to `Paragraph.text` output-for-output
+    against this module's own docx fixtures plus dedicated line-break/tab/
+    hyperlink cases (see test_doc_office.py).
+    """
+    parts = []
+    for e in p.iterchildren():
+        tag = e.tag
+        if tag == _W_R:
+            parts.append(_run_text(e))
+        elif tag == _W_HYPERLINK:
+            for r in e.iterchildren():
+                if r.tag == _W_R:
+                    parts.append(_run_text(r))
+    return "".join(parts)
+
+
+def _paragraph_style_id(p) -> Optional[str]:
+    """Reimplements `docx.oxml.text.paragraph.CT_P.style` (`./w:pPr/w:pStyle
+    /@w:val`, or None if either element is absent) via direct `find()`/`get()`
+    calls against pre-resolved Clark-notation tag/attribute names, instead
+    of python-docx's own `.pPr`/`.style` element-property descriptors —
+    each of which re-resolves its tag name (`qn(...)`, a string-format-and-
+    dict-lookup) on every call rather than once at import time, same class
+    of avoidable per-call cost as `Paragraph.style`/`Paragraph.text` (see
+    `_build_heading_levels`/`_paragraph_text`). This was the third and
+    final hot spot the profile turned up: at 300,000 paragraphs, the
+    `pPr`/`style` property chain still cost ~1s even after the style-LEVEL
+    lookup was hoisted out of the per-paragraph path — this function's job
+    is only to fetch the raw id, cheaply, for `heading_levels.get()` to
+    look up (that dict is still what maps an id to a heading level)."""
+    pPr = p.find(_W_PPR)
+    if pPr is None:
+        return None
+    pStyle = pPr.find(_W_PSTYLE)
+    if pStyle is None:
+        return None
+    return pStyle.get(_W_VAL)
+
+
+def _paragraph_block(p, heading_levels: Dict[Optional[str], int]) -> Optional[str]:
+    text = _paragraph_text(p).strip()
     if not text:
         return None
-    level = _heading_level(paragraph)
+    level = heading_levels.get(_paragraph_style_id(p))
     if level:
         return f"{'#' * level} {text}"
     return text
@@ -324,32 +593,48 @@ def _table_block(table: Table, budget: int) -> Optional[str]:
     return md
 
 
-def _iter_body_blocks(document: Document, remaining_budget) -> Iterator[str]:
+def _iter_body_blocks(document: Document, remaining_budget,
+                       heading_levels: Dict[Optional[str], int]) -> Iterator[str]:
     """Yield blocks from `document.element.body`'s direct children IN ORDER,
-    LAZILY — mapping each `<w:p>` to a Paragraph and each `<w:tbl>` to a
-    Table — see the module docstring for why walking the body directly (and
-    not `document.paragraphs`/`document.tables`) is the only way to keep the
-    source's true interleaving. Anything else under `<w:body>` (e.g. the
-    trailing `<w:sectPr>` section-properties element) is silently skipped —
-    it carries no displayable content.
+    LAZILY — handling each `<w:p>` via `_paragraph_block` and mapping each
+    `<w:tbl>` to a python-docx `Table` — see the module docstring for why
+    walking the body directly (and not `document.paragraphs`/
+    `document.tables`) is the only way to keep the source's true
+    interleaving. Anything else under `<w:body>` (e.g. the trailing
+    `<w:sectPr>` section-properties element) is silently skipped — it
+    carries no displayable content.
 
-    This is a generator, not a list, on purpose: `_paragraph_block` (via
-    `Paragraph.style`) and `_table_block` are the expensive steps in this
-    module — see the module docstring's measured numbers — so `_convert_docx`
-    must be able to stop asking this generator for more the moment its
-    character budget is spent, without this function having formatted a
-    single block beyond that point. `document.element.body.iterchildren()`
-    is itself already a lazy walk over the (already-parsed-in-memory) XML
-    tree, so nothing upstream of this loop is re-done by stopping early.
+    A `<w:p>` is passed to `_paragraph_block` as its raw lxml element, NOT
+    wrapped in a python-docx `Paragraph` — nothing here needs the wrapper
+    any more (`_paragraph_block` reads both the style id and the text
+    straight off the XML; see `_build_heading_levels` and `_paragraph_text`
+    for why going through `Paragraph.style`/`Paragraph.text` was the actual
+    cost). `Table`/`Row`/`Cell` ARE still used for `<w:tbl>`, since only the
+    heading/text paths were profiled as hot — see `_table_block`.
+
+    This is a generator, not a list, on purpose: `_table_block` (real,
+    proportional-to-content work — walking every kept row's cells) is the
+    one genuinely expensive step left in this module that scales with
+    DOCUMENT size rather than KEPT size — `_convert_docx` must still be
+    able to stop asking this generator for more the moment its character
+    budget is spent, without this function having formatted a single block
+    beyond that point. `document.element.body.iterchildren()` is itself
+    already a lazy walk over the (already-parsed-in-memory) XML tree, so
+    nothing upstream of this loop is re-done by stopping early.
 
     `remaining_budget` is a zero-arg callable read fresh each time a
     `<w:tbl>` is reached (not a snapshot taken once up front), so a table's
     own internal cap always sees how much of MAX_CHARS is actually left at
     that point in the walk, not how much was left when iteration started.
+
+    `heading_levels` is `_build_heading_levels(document)`, computed ONCE by
+    the caller and threaded through rather than rebuilt here — this
+    function runs once per `<w:p>`, so rebuilding it here would reintroduce
+    exactly the "per paragraph, not per document" cost this fix removes.
     """
     for child in document.element.body.iterchildren():
         if child.tag == _W_P:
-            block = _paragraph_block(Paragraph(child, document))
+            block = _paragraph_block(child, heading_levels)
         elif child.tag == _W_TBL:
             budget = max(0, remaining_budget() - _TABLE_MARKER_RESERVE)
             block = _table_block(Table(child, document), budget)
@@ -361,6 +646,7 @@ def _iter_body_blocks(document: Document, remaining_budget) -> Iterator[str]:
 
 def _convert_docx(source: Path) -> str:
     document = _open_docx(source)
+    heading_levels = _build_heading_levels(document)
 
     lines: List[str] = []
     used = 0
@@ -370,7 +656,7 @@ def _convert_docx(source: Path) -> str:
     def remaining_budget() -> int:
         return MAX_CHARS - used
 
-    for block in _iter_body_blocks(document, remaining_budget):
+    for block in _iter_body_blocks(document, remaining_budget, heading_levels):
         cost = len(block) + (2 if kept > 0 else 0)  # blank line before it
         if kept > 0 and used + cost > MAX_CHARS:
             truncated = True
@@ -454,11 +740,13 @@ def _render_sheet_rows(ws, budget: int, source: Path) -> Tuple[str, int, Optiona
         capped_cols = min(known_cols, XLSX_MAX_COLS)
     else:
         # Column count unknown too. Forcing every row to XLSX_MAX_COLS wide
-        # (256) here would be its own budget-exhausting bug: every row,
-        # including ones with two real cells, would be padded out to 256
-        # pipe-table columns, so the FIRST such row alone could burn most of
-        # the character budget and starve every row after it — that's not
-        # hypothetical, it's what happened before this fallback existed.
+        # (16,384 — Excel's own column maximum, "XFD") here would be its own
+        # budget-exhausting bug: every row, including ones with two real
+        # cells, would be padded out to 16,384 pipe-table columns, so the
+        # FIRST such row alone could burn a large chunk of the character
+        # ceiling and starve every row after it — that's not hypothetical,
+        # it's what happened (against the much smaller original budget)
+        # before this fallback existed.
         # Peeking at row 1's own actual width is a light, bounded probe (one
         # single-row read, not a full-sheet scan) and is representative for
         # the common case this guards against (a write_only/no-<dimension>
@@ -578,22 +866,35 @@ def _convert_xlsx(source: Path) -> str:
         if not worksheets:
             return "*(this workbook has no sheets)*"
 
+        n = len(worksheets)
         lines: List[str] = []
         used = 0
-        sheets_rendered = 0
-        for ws in worksheets:
+        for i, ws in enumerate(worksheets):
+            # The heading is unconditional — see the module docstring's
+            # "sheet reachability" note. No early exit here, unlike every
+            # other budget check in this module: a document with no earlier
+            # boundary to stop at is exactly the shape we cannot afford for
+            # a MULTI-sheet workbook, since a missing heading isn't just
+            # truncated content — it's a sheet the agent can never even
+            # discover exists.
             header = f"## {ws.title}"
             header_cost = len(header) + (2 if lines else 0)
-            if lines and used + header_cost > MAX_CHARS:
-                break  # no budget left even for this sheet's heading
             if lines:
                 lines.append("")
             lines.append(header)
             used += header_cost
-            sheets_rendered += 1
+
+            # Fair-share whatever budget remains across this sheet and every
+            # sheet still to come (recomputed fresh each iteration, not a
+            # fixed 1/n split decided up front) — a sheet that needs less
+            # than its share leaves the surplus for the sheets after it. This
+            # is what keeps a short "## Summary"/"## Notes" sheet from being
+            # squeezed by an even split sized for a much bigger sheet.
+            remaining_sheets = n - i
+            sheet_budget = max(0, (MAX_CHARS - used) // remaining_sheets)
 
             table_md, kept, total_rows, hit_row_cap, hit_budget = _render_sheet_rows(
-                ws, MAX_CHARS - used, source)
+                ws, sheet_budget, source)
             if table_md:
                 lines.append("")
                 lines.append(table_md)
@@ -608,23 +909,16 @@ def _convert_xlsx(source: Path) -> str:
                     "needed")
                 lines.append(marker)
                 used += len(marker) + 2
-                # A per-sheet character-budget cut means the shared budget is
-                # spent — no point attempting further sheets.
-                if used >= MAX_CHARS:
-                    break
+                # Deliberately NOT a `break`: every remaining sheet still
+                # gets its own heading (and, via _render_sheet_rows's
+                # first-row-always-shown rule, at least one row) even though
+                # this sheet's own share is spent — see the module
+                # docstring. The per-sheet fair-share above already prices
+                # that in for the sheets still to come.
     finally:
         wb.close()
 
-    md = "\n".join(lines)
-    if sheets_rendered < len(worksheets):
-        remaining = len(worksheets) - sheets_rendered
-        md += "\n\n" + truncation_marker(
-            f"after {sheets_rendered} of {len(worksheets)} "
-            f"sheets — the {MAX_CHARS}-character limit was reached; this "
-            "workbook has no page range to resume from, so ask for a "
-            f"narrower export if the remaining {remaining} sheet"
-            f"{'s' if remaining != 1 else ''} are needed")
-    return md
+    return "\n".join(lines)
 
 
 _HANDLERS = {

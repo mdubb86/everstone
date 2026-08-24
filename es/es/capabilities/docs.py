@@ -28,6 +28,9 @@ from es import config, doc_cache, paths
 from es.capabilities import doc_ics, doc_office, doc_pdf, doc_support, doc_text
 
 MAX_MARKDOWN_CHARS = 40_000
+# Upper bound on the truncation marker appended by _truncate_markdown, held
+# back from the cut so cut+marker still fits inside MAX_MARKDOWN_CHARS.
+_MARKER_RESERVE = 400
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
 # Mirrors doc_pdf.MAX_AUTO_RENDER_PAGES rather than duplicating the number —
 # render() and extract()'s auto-render both bound the same disk-fill risk
@@ -266,7 +269,7 @@ def _expand_source(source: str) -> str:
       (docs.py owns "which root is 'the vault'"); paths.py never learns that
       name.
     - anything else (a bare relative path): joined onto the vault root — the
-      same convention es_notes_read/es_notes_attach/es_notes_list already use
+      same convention es_read/es_notes_attach/es_notes_list already use
       (they hand back vault-relative paths like "Topics/Soccer/schedule.pdf"
       for exactly this source), so "$vault/X" and bare "X" are interchangeable.
 
@@ -384,6 +387,31 @@ def _read_images_manifest(adir: Path) -> List[str]:
         return []
 
 
+def read_cached(adir: Path) -> Optional[dict]:
+    """Read a previously cached FULL-document extract (doc.md + its
+    images.json sidecar) from `adir`, or None if there isn't one — never
+    converted, purged, or an undecodable doc.md (treated as a miss, not an
+    error; see _read_cached_markdown).
+
+    The one shared accessor for reading a cached conversion: extract()'s own
+    cache-hit path below uses it, and so does es_read's `doc:<id>` resolution
+    (es/capabilities/reader.py) — neither re-reads doc.md/images.json on its
+    own, so there is exactly one place that knows a missing images.json
+    sidecar means "no images" rather than "cache broken" (_read_images_manifest
+    already tolerates that; a caller here inherits it for free instead of
+    re-deciding it).
+
+    Does NOT touch()/mkdir the directory — that's the caller's call: a
+    cache-hit inside extract() touches immediately (a hit there always means
+    a real access), but a lookup by doc_id that turns out to be a plain miss
+    (no directory at all) has nothing worth touching.
+    """
+    markdown = _read_cached_markdown(adir)
+    if markdown is None:
+        return None
+    return {"markdown": markdown, "images": _read_images_manifest(adir)}
+
+
 def _write_full_extract(adir: Path, markdown: str, images: List[Path]) -> None:
     (adir / DOC_MD_NAME).write_text(markdown, encoding="utf-8")
     (adir / DOC_IMAGES_MANIFEST).write_text(
@@ -471,9 +499,23 @@ def _truncate_markdown(markdown: str, total_pages: Optional[int]) -> Tuple[str, 
     if len(markdown) <= MAX_MARKDOWN_CHARS:
         return markdown, False
 
+    # Room for the marker itself. Every branch below returns cut + marker, so
+    # cutting AT the limit and appending would return more than the limit —
+    # which it silently did until converters stopped self-truncating below
+    # 40,000 and this path started actually running. The reserve is a ceiling
+    # on the longest marker any branch builds; _fits() re-checks rather than
+    # trusting it, so a future reword can't quietly reintroduce the overshoot.
+    limit = MAX_MARKDOWN_CHARS - _MARKER_RESERVE
+
+    def _fits(cut: str, marker: str) -> str:
+        out = cut + marker
+        if len(out) <= MAX_MARKDOWN_CHARS:
+            return out
+        return cut[:MAX_MARKDOWN_CHARS - len(marker)] + marker
+
     boundaries = [(m.start(), int(m.group(1)))
                   for m in _PAGE_BOUNDARY_RE.finditer(markdown)]
-    candidates = [b for b in boundaries if b[0] <= MAX_MARKDOWN_CHARS]
+    candidates = [b for b in boundaries if b[0] <= limit]
 
     if candidates:
         cut_pos, next_page = max(candidates)
@@ -482,9 +524,9 @@ def _truncate_markdown(markdown: str, total_pages: Optional[int]) -> Tuple[str, 
             f"after page {stopped_after} of {total_pages} "
             f"— call es_doc_extract again with pages=\"{stopped_after + 1}-"
             f"{total_pages}\" to continue")
-        return markdown[:cut_pos] + marker, True
+        return _fits(markdown[:cut_pos], marker), True
 
-    cut_pos = _safe_hard_cut(markdown, MAX_MARKDOWN_CHARS)
+    cut_pos = _safe_hard_cut(markdown, limit)
     if total_pages is None:
         # A flat format (csv/json/txt/md/ics/docx/xlsx): there are no pages
         # to narrow and no es_doc_render to fall back to (render() itself
@@ -500,7 +542,7 @@ def _truncate_markdown(markdown: str, total_pages: Optional[int]) -> Tuple[str, 
             "boundary to stop at, and this format has no narrower "
             "view to fall back to; ask the user for a smaller/"
             "narrower version of this document")
-        return markdown[:cut_pos] + marker, True
+        return _fits(markdown[:cut_pos], marker), True
 
     first_match = _FIRST_PAGE_RE.match(markdown)
     first_page = int(first_match.group(1)) if first_match else 1
@@ -510,7 +552,7 @@ def _truncate_markdown(markdown: str, total_pages: Optional[int]) -> Tuple[str, 
         "no earlier page boundary to stop at; narrowing pages won't "
         f"help since page {first_page} alone is already too large — try "
         "es_doc_render on this page instead")
-    return markdown[:cut_pos] + marker, True
+    return _fits(markdown[:cut_pos], marker), True
 
 
 def extract(source: str, roots, cache_root: Path,
@@ -536,13 +578,13 @@ def extract(source: str, roots, cache_root: Path,
         # Full-document extract: doc_id is a content hash, so a previous
         # conversion of this exact content is still correct — check the
         # cache before paying for another convert().
-        cached = _read_cached_markdown(adir)
+        cached = read_cached(adir)
         if cached is not None:
             doc_cache.touch(adir)  # TTL means "24h since last USE", not
                                     # "24h since conversion" — a cache hit is
                                     # a use.
-            markdown = cached
-            images = _read_images_manifest(adir)
+            markdown = cached["markdown"]
+            images = cached["images"]
         else:
             try:
                 markdown, image_paths = mod.convert(real, adir, pages=None)

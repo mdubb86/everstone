@@ -71,7 +71,33 @@ def test_all_day_event_renders_without_a_time(tmp_path):
     assert "00:00" not in md
 
 
-def test_large_feed_is_truncated_at_an_event_boundary(tmp_path):
+# A 500-event feed (with substantial per-event descriptions) is the
+# design-flaw regression case: under the old 30,000-character
+# conversion-time budget this lost everything past event ~219 —
+# permanently, since nothing downstream (doc.md, es_read) ever saw the
+# rest. It must now convert whole: the budget on what's RETURNED lives
+# elsewhere (docs.py/es_read); this module only bounds what's genuinely
+# absurd to store (see MAX_ICS_CHARS).
+def test_large_feed_converts_in_full(tmp_path):
+    p = tmp_path / "big.ics"
+    events = "".join(
+        f"BEGIN:VEVENT\r\nUID:{i}\r\nSUMMARY:Game {i}\r\n"
+        f"DTSTART:2026090{i % 9 + 1}T140000Z\r\n"
+        f"DESCRIPTION:{'x' * 400}\r\nEND:VEVENT\r\n" for i in range(500))
+    p.write_text("BEGIN:VCALENDAR\r\n" + events + "END:VCALENDAR\r\n", encoding="utf-8")
+    md, _ = doc_ics.convert(p, tmp_path)
+    assert "truncated" not in md.lower()
+    headings = [l for l in md.splitlines() if l.startswith("## ")]
+    assert len(headings) == 500
+    assert "Game 499" in md
+
+
+# The resource ceiling (MAX_ICS_CHARS) still exists for a genuinely absurd
+# feed — monkeypatched down here so the test doesn't need to generate
+# millions of real characters to exercise it.
+def test_ics_resource_ceiling_truncates_at_an_event_boundary_with_an_honest_marker(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(doc_ics, "MAX_ICS_CHARS", 2_000)
     p = tmp_path / "big.ics"
     events = "".join(
         f"BEGIN:VEVENT\r\nUID:{i}\r\nSUMMARY:Game {i}\r\n"
@@ -82,6 +108,10 @@ def test_large_feed_is_truncated_at_an_event_boundary(tmp_path):
     assert "truncated" in md.lower()
     # never cut mid-event: the last heading must have its body intact
     assert not md.rstrip().endswith("## ")
+    # Content past the ceiling was never converted/cached at all — the
+    # marker must say so plainly, not imply it's reachable another way.
+    assert "no page range to resume from" in md
+    assert "narrower date range or a smaller export" in md
 
 
 def test_event_count_is_reported(ics_file, tmp_path):

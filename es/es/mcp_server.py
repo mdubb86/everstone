@@ -8,7 +8,7 @@ import functools
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Generic, Optional, TypeVar
+from typing import Generic, List, Optional, Tuple, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
@@ -24,9 +24,12 @@ from es.vault_client import VaultClient
 from es.capabilities import cal as cal_cap
 from es.capabilities import cal_support
 from es.capabilities import clock as clock_cap
+from es.capabilities import doc_support
 from es.capabilities import docs as docs_cap
 from es.capabilities import maps as maps_cap
 from es.capabilities import maps_write
+from es.capabilities import read as read_cap
+from es.capabilities import reader
 from es.capabilities import weather as weather_cap
 
 mcp = FastMCP("everstone-es")
@@ -364,14 +367,6 @@ def es_notes_edit(target: str, body: Optional[str] = None,
 
 @mcp.tool()
 @mcp_envelope
-def es_notes_read(target: str) -> dict:
-    """Read a note's frontmatter + body. target is a vault-relative path or a topic
-    name. Returns {path, frontmatter, body}."""
-    return _notes_client().read_note(target)
-
-
-@mcp.tool()
-@mcp_envelope
 def es_notes_list(topic: Optional[str] = None, since: Optional[str] = None,
                   day: Optional[str] = None) -> list:
     """List journal entries (frontmatter summaries), filtered by topic link, since a
@@ -462,7 +457,7 @@ def es_doc_extract(source: str, pages: Optional[str] = None) -> dict:
     and return it as Markdown. source is the local path of a file the user
     uploaded (an absolute path) or a file in the vault, given as "$vault/..."
     or a vault-relative path (e.g. "Topics/Manual.pdf", same convention as
-    es_notes_read). pages optionally narrows a long PDF ("1-5", "1-2,7");
+    es_read). pages optionally narrows a long PDF ("1-5", "1-2,7");
     other formats have no pages and reject a pages argument. PDF pages that
     are images rather than text are rendered to PNGs and linked inline as
     ![page N](path) — read those with vision_analyze. Returns {doc_id, kind,
@@ -484,12 +479,274 @@ def es_doc_render(source: str, pages: Optional[str] = None) -> dict:
 
     source is the local path of an uploaded file (an absolute path) or a file
     in the vault, given as "$vault/..." or a vault-relative path (e.g.
-    "Topics/Manual.pdf", same convention as es_notes_read). pages narrows to a
+    "Topics/Manual.pdf", same convention as es_read). pages narrows to a
     range/list ("1-5", "1-2,7"); omit it to render the first 10 pages, or all
     of them if the document is shorter. An EXPLICIT pages range that runs past
     the document's end is an error (it likely names the wrong page) — omit
     pages instead if you just want "as much as there is"."""
     return docs_cap.render(source, _doc_roots(), _doc_cache_root(), pages=pages)
+
+
+# es_read's own whole-vs-outline threshold — for a DOCUMENT (kind == "doc":
+# something es_doc_extract converted from outside the vault). Deliberately
+# smaller than es_doc_extract's 40,000-character conversion cap, and smaller
+# than read.DEFAULT_WINDOW_LIMIT's own ~16,000-character "a window's worth of
+# lines" estimate — a document built from many SMALL units (the motivating
+# case: a 100+-event calendar where each event is only a couple dozen
+# characters) needs to cross this threshold reliably, and a bound sized only
+# for "large in total characters" would let exactly that document slip
+# through as "small enough to return whole", one heading at a time, 100+
+# times. A document arrives from outside at whatever size its source format
+# happens to be (a scanned PDF, an exported calendar feed) — nothing about
+# its length says anything about how much of it is worth seeing at once, so
+# this stays tight.
+_WHOLE_DOCUMENT_CHAR_LIMIT = 4_000
+
+# The same threshold for a NOTE (kind == "note": something the user wrote
+# into the vault themselves, via es_notes_journal/es_notes_topic/Obsidian
+# directly) — deliberately much larger than _WHOLE_DOCUMENT_CHAR_LIMIT above.
+#
+# A note is authored, not ingested: its length reflects how much the user
+# actually wrote, not an external format's page count, so "long" doesn't
+# carry the same "there is a lot here to page through" implication it does
+# for a converted document. The question a note-outline answers ("what did
+# I write about the tournament") is usually better served by the answer
+# itself than by a menu of section ids to fetch one at a time — an outline
+# is a genuinely useful detour for a 40-page manual; for a topic note the
+# user has been appending to for a year, it is mostly friction, costing the
+# agent a second call for content that would have fit in the first response.
+# A note that DOES have its own headings still gets one via `outline` below
+# (nothing here suppresses that) — this only changes when a note crosses
+# from "one answer" to "worth paging" in the first place.
+#
+# Set to read.DEFAULT_WINDOW_LIMIT's own ~16,000-character "a window's worth
+# of lines" estimate (see that module's docstring: 200 lines at a typical
+# prose width) rather than an arbitrary multiple of the document threshold:
+# below that size, the note would fit in a single page/window anyway if it
+# ever DID need paging, so returning it whole costs nothing paging would
+# have saved. Above it, a long-appended note benefits from the same
+# heading/line paging a document does — the risk this whole task exists to
+# avoid (dumping an enormous blob into one response) is still real for a
+# note, just at a size ordinary journal/topic writing rarely reaches.
+_WHOLE_NOTE_CHAR_LIMIT = 16_000
+
+
+# The hard cap on `content` — the ONE thing that stood between es_read and
+# Hermes's own house limit (DEFAULT_MCP_RESULT_SIZE_CHARS = 50_000, the size
+# past which a tool result is spilled to a file with only a preview kept in
+# context — a file this agent has no tool to open). Every path that returns
+# text (preamble/first-section, an explicit `section`, and a line `window`)
+# must run through this before it reaches the envelope.
+#
+# The design spec named 40,000 ("chosen to sit under Hermes's 50,000 house
+# limit with headroom for the envelope"), but that number priced in only
+# `content` plus a small fixed envelope — not `outline`, which can itself be
+# sizeable: a 100+-section document (the motivating case for the whole
+# outline-vs-whole design) serializes to several thousand characters of its
+# own ({id, title, level} per heading, JSON quoting included), and frontmatter
+# adds more still for a note. Reusing 40,000 here would let a large `content`
+# and a large `outline` add up past 50,000 in exactly the case (a big,
+# many-section document) where both are most likely to be large at once.
+# 32,000 keeps a deliberate ~18,000-character margin for outline + envelope +
+# frontmatter overhead, while still comfortably exceeding what a single
+# `es_read` call needs to be useful (the window default of 200 lines is
+# itself sized to well under this).
+_CONTENT_CHAR_CAP = 32_000
+
+
+def _cap_content(text: str, resume_hint: str) -> str:
+    """Cut `text` to at most _CONTENT_CHAR_CAP characters and say so in-band
+    — the same "*(truncated ...)*" convention es_doc_extract's own
+    docs._truncate_markdown uses (built through the shared
+    doc_support.truncation_marker, so detection/wording stays one
+    convention rather than a second, divergent one for es_read).
+
+    Cuts at the last newline at-or-before the cap so a huge but ordinarily-
+    line-broken text (the 112k-character, one-paragraph-per-line note this
+    fix exists for) never loses a partial line — falling back to a hard cut
+    only when no newline exists before the cap at all (e.g. one gigantic
+    unbroken paragraph). `resume_hint` names how the agent gets the rest;
+    callers here all point at the same escape hatch (`offset`), since a
+    single returned section/preview has no paging concept of its own.
+    Returns `text` unchanged when it's already within the cap.
+    """
+    if len(text) <= _CONTENT_CHAR_CAP:
+        return text
+    marker = "\n\n" + doc_support.truncation_marker(
+        f"at {_CONTENT_CHAR_CAP} characters — {resume_hint}")
+    # Reserve room for the marker itself: cutting AT the cap and appending
+    # the marker after it would push the total past _CONTENT_CHAR_CAP —
+    # exactly the bug this whole fix exists to close, just moved one line
+    # over. `limit` is where the KEPT text must end so text + marker still
+    # fits inside the cap.
+    limit = max(0, _CONTENT_CHAR_CAP - len(marker))
+    cut = text.rfind("\n", 0, limit)
+    if cut <= 0:
+        cut = limit
+    return text[:cut] + marker
+
+
+def _split_long_lines(md: str, limit: int) -> str:
+    """Break any single line longer than `limit` characters into limit-sized
+    chunks, each its own line. read_cap.window pages by LINE with no
+    character budget of its own (that's read.py's contract, owned
+    elsewhere) — a document that is one enormous unbroken line (an 800k-
+    character pasted transcript, verified live) is, from window()'s point of
+    view, exactly ONE line, so no amount of line-based paging can ever
+    return less than the whole thing. Pre-splitting on this side turns that
+    one line into many synthetic ones window() can page through normally,
+    without read.py ever needing a character budget of its own. Purely a
+    windowing aid — only ever fed to read_cap.window(), never used for
+    outline/section, which must keep seeing the document's real structure.
+    """
+    lines = md.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out: List[str] = []
+    for line in lines:
+        if len(line) <= limit:
+            out.append(line)
+        else:
+            out.extend(line[i:i + limit] for i in range(0, len(line), limit))
+    return "\n".join(out)
+
+
+def _char_bounded_window(md: str, offset: int) -> Tuple[str, Optional[int]]:
+    """read_cap.window(), trimmed to _CONTENT_CHAR_CAP: ask it for its
+    normal line-based window, then keep only as many of those lines as fit
+    the character cap, recomputing `next_offset` from what was ACTUALLY
+    kept rather than trusting window()'s own next_offset (which assumes
+    every line it returned is being kept). Getting this recomputation
+    right is the whole point — if a caller advances by window()'s original
+    next_offset after we silently dropped some of its lines, it skips the
+    content that got trimmed. The first line is always kept even if it
+    alone exceeds the cap (hard-cut to size), so a call always makes
+    forward progress and never returns an empty page while lines remain.
+    """
+    win = read_cap.window(_split_long_lines(md, _CONTENT_CHAR_CAP), offset)
+    lines = win["lines"]
+    kept: List[str] = []
+    used = 0
+    for line in lines:
+        cost = len(line) + (1 if kept else 0)
+        if kept and used + cost > _CONTENT_CHAR_CAP:
+            break
+        kept.append(line)
+        used += cost
+    if not kept and lines:
+        kept = [lines[0][:_CONTENT_CHAR_CAP]]
+    next_offset = (offset + len(kept)) if len(kept) < len(lines) else win["next_offset"]
+    return "\n".join(kept), next_offset
+
+
+@mcp.tool()
+@mcp_envelope
+def es_read(target: str, section: Optional[str] = None,
+            query: Optional[str] = None, offset: Optional[int] = None) -> dict:
+    """Read a vault note or a document previously extracted by es_doc_extract,
+    paged by heading so a long one doesn't have to come back all at once.
+
+    target is a vault-relative path, a topic name (same convention as
+    es_notes_journal/es_notes_topic/es_notes_attach), or a "doc:<id>" handle
+    returned by es_doc_extract.
+
+    No arguments: a short note or document comes back WHOLE (more=false). A
+    long one instead comes back as `outline` — a list of {id, title, level}
+    in document order — with a short preview in `content` and more=true; pass
+    an outline id as `section` to read that piece in full (its own
+    subsections included). "Long" is a higher bar for a vault note (authored
+    by the user, naturally bounded) than for a document es_doc_extract
+    converted (arrives at whatever size its source happened to be) — an
+    ordinary journal/topic note almost always comes back whole. query
+    full-text searches headings + bodies, case-insensitively, in `outline`
+    — the shape depends on whether the document has headings at all: WITH
+    headings, matches come back as outline entries ({id, title, level},
+    including a preamble hit if the text before the first heading matches)
+    to follow up with `section`; a document with NO headings (a .csv, a
+    flat prose note) instead returns line hits ({offset, line}) to follow
+    up with `offset=` — there is no section id to hand back for flat
+    content, and returning the whole thing just because a search term
+    matched somewhere inside it would defeat offset-paging's whole point.
+    Either way `content` stays null (the hits are what to act on); no
+    matches still returns ok, with `content` naming what to try instead.
+    offset pages by LINE, for content with no headings at all (e.g. a
+    .csv) or to page raw text regardless of headings, and reports
+    `next_offset` (null once nothing is left); ignored when section is
+    also given — section wins. `content` is capped per call — when cut,
+    it ends with an in-band marker naming how to get the rest (typically
+    `offset=0`).
+
+    Always returns {kind, source, path, frontmatter, content, outline, more,
+    next_offset} — the same keys regardless of mode, so you never have to
+    guess which ones exist. path/frontmatter are null for a doc:<id> target;
+    outline is null except where noted above.
+    """
+    # _notes_client() reads config.yaml — skip it for a doc: target, which
+    # never touches the vault, so a bare "doc:<id>" read doesn't require a
+    # configured vault at all.
+    vault = None if target.startswith(reader.DOC_PREFIX) else _notes_client()
+    resolved = reader.resolve(target, vault=vault, cache_root=_doc_cache_root())
+    md = resolved["markdown"]
+    out = {
+        "kind": resolved["kind"],
+        "source": resolved["source"],
+        "path": resolved.get("path"),
+        "frontmatter": resolved.get("frontmatter"),
+        "content": None,
+        "outline": None,
+        "more": False,
+        "next_offset": None,
+    }
+
+    if query is not None:
+        hits = read_cap.query(md, query)
+        out["outline"] = hits
+        if not hits:
+            out["content"] = (f"No section matched {query!r}. Call es_read with no "
+                              "arguments to see the outline, or try a different word.")
+        return out
+
+    _resume_hint = ("this is a single section with no paging of its own — "
+                     "call es_read with offset=0 to page through the whole "
+                     "document by line instead")
+
+    if section is not None:
+        out["content"] = _cap_content(read_cap.section(md, section), _resume_hint)
+        out["more"] = len(read_cap.outline(md)) > 1
+        return out
+
+    if offset is not None:
+        out["content"], out["next_offset"] = _char_bounded_window(md, offset)
+        out["more"] = out["next_offset"] is not None
+        return out
+
+    outline = read_cap.outline(md)
+    whole_limit = (_WHOLE_NOTE_CHAR_LIMIT if resolved["kind"] == "note"
+                   else _WHOLE_DOCUMENT_CHAR_LIMIT)
+    large = len(md) > whole_limit
+    if outline and large:
+        out["outline"] = outline
+        # The spec calls this "an outline plus the first section" — the
+        # preamble (text before the first heading) IS that first section
+        # when one exists, but a document that starts AT a heading (no
+        # preamble text at all, verified live for a PDF and an .xlsx) has
+        # none, and returning null here regressed the spec's promise and
+        # left the agent with an outline and nothing to read without a
+        # second call. Falling back to the first heading's own body means
+        # `content` is only ever null when the document is genuinely empty.
+        preview = read_cap.section(md, read_cap.PREAMBLE_ID).strip()
+        if not preview:
+            preview = read_cap.section(md, outline[0]["id"]).strip()
+        out["content"] = _cap_content(preview, _resume_hint) or None
+        out["more"] = True
+        return out
+
+    if large:  # no headings to outline (e.g. a .csv) — page by line instead
+        out["content"], out["next_offset"] = _char_bounded_window(md, 0)
+        out["more"] = out["next_offset"] is not None
+        return out
+
+    out["content"] = md
+    out["outline"] = outline or None
+    return out
 
 
 _CONTACTS_READ_MASK = "names,phoneNumbers,emailAddresses,addresses,organizations"
