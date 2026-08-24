@@ -12,7 +12,7 @@ feed still pages well), and ".docx"/".xlsx" (both via doc_office, which reads
 a Word document's own heading outline and gives each Excel sheet its own "##"
 heading — neither has page_count/render, same as doc_text's formats) —
 adding a new format is meant to be a pure addition (a new converter module +
-one new table entry), not a change to extract()/render() themselves.
+one new table entry), not a change to extract() itself.
 """
 import csv
 import json
@@ -34,11 +34,12 @@ from es.capabilities import doc_ics, doc_office, doc_pdf, doc_support, doc_text
 # caches in full) is the only path meant to return enough to actually read.
 PREVIEW_CHARS = 800
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
-# Mirrors doc_pdf.MAX_AUTO_RENDER_PAGES rather than duplicating the number —
-# render() and extract()'s auto-render both bound the same disk-fill risk
-# (rasterizing into Hermes's shared upload cache), so one call site owning the
-# limit and the other pointing at it keeps them from drifting apart.
-MAX_RENDER_PAGES = doc_pdf.MAX_AUTO_RENDER_PAGES
+# Mirrors doc_pdf.MAX_IMAGE_PAGES rather than duplicating the number — both
+# bound the same disk-fill risk (rasterizing into Hermes's shared upload
+# cache) for the same one call site (extract()'s image_pages), so one module
+# owning the limit and the other pointing at it keeps them from drifting
+# apart.
+MAX_IMAGE_PAGES = doc_pdf.MAX_IMAGE_PAGES
 
 # The stdlib csv module's default field_size_limit (128 KiB) is a parser
 # safety valve, not a real document-shape limit — a single free-text CSV
@@ -496,7 +497,21 @@ def _write_full_extract(adir: Path, markdown: str, images: List[Path],
     (adir / DOC_MD_NAME).write_text(markdown, encoding="utf-8")
 
 
-def extract(source: str, roots, cache_root: Path) -> dict:
+def extract(source: str, roots, cache_root: Path,
+            image_pages: Optional[str] = None) -> dict:
+    """image_pages is ADDITIVE to the conversion, never a second document:
+    doc_id is a pure content-and-format hash (see doc_cache.doc_id) and does
+    not fold in whether/which pages were rendered, so calling extract() again
+    with a DIFFERENT image_pages against the same source is still the same
+    doc_id, still a conversion cache hit — it only does the extra rendering
+    work, into the SAME artifact dir the plain conversion already lives in
+    (doc_cache.page_image_path's `image_no=None` bare `pNNN.png` form exists
+    for exactly this: a page can have both its own extracted/drawing images
+    AND a separate whole-page render, without collision). This is why
+    image_pages is a parameter here rather than a distinct render() entry
+    point with its own doc_id/cache path — one document, optionally with a
+    few of its pages ALSO available as whole-page PNGs.
+    """
     real, did, adir = _prepare(source, roots, cache_root)
     ext = real.suffix.lower()
     mod = CONVERTERS[ext]
@@ -528,6 +543,36 @@ def extract(source: str, roots, cache_root: Path) -> dict:
         _write_full_extract(adir, markdown, image_paths, kind=kind)
         doc_cache.touch(adir)
 
+    # Rendering is entirely separate from (and always runs after) the
+    # conversion/cache step above — a cache HIT still renders whatever pages
+    # were newly asked for, since image_pages is not part of doc_id and so
+    # was never part of what made this a cache hit in the first place.
+    page_images: List[str] = []
+    if image_pages is not None:
+        # Rasterizing pages only means something for a format that HAS pages
+        # to rasterize — a converter without `render` (every flat format:
+        # txt/md/csv/json, all via doc_text) can't support this at all,
+        # independent of whatever image_pages was passed, so the capability
+        # check comes first and names the actual reason rather than failing
+        # confusingly deeper down (e.g. inside parse_pages against a
+        # page_count that doesn't exist). hasattr mirrors the same
+        # "presence of the optional attribute IS the capability" convention
+        # _page_count already uses for page_count.
+        if not hasattr(mod, "render"):
+            raise UnsupportedDocument(
+                f"{ext} cannot be rendered to images — image_pages only "
+                "works for a PDF; call es_doc_extract without image_pages "
+                "for this format")
+        wanted = parse_pages(image_pages, total)
+        if len(wanted) > MAX_IMAGE_PAGES:
+            raise InvalidPageRange(
+                f"cannot render {len(wanted)} pages in one call — the limit "
+                f"is {MAX_IMAGE_PAGES}; narrow the range (call again for "
+                "the rest)")
+        rendered = mod.render(real, adir, wanted)
+        doc_cache.touch(adir)
+        page_images = [str(p) for p in rendered]
+
     # A RECEIPT, not the document: doc.md (written above, in full, before any
     # of this) is what es_read pages — this return value only has to let the
     # agent identify what it's holding and decide whether it needs to call
@@ -546,56 +591,19 @@ def extract(source: str, roots, cache_root: Path) -> dict:
     # so the agent copies `next` verbatim rather than constructing a
     # "doc:<id>" string itself (a transcription slip there is exactly the
     # DocHandleExpired failure mode reader.py's hex check guards against).
-    next_step = (
-        f'preview is the whole document — nothing else to call for this '
-        f'document (es_read(target="doc:{did}") would just return it again)'
-        if complete else
-        f'call es_read(target="doc:{did}") to read the rest, paged by heading'
-    )
+    # When image_pages was given, the genuinely next thing to do is look at
+    # the rendered page(s) — that IS the reason this call was made — not
+    # page through the (already-known-to-be-unhelpful) text via es_read.
+    if page_images:
+        rendered_repr = ", ".join(f'"{p}"' for p in page_images)
+        next_step = f'call vision_analyze on {rendered_repr} to see the rendered page(s)'
+    else:
+        next_step = (
+            f'preview is the whole document — nothing else to call for this '
+            f'document (es_read(target="doc:{did}") would just return it again)'
+            if complete else
+            f'call es_read(target="doc:{did}") to read the rest, paged by heading'
+        )
     return {"doc_id": did, "kind": kind, "page_count": total,
-            "preview": preview, "complete": complete, "next": next_step}
-
-
-DEFAULT_RENDER_PAGES_HI = 10
-
-
-def render(source: str, roots, cache_root: Path, pages: Optional[str] = None) -> dict:
-    """pages=None means "no explicit request" — render the first
-    DEFAULT_RENDER_PAGES_HI pages, clamped down to the document's actual
-    length so a short document (the 1-3 page schedule this feature exists
-    for) doesn't error just because it's shorter than the default window.
-
-    An EXPLICIT pages argument is never clamped: if the agent asks for a
-    range that runs past the document's end, that's a loud error rather
-    than a silent partial result — an explicit out-of-range ask is more
-    likely a wrong page number than an intentional "give me what you can"
-    request.
-    """
-    real, did, adir = _prepare(source, roots, cache_root)
-    ext = real.suffix.lower()
-    mod = CONVERTERS[ext]
-    # Rasterizing pages only means something for a format that HAS pages to
-    # rasterize — a converter without `render` (every flat format: txt/md/
-    # csv/json, all via doc_text) can't support this call at all, independent
-    # of whatever `pages` was passed, so the capability check comes first and
-    # names the actual reason rather than failing confusingly deeper down
-    # (e.g. inside parse_pages against a page_count that doesn't exist).
-    # hasattr is enough: it mirrors the same "presence of the optional
-    # attribute IS the capability" convention _page_count already uses for
-    # page_count, so a reader only has to learn the pattern once.
-    if not hasattr(mod, "render"):
-        raise UnsupportedDocument(
-            f"{ext} cannot be rendered to images — es_doc_render can only "
-            "render pages of a PDF; try es_doc_extract instead")
-    total = _page_count(mod, real)
-    spec = pages if pages is not None else f"1-{min(DEFAULT_RENDER_PAGES_HI, total)}"
-    wanted = parse_pages(spec, total)
-    if len(wanted) > MAX_RENDER_PAGES:
-        raise InvalidPageRange(
-            f"cannot render {len(wanted)} pages in one call — the limit is "
-            f"{MAX_RENDER_PAGES}; narrow the range (or call es_doc_render "
-            "again for the rest)")
-    images = mod.render(real, adir, wanted)
-    doc_cache.touch(adir)
-    return {"doc_id": did, "page_count": total,
-            "images": [str(i) for i in images]}
+            "preview": preview, "complete": complete,
+            "page_images": page_images, "next": next_step}

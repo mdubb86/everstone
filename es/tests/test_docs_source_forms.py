@@ -1,4 +1,4 @@
-"""Path-form support for es_doc_extract/es_doc_render's `source` argument.
+"""Path-form support for es_doc_extract's `source` argument.
 
 Three... no, two accepted forms today (a third, "$cache/...", was considered
 and dropped — see docs.py's _expand_source docstring: every Telegram upload
@@ -12,8 +12,8 @@ hands the agent a cache-relative string to expand):
    hand back exactly this form) or the explicit "$vault/..." synonym.
 
 These tests exercise es.capabilities.docs._expand_source/_prepare (via
-extract()/render()) directly against real ES_VAULT_PATH-backed roots, plus
-the MCP tool layer end to end.
+extract(), including its image_pages parameter) directly against real
+ES_VAULT_PATH-backed roots, plus the MCP tool layer end to end.
 """
 from pathlib import Path
 
@@ -224,7 +224,8 @@ def test_mcp_es_doc_extract_accepts_bare_vault_relative_path(vault_and_cache, te
     assert "Fall Season Schedule" in out["data"]["preview"]
 
 
-def test_mcp_es_doc_render_accepts_vault_relative_forms(vault_and_cache, text_pdf, monkeypatch):
+def test_mcp_es_doc_extract_image_pages_accepts_vault_relative_forms(
+        vault_and_cache, text_pdf, monkeypatch):
     from es import mcp_server
 
     vault_dir, cache_dir, roots = vault_and_cache
@@ -232,12 +233,12 @@ def test_mcp_es_doc_render_accepts_vault_relative_forms(vault_and_cache, text_pd
     monkeypatch.setattr(mcp_server, "_doc_roots", lambda: [str(cache_dir), str(vault_dir)])
     monkeypatch.setattr(mcp_server, "_doc_cache_root", lambda: vault_dir)
 
-    out_bare = mcp_server.es_doc_render("Topics/Manual.pdf", pages="1")
-    out_prefix = mcp_server.es_doc_render("$vault/Topics/Manual.pdf", pages="1")
+    out_bare = mcp_server.es_doc_extract("Topics/Manual.pdf", image_pages="1")
+    out_prefix = mcp_server.es_doc_extract("$vault/Topics/Manual.pdf", image_pages="1")
     assert out_bare["ok"] is True
     assert out_prefix["ok"] is True
-    assert len(out_bare["data"]["images"]) == 1
-    assert len(out_prefix["data"]["images"]) == 1
+    assert len(out_bare["data"]["page_images"]) == 1
+    assert len(out_prefix["data"]["page_images"]) == 1
 
 
 def test_mcp_es_doc_extract_still_rejects_traversal_via_dollar_vault(

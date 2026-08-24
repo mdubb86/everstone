@@ -59,13 +59,15 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   - **Notes** — `es_notes_*` (journal/topic/topics/edit/attach/list) → the Obsidian
     vault via `es.vault_client.VaultClient` (see "Notes vault & LiveSync" below).
     Reading a note is no longer one of these tools — see `es_read` below.
-  - **Documents** — `es_doc_extract(source)` / `es_doc_render(source, pages)`
-    read eight formats the agent otherwise has no way to open (no terminal, no OCR
-    skill): `.pdf`, `.docx`, `.xlsx`, `.txt`, `.md`, `.csv`, `.json`, `.ics` — backed
-    by `es.capabilities.docs` (confinement/caching/dispatch), one converter module
+  - **Documents** — `es_doc_extract(source, image_pages=None)` reads eight formats
+    the agent otherwise has no way to open (no terminal, no OCR skill): `.pdf`,
+    `.docx`, `.xlsx`, `.txt`, `.md`, `.csv`, `.json`, `.ics` — backed by
+    `es.capabilities.docs` (confinement/caching/dispatch), one converter module
     per format (`doc_pdf.py`; `doc_office.py` for `.docx`/`.xlsx`; `doc_text.py` for
     the four flat formats; `doc_ics.py`), and `doc_cache.py` (the artifact cache).
-    See "Document reading & the doc cache" below.
+    `image_pages` (PDF only) is an opt-in fallback that rasterizes specific pages
+    into the SAME artifact — additive to the conversion, not a second document; see
+    "Document reading & the doc cache" below.
   - **Read** — `es_read(target, section=None, query=None, offset=None)` is the one
     pageable read over both vault notes and `es_doc_extract`-converted documents.
     See "One read path: `es_read`" below for why this replaced `es_notes_read`
@@ -264,18 +266,18 @@ vault is simply invisible to `es`. That directory is the filesystem end of a thr
 
 ## Document reading & the doc cache
 
-`es_doc_extract`/`es_doc_render` (`es/es/capabilities/docs.py`) let the agent read a file the
-user sent, since the agent has no terminal and no OCR skill to fall back on (Hermes's own
-attachment note suggests both — neither exists in this profile; the tool is the actual path).
+`es_doc_extract` (`es/es/capabilities/docs.py`) lets the agent read a file the user sent, since
+the agent has no terminal and no OCR skill to fall back on (Hermes's own attachment note suggests
+both — neither exists in this profile; the tool is the actual path).
 Eight formats are supported today — `.pdf`, `.docx`, `.xlsx`, `.txt`, `.md`, `.csv`, `.json`,
 `.ics` — dispatched from a single table, `docs.CONVERTERS`, keyed by lowercased extension;
 `SUPPORTED` is *derived* from that table rather than hand-maintained beside it, so a format can
 never claim to be supported without a converter actually behind it. Adding a ninth format is
 meant to be a pure addition — one new converter module plus one new table entry — never a
-change to `extract()`/`render()` themselves.
+change to `extract()` itself.
 
 - **`extract()` returns a receipt, not the document.** The full return shape is `{doc_id, kind,
-  page_count, preview, complete, next}` — never the converted Markdown itself. `preview` is the
+  page_count, preview, complete, page_images, next}` — never the converted Markdown itself. `preview` is the
   first ~800 characters (`docs.PREVIEW_CHARS`), sized to let the agent identify what it's holding
   (a title, a first paragraph, a table header), not to read it; `complete` is an exact test
   (`len(markdown) <= PREVIEW_CHARS`), so the agent can trust it rather than guess from the
@@ -302,21 +304,33 @@ change to `extract()`/`render()` themselves.
   heading marks a real section"). This is *why* `es_read` (below) can page any converted
   document by heading with no format-specific logic of its own — the format-specific work
   already happened once, inside the converter, at conversion time.
-- `doc_pdf.convert()` (pdfplumber) walks pages in order; a page whose text layer is effectively
-  empty (below `BLANK_PAGE_CHARS`) is treated as image-only and rasterized (pypdfium2) to a
-  sibling PNG, linked inline as `![page N](path)` — the agent reads that PNG with
-  `vision_analyze`, no separate escalation protocol needed. A text page with a large embedded
-  image (a chart, a diagram) still gets a pointer comment suggesting `es_doc_render` for that
-  page, since its meaning may be the image, not the extracted prose. `es_doc_render` does the
-  same rasterization on demand for specific pages, for when extracted text came back useless
-  (a scanned form, a map) — it is **PDF-only**: every other format has no `render()` to dispatch
-  to (`hasattr(mod, "render")` is the capability check — the same "presence of the optional
-  attribute IS the capability" convention `page_count` uses to mean "this format has pages at
-  all"). `.docx`/`.xlsx` and the four flat formats have no page concept to rasterize, so
-  `es_doc_render` refuses them by name rather than failing confusingly deeper in page-range
-  logic. Also not there yet: `.docx`'s own embedded images are not extracted — `doc_office.py`'s
-  `convert()` always returns an empty image list for both formats it serves; tracked as a
-  follow-up, not silently dropped.
+- `doc_pdf.convert()` (pdfplumber for text/tables, pypdfium2 for rendering) walks pages in order
+  and extracts, unconditionally, every source of visual content a page has: every embedded raster
+  image (no "is this worth it" threshold — a fully scanned page falls out of this for free, as a
+  page whose only content happens to be one image) and every vector drawing (a chart/diagram drawn
+  in lines/rects/curves, clustered by proximity, table borders subtracted first so a bordered
+  table's own grid never doubles as a spurious "drawing"). Both are linked inline at their
+  position in the reading order, `![page N image M](path)`/`![page N drawing M](path)`, read with
+  `vision_analyze` — no separate escalation protocol needed, and no judgment call left for the
+  agent to notice and act on. `.docx`'s own embedded images are extracted the same way (linked
+  inline in document order); `.xlsx` embedded images are still out of scope. Each of the three
+  resources (images, drawings, `.docx` images) has its own document-wide ceiling, hit only by a
+  pathological/crafted file and always reported in-band, never silently dropped.
+- **`es_doc_extract`'s `image_pages` parameter is a fallback for unreadable TEXT, not images** —
+  by the point above, every image on a page is already inline, so there is nothing left for a
+  whole-page render to reveal there. What it *does* serve: a page whose extracted TEXT itself
+  comes back unusable — pdfplumber's line grouping has no column awareness, so a real multi-column
+  PDF (verified against `tests/fixtures/pdf/example_paper.pdf`) can interleave two columns'
+  sentences mid-clause; a mangled table/form layout is the same failure. `image_pages` (e.g. `"7"`,
+  `"1-5"`) rasterizes exactly those pages **into the SAME artifact** the plain conversion already
+  produced — additive, not a second document: `doc_id` is a pure content-and-format hash and does
+  not fold in whether/which pages were rendered, so a later call with `image_pages` against an
+  already-converted source is a conversion cache hit that only does the extra rendering work. It
+  is **PDF-only**: every other format has no `render()` to dispatch to (`hasattr(mod, "render")` is
+  the capability check — the same "presence of the optional attribute IS the capability"
+  convention `page_count` uses to mean "this format has pages at all"), so `.docx`/`.xlsx` and the
+  four flat formats refuse it by name rather than failing confusingly deeper in page-range logic.
+  The receipt's `page_images` key is always present (`[]` when `image_pages` wasn't given).
 - **Artifacts live in `.es/<doc_id>/` *inside* Hermes's own per-profile document cache**
   (`cache/documents/` under the profile dir) rather than a separate directory — `doc_cache.py`
   namespaces under it instead of duplicating it. This is safe specifically because Hermes's own

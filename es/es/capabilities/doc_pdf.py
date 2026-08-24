@@ -90,8 +90,8 @@ an unbounded number of PNGs into the cache. 500 sits comfortably above the
 200-page-scan case (2.5x headroom for an unusually long real scan) while
 still being a real, finite bound. Hitting it is reported IN-BAND, once per
 page that has skipped images, naming the count and pointing at
-es_doc_render (still the escape hatch for reaching an over-ceiling image
-today; deleting that tool is a later phase) — never a silent drop. See
+es_doc_extract's image_pages parameter (the escape hatch for reaching an
+over-ceiling image — see docs.extract) — never a silent drop. See
 test_image_extraction_ceiling_is_enforced_and_reported_in_band.
 
 Precondition: `adir` must already exist for both `convert()` and `render()`
@@ -240,13 +240,13 @@ from es.capabilities.doc_support import table_to_markdown as _table_to_markdown
 
 RENDER_DPI = 150
 
-# Used ONLY by docs.render() (es_doc_render) now, to cap how many PAGES an
-# explicit render request may rasterize in one call — NOT an auto-render
-# concept any more (that branch, and the "blank page" detection that used
-# to trigger it, is gone; see the module docstring). Kept under this name
-# because docs.py reads it directly (`MAX_RENDER_PAGES =
-# doc_pdf.MAX_AUTO_RENDER_PAGES`) as the one place that limit is owned.
-MAX_AUTO_RENDER_PAGES = 20
+# Used ONLY by docs.extract()'s image_pages parameter, to cap how many PAGES
+# one explicit image_pages request may rasterize in a single call — not an
+# auto-render concept (there is no default page range; image_pages is opt-in
+# and only ever renders exactly the pages named). docs.py reads it directly
+# (`MAX_IMAGE_PAGES = doc_pdf.MAX_IMAGE_PAGES`) as the one place this limit
+# is owned.
+MAX_IMAGE_PAGES = 20
 
 # Resource ceilings for embedded-image extraction — see the module
 # docstring for the reasoning behind each number.
@@ -270,9 +270,9 @@ def page_count(source: Path) -> int:
 
 def _render_page(doc: "pdfium.PdfDocument", adir: Path, page_no: int) -> Path:
     """Rasterize one 1-indexed page to a PNG in `adir`, using an already-open
-    pdfium document. Used by render()/es_doc_render — a WHOLE-page raster,
-    unrelated to the per-embedded-image extraction convert() does (see
-    _page_image_entries).
+    pdfium document. Used by render(), which docs.extract() calls when its
+    image_pages parameter is given — a WHOLE-page raster, unrelated to the
+    per-embedded-image extraction convert() does (see _page_image_entries).
 
     Takes the open document rather than a source path: opening a fresh
     pypdfium2.PdfDocument per page (once per page of a multi-page render) is
@@ -292,7 +292,8 @@ def _render_page(doc: "pdfium.PdfDocument", adir: Path, page_no: int) -> Path:
 
 
 def render(source: Path, adir: Path, pages: List[int]) -> List[Path]:
-    """Rasterize the given 1-indexed pages. Used by es_doc_render.
+    """Rasterize the given 1-indexed pages. Called by docs.extract() when its
+    image_pages parameter is given.
 
     Raises ValueError if any requested page number is outside the document's
     valid range — the caller (docs.parse_pages) validates first in practice,
@@ -381,8 +382,8 @@ def _page_image_entries(pf_page, page_height: float, adir: Path, page_no: int,
             f"*(page {page_no} also contains {skipped} further "
             f"image{'s' if skipped != 1 else ''} not extracted — the "
             f"document-wide limit of {MAX_EXTRACTED_IMAGES} images was "
-            f"reached; use es_doc_render with pages=\"{page_no}\" to view "
-            "this page.)*"))
+            f"reached; call es_doc_extract with image_pages=\"{page_no}\" to "
+            "see this page as an image.)*"))
     return entries, saved, extracted
 
 
@@ -527,8 +528,8 @@ def _page_drawing_entries(page, tables, adir: Path, page_no: int,
             f"*(page {page_no} also contains {skipped} further vector "
             f"drawing{'s' if skipped != 1 else ''} not extracted — the "
             f"document-wide limit of {MAX_EXTRACTED_DRAWINGS} drawings was "
-            f"reached; use es_doc_render with pages=\"{page_no}\" to view "
-            "this page.)*"))
+            f"reached; call es_doc_extract with image_pages=\"{page_no}\" to "
+            "see this page as an image.)*"))
     return entries, saved, extracted
 
 

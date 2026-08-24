@@ -119,9 +119,10 @@ def test_page_of_only_a_table_is_not_misclassified_as_image(table_only_pdf, tmp_
 def test_image_extraction_ceiling_is_enforced_and_reported_in_band(tmp_path, monkeypatch):
     """More embedded images across the document than MAX_EXTRACTED_IMAGES:
     extraction stops at the ceiling, and every image beyond it is reported
-    in-band (a note pointing at es_doc_render) rather than silently dropped.
-    This replaces the old per-PAGE auto-render cap (deleted along with the
-    blank-page auto-render branch it protected) with a per-IMAGE ceiling —
+    in-band (a note pointing at es_doc_extract's image_pages parameter)
+    rather than silently dropped. This replaces the old per-PAGE auto-render
+    cap (deleted along with the blank-page auto-render branch it protected)
+    with a per-IMAGE ceiling —
     every page can now contribute more than one image, so the resource risk
     that needs bounding is the image count, not the page count."""
     from PIL import Image
@@ -142,7 +143,7 @@ def test_image_extraction_ceiling_is_enforced_and_reported_in_band(tmp_path, mon
 
     assert len(images) == 2
     for idx in (3, 4):
-        assert f'es_doc_render with pages="{idx}"' in md
+        assert f'es_doc_extract with image_pages="{idx}"' in md
     assert "not extracted" in md
 
 
@@ -197,8 +198,9 @@ def test_real_paper_table_subtraction_does_not_explode_into_many_images(
 def test_drawing_extraction_ceiling_is_enforced_and_reported_in_band(tmp_path, monkeypatch):
     """More vector drawings across the document than MAX_EXTRACTED_DRAWINGS:
     extraction stops at the ceiling, and every drawing beyond it is reported
-    in-band (a note pointing at es_doc_render) rather than silently dropped —
-    the same never-silently-drop guarantee Task 1 gives embedded images."""
+    in-band (a note pointing at es_doc_extract's image_pages parameter)
+    rather than silently dropped — the same never-silently-drop guarantee
+    Task 1 gives embedded images."""
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
 
@@ -217,7 +219,7 @@ def test_drawing_extraction_ceiling_is_enforced_and_reported_in_band(tmp_path, m
 
     assert len(images) == 2
     for idx in (3, 4):
-        assert f'es_doc_render with pages="{idx}"' in md
+        assert f'es_doc_extract with image_pages="{idx}"' in md
     assert "not extracted" in md
 
 
