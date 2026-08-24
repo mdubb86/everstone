@@ -41,6 +41,7 @@ started, and a narrow row inside it is data with empty cells, not a title.
 import csv
 import datetime
 import tempfile
+import threading
 from pathlib import Path
 from typing import List, Tuple
 
@@ -388,3 +389,154 @@ def _write_cells(con, sheets_meta: List[dict], workdir: Path) -> None:
             "header=false, columns={'sheet': 'VARCHAR', 'row': 'BIGINT', "
             "'col': 'BIGINT', 'ref': 'VARCHAR', 'value': 'VARCHAR'})",
             [str(dump)])
+
+
+# How much of a result comes back. The agent asked a QUESTION; the answer to
+# a good one is a handful of rows, and a query that returns hundreds is
+# almost always one that should have been an aggregate instead. Truncation is
+# reported, never silent, so the agent can narrow rather than assume it saw
+# everything.
+MAX_QUERY_ROWS = 200
+QUERY_TIMEOUT_SECONDS = 15.0
+
+
+class NotAQuery(Exception):
+    """The submitted SQL is not a single read. Distinct from QueryFailed
+    because the remedy is different in kind: this is not "your query has a
+    bug", it is "this tool does not do that at all"."""
+    es_code = "doc_query_not_read"
+
+
+class QueryFailed(Exception):
+    es_code = "doc_query_failed"
+
+
+class QueryTimeout(Exception):
+    es_code = "doc_query_timeout"
+
+
+def _connect_readonly(db_path: Path):
+    """A connection that cannot write and cannot touch the filesystem.
+
+    Three separate things, because read-only alone is not enough. `read_only`
+    stops writes to THIS database, but a plain SELECT can still reach the host
+    filesystem — `SELECT * FROM read_csv('/etc/passwd')` is a read, and
+    `COPY (SELECT ...) TO '/tmp/x'` is a write that never touches the
+    database. `enable_external_access=false` closes both (verified: file
+    reads, COPY TO and ATTACH all raise PermissionException), and DuckDB
+    refuses to re-enable it at runtime — a submitted `SET
+    enable_external_access=true` fails with "Cannot enable external access
+    while database is running", so no lock_configuration is needed on top.
+    """
+    return duckdb.connect(str(db_path), read_only=True,
+                          config={"enable_external_access": "false"})
+
+
+def _table_summary(con) -> str:
+    """The sheet -> table mapping as one line, for an error message.
+
+    An unknown-table error is the moment the agent needs this most: it almost
+    certainly typed the SHEET name it saw in the spreadsheet rather than the
+    slug the table actually has, so the error has to bridge the two rather
+    than just say no.
+    """
+    try:
+        rows = con.execute(
+            f'SELECT table_name, sheet FROM "{META_TABLE}" ORDER BY 1').fetchall()
+    except duckdb.Error:
+        return ""
+    if not rows:
+        return ""
+    listed = ", ".join(f"{t} (sheet {s!r})" for t, s in rows)
+    return f" Tables in this document: {listed}."
+
+
+def _json_safe(value):
+    """MCP hands this straight to json.dumps, so a date or a Decimal has to
+    already be a string or a number — failing at serialization time, after the
+    query has run and the connection is closed, would report a type error in
+    place of the answer."""
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat(sep=" ") if isinstance(
+            value, datetime.datetime) else value.isoformat()
+    if isinstance(value, datetime.timedelta):
+        return str(value)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def query(adir: Path, sql: str, *, timeout: float = QUERY_TIMEOUT_SECONDS) -> dict:
+    """Run one read-only SQL statement against a document's database.
+
+    Returns `{"columns", "rows", "row_count", "truncated"}`.
+
+    Only `StatementType.SELECT` is accepted, as classified by DuckDB's own
+    parser rather than by matching the leading word — which also means
+    DESCRIBE, SHOW and SUMMARIZE come along for free (DuckDB classifies all
+    three as SELECT), and those are exactly how the agent recovers a schema
+    it no longer has the receipt for. Exactly ONE statement: `SELECT 1; DROP
+    TABLE t` parses as two, and accepting the first would run the second.
+
+    The row bound is applied by WRAPPING the query rather than appending a
+    LIMIT — appending would attach to the wrong part of a UNION, a CTE, or a
+    query that already ends in its own LIMIT. One extra row is fetched beyond
+    the cap purely to tell "exactly at the cap" from "there was more".
+
+    The time bound is a timer that calls `con.interrupt()`. DuckDB has no
+    statement_timeout setting, so this was established by measurement rather
+    than assumed: a three-way cross join that would never finish stopped in
+    exactly the time allowed, raising InterruptException.
+    """
+    db_path = Path(adir) / DB_NAME
+    if not db_path.is_file():
+        raise QueryFailed(
+            "this document has no queryable data — call es_doc_extract on "
+            "the source file again to rebuild it")
+
+    text = sql.strip().rstrip(";").strip()
+    if not text:
+        raise NotAQuery("no SQL was given — pass a SELECT statement")
+
+    con = _connect_readonly(db_path)
+    try:
+        try:
+            statements = con.extract_statements(text)
+        except duckdb.Error as e:
+            raise QueryFailed(f"could not parse that SQL: {e}") from e
+        if len(statements) != 1:
+            raise NotAQuery(
+                f"send one statement at a time — that was {len(statements)}. "
+                "This tool only runs a single read.")
+        if statements[0].type != duckdb.StatementType.SELECT:
+            raise NotAQuery(
+                "this document is READ-only — only SELECT (and DESCRIBE / "
+                "SHOW TABLES / SUMMARIZE) can be run against it, never "
+                "INSERT, UPDATE, DELETE, DROP, CREATE, COPY or ATTACH. "
+                "Nothing was changed.")
+
+        wrapped = f"SELECT * FROM ({text}) AS es_q LIMIT {MAX_QUERY_ROWS + 1}"
+        timer = threading.Timer(timeout, con.interrupt)
+        timer.start()
+        try:
+            cur = con.execute(wrapped)
+            columns = [d[0] for d in cur.description]
+            fetched = cur.fetchall()
+        except duckdb.InterruptException as e:
+            raise QueryTimeout(
+                f"the query was still running after {timeout:g}s and was "
+                "stopped — narrow it (add a WHERE, or aggregate instead of "
+                "listing rows)") from e
+        except duckdb.Error as e:
+            raise QueryFailed(f"{e}{_table_summary(con)}") from e
+        finally:
+            timer.cancel()
+    finally:
+        con.close()
+
+    truncated = len(fetched) > MAX_QUERY_ROWS
+    rows = [[_json_safe(v) for v in r] for r in fetched[:MAX_QUERY_ROWS]]
+    return {"columns": columns, "rows": rows, "row_count": len(rows),
+            "truncated": truncated}

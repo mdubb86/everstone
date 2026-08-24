@@ -504,3 +504,139 @@ def test_a_sheet_with_a_subtotal_row_still_builds_a_real_table(tmp_path):
             f"SELECT sum(amount) FROM {t['table']}").fetchone()[0] == 41.0
     finally:
         con.close()
+
+
+# ----------------------------------------------------------------- query()
+
+
+@pytest.fixture
+def txns(tmp_path):
+    """A two-sheet workbook built once for the query tests: 200 transactions
+    and the customers they belong to."""
+    rows = [["id", "customer_id", "amount"]]
+    for i in range(1, 201):
+        rows.append([i, (i % 3) + 1, float(i)])
+    src = _xlsx(tmp_path, {
+        "Txns": rows,
+        "Customers": [["id", "name"], [1, "alice"], [2, "bob"], [3, "carol"]],
+    })
+    adir = tmp_path / "art"
+    adir.mkdir()
+    doc_table.build(src, adir)
+    return adir
+
+
+def test_an_aggregate_answers_in_one_row(txns):
+    """The motivating case. Previously this meant paging a capped Markdown
+    table and adding numbers by hand; now it is one call returning one row."""
+    out = doc_table.query(txns, "SELECT count(*), sum(amount) FROM txns WHERE amount > 100")
+    assert out["rows"] == [[100, 15050.0]]
+    assert out["truncated"] is False
+
+
+def test_a_join_across_two_sheets_works(txns):
+    out = doc_table.query(txns, (
+        "SELECT c.name, count(*) AS n FROM txns t "
+        "JOIN customers c ON c.id = t.customer_id GROUP BY c.name ORDER BY c.name"))
+    assert [r[0] for r in out["rows"]] == ["alice", "bob", "carol"]
+    assert sum(r[1] for r in out["rows"]) == 200
+
+
+@pytest.mark.parametrize("sql", [
+    "INSERT INTO txns VALUES (999, 1, 1.0)",
+    "UPDATE txns SET amount = 0",
+    "DELETE FROM txns",
+    "DROP TABLE txns",
+    "CREATE TABLE evil AS SELECT 1",
+    "ATTACH '/tmp/other.duckdb' AS o",
+    "COPY (SELECT 1) TO '/tmp/exfil.csv'",
+    "SELECT 1; DROP TABLE txns",
+])
+def test_anything_that_is_not_a_read_is_refused(txns, sql):
+    with pytest.raises(doc_table.NotAQuery) as e:
+        doc_table.query(txns, sql)
+    assert "read" in str(e.value).lower()
+
+
+def test_the_database_is_unchanged_after_a_refused_write(txns):
+    """Refusing is only meaningful if nothing happened. Checked separately
+    from the refusal itself so a change that started executing before
+    raising would still be caught."""
+    for sql in ("DELETE FROM txns", "DROP TABLE txns"):
+        with pytest.raises(doc_table.NotAQuery):
+            doc_table.query(txns, sql)
+    assert doc_table.query(txns, "SELECT count(*) FROM txns")["rows"] == [[200]]
+
+
+def test_reading_a_file_off_the_host_is_refused(txns):
+    """The statement allowlist alone would let this through — it is a SELECT.
+    External filesystem access is disabled on the connection itself, which is
+    what actually stops it."""
+    with pytest.raises(doc_table.QueryFailed) as e:
+        doc_table.query(txns, "SELECT * FROM read_csv('/etc/hostname')")
+    assert "disabled" in str(e.value).lower() or "permission" in str(e.value).lower()
+
+
+def test_a_query_with_no_limit_gets_one_and_says_so(txns):
+    # 600 rows from a fixture of 200, so the cap bites regardless of what the
+    # fixture's own size happens to be — an earlier version of this test used
+    # `SELECT * FROM txns`, which returned exactly MAX_QUERY_ROWS and could
+    # therefore never have observed a missing cap.
+    out = doc_table.query(txns, "SELECT t.id, c.name FROM txns t, customers c")
+    assert len(out["rows"]) == doc_table.MAX_QUERY_ROWS
+    assert out["truncated"] is True
+    assert out["row_count"] == doc_table.MAX_QUERY_ROWS
+
+
+def test_the_agents_own_limit_is_respected(txns):
+    out = doc_table.query(txns, "SELECT * FROM txns ORDER BY id LIMIT 5")
+    assert len(out["rows"]) == 5
+    assert out["truncated"] is False
+    assert [r[0] for r in out["rows"]] == [1, 2, 3, 4, 5]
+
+
+def test_an_unknown_table_error_names_the_real_tables(txns):
+    with pytest.raises(doc_table.QueryFailed) as e:
+        doc_table.query(txns, "SELECT * FROM transactions")
+    msg = str(e.value)
+    assert "txns" in msg and "customers" in msg
+    # The mapping too — the agent asked for the SHEET name, so the error has
+    # to bridge from what it typed to what the table is called.
+    assert "Txns" in msg
+
+
+def test_introspection_commands_are_allowed(txns):
+    """DESCRIBE/SHOW/SUMMARIZE all classify as SELECT to DuckDB, so the agent
+    gets them for free — worth pinning, since they are how it recovers a
+    schema it no longer has the receipt for."""
+    assert doc_table.query(txns, "DESCRIBE txns")["rows"]
+    names = [r[0] for r in doc_table.query(txns, "SHOW TABLES")["rows"]]
+    assert "txns" in names and doc_table.META_TABLE in names
+
+
+def test_a_runaway_query_is_stopped(txns):
+    """A three-way cross join is 8e6 rows here and unbounded in general.
+    DuckDB has no statement_timeout setting; the bound comes from calling
+    interrupt() on the connection from a timer, which was measured to stop a
+    genuine runaway in exactly the time allowed."""
+    # The predicate matters: a bare `count(*)` over a cross join is answered
+    # from cardinality alone without materializing anything, so it finishes
+    # instantly and proves nothing. This forces 1.6e9 comparisons.
+    with pytest.raises(doc_table.QueryTimeout):
+        doc_table.query(txns, (
+            "SELECT count(*) FROM txns a, txns b, txns c, txns d "
+            "WHERE a.amount * b.amount > c.amount * d.amount"), timeout=0.25)
+
+
+def test_values_come_back_json_safe(txns, tmp_path):
+    """Whatever this returns is going into an MCP envelope, so a date or a
+    decimal has to already be a string or a number — not a Python object that
+    json.dumps refuses at the very end of the call."""
+    import json
+    src = _csv_file(tmp_path, "id,when\n1,2026-01-02\n", name="d.csv")
+    adir = tmp_path / "art2"
+    adir.mkdir()
+    doc_table.build(src, adir)
+    out = doc_table.query(adir, "SELECT * FROM d")
+    assert out["rows"] == [[1, "2026-01-02"]]
+    json.dumps(out)
