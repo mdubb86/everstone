@@ -63,12 +63,16 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
     the agent otherwise has no way to open (no terminal, no OCR skill): `.pdf`,
     `.docx`, `.xlsx`, `.txt`, `.md`, `.csv`, `.json`, `.ics` — backed by
     `es.capabilities.docs` (confinement/caching/dispatch), one converter module
-    per format (`doc_pdf.py`; `doc_office.py` for `.docx`/`.xlsx`; `doc_text.py` for
-    the four flat formats; `doc_ics.py`), and `doc_cache.py` (the artifact cache).
-    `image_pages` (PDF only) is an opt-in fallback that rasterizes specific pages
-    into the SAME artifact — additive to the conversion, not a second document; see
-    "Document reading & the doc cache" below.
-  - **Read** — `es_read(target, section=None, query=None, offset=None)` is the one
+    per format (`doc_pdf.py`; `doc_office.py` for `.docx`; `doc_text.py` for the
+    three flat formats; `doc_ics.py`; `doc_table.py` for `.csv`/`.xlsx`), and
+    `doc_cache.py` (the artifact cache). `image_pages` (PDF only) is an opt-in
+    fallback that rasterizes specific pages into the SAME artifact — additive to
+    the conversion, not a second document; see "Document reading & the doc cache"
+    below.
+  - **Tabular data** — `.csv`/`.xlsx` are NOT documents: `doc_table.py` converts
+    them to a DuckDB database and `es_doc_query(target, sql)` runs bounded
+    read-only SQL against it. See "Tabular data: `es_doc_query`" below.
+  - **Read** — `es_read(target, section=None, search=None, offset=None)` is the one
     pageable read over both vault notes and `es_doc_extract`-converted documents.
     See "One read path: `es_read`" below for why this replaced `es_notes_read`
     rather than becoming yet another per-tool text branch.
@@ -270,7 +274,10 @@ vault is simply invisible to `es`. That directory is the filesystem end of a thr
 the agent has no terminal and no OCR skill to fall back on (Hermes's own attachment note suggests
 both — neither exists in this profile; the tool is the actual path).
 Eight formats are supported today — `.pdf`, `.docx`, `.xlsx`, `.txt`, `.md`, `.csv`, `.json`,
-`.ics` — dispatched from a single table, `docs.CONVERTERS`, keyed by lowercased extension;
+`.ics` — dispatched from a single table, `docs.CONVERTERS`, keyed by lowercased extension.
+Two of them (`.csv`, `.xlsx`) are not documents at all: they take the TABLE branch described
+under "Tabular data" below, and everything in this section about markdown, previews and paging
+applies only to the other six.
 `SUPPORTED` is *derived* from that table rather than hand-maintained beside it, so a format can
 never claim to be supported without a converter actually behind it. Adding a ninth format is
 meant to be a pure addition — one new converter module plus one new table entry — never a
@@ -292,13 +299,11 @@ change to `extract()` itself.
 - **Output is Markdown, not raw text — and every converter emits a `## ` heading everywhere the
   SOURCE has real structure.** This is the load-bearing design choice the rest of this section
   depends on. `doc_pdf` emits `## Page N` per page; `doc_office` emits one heading per Word
-  heading (`.docx`) or one per worksheet (`.xlsx`, emitted UNCONDITIONALLY even for an empty
-  sheet — a sheet silently dropped for having nothing under its own heading would be
-  indistinguishable from a sheet that was never read); `doc_ics` synthesizes one heading per
+  heading (`.docx`); `doc_ics` synthesizes one heading per
   calendar EVENT, deliberately not per day — grouping by day is a property of how someone
   chose to *display* a schedule, not of the schedule itself, and would make the reader's paging
   granularity depend on an accident of formatting rather than the feed's own structure. Formats
-  with no real structure — `.txt`, `.md` (as authored), `.csv`, `.json`, all served by
+  with no real structure — `.txt`, `.md` (as authored), `.json`, all served by
   `doc_text.py` — deliberately emit NONE: inventing a heading (e.g. `"## Rows 1-100"`) over an
   arbitrary byte range would counterfeit the one signal a reader is meant to trust ("a `##`
   heading marks a real section"). This is *why* `es_read` (below) can page any converted
@@ -313,7 +318,9 @@ change to `extract()` itself.
   position in the reading order, `![page N image M](path)`/`![page N drawing M](path)`, read with
   `vision_analyze` — no separate escalation protocol needed, and no judgment call left for the
   agent to notice and act on. `.docx`'s own embedded images are extracted the same way (linked
-  inline in document order); `.xlsx` embedded images are still out of scope. Each of the three
+  inline in document order). `.xlsx` has no converter here at all any more — it is a database,
+  not a document, so its own embedded images are out of scope by construction rather than as a
+  deferral. Each of the three
   resources (images, drawings, `.docx` images) has its own document-wide ceiling, hit only by a
   pathological/crafted file and always reported in-band, never silently dropped.
 - **`es_doc_extract`'s `image_pages` parameter is a fallback for unreadable TEXT, not images** —
@@ -328,8 +335,9 @@ change to `extract()` itself.
   already-converted source is a conversion cache hit that only does the extra rendering work. It
   is **PDF-only**: every other format has no `render()` to dispatch to (`hasattr(mod, "render")` is
   the capability check — the same "presence of the optional attribute IS the capability"
-  convention `page_count` uses to mean "this format has pages at all"), so `.docx`/`.xlsx` and the
-  four flat formats refuse it by name rather than failing confusingly deeper in page-range logic.
+  convention `page_count` uses to mean "this format has pages at all"), so `.docx`, the three
+  flat formats, `.ics` and both table formats refuse it by name rather than failing confusingly
+  deeper in page-range logic.
   The receipt's `page_images` key is always present (`[]` when `image_pages` wasn't given).
 - **Artifacts live in `.es/<doc_id>/` *inside* Hermes's own per-profile document cache**
   (`cache/documents/` under the profile dir) rather than a separate directory — `doc_cache.py`
@@ -358,9 +366,67 @@ change to `extract()` itself.
   grants full tool trust in DMs; without confinement in `docs.py`/`paths.py`, a DM user could ask
   the agent to read arbitrary files elsewhere on the container's filesystem.
 
+### Tabular data: `es_doc_query`
+
+`.csv` and `.xlsx` are the one pair of formats that do **not** become documents.
+`es/es/capabilities/doc_table.py` converts them to a `data.duckdb` inside the same
+`.es/<doc_id>/` artifact directory, and `es_doc_query(target, sql)` runs SQL against it.
+The reason is the shape of the question: "how many transactions over $500 in September"
+has a one-row answer that no amount of paging a 40,000-row Markdown pipe table produces.
+The agent writes competent SQL out of the box, so the useful thing to hand it is a
+database. `extract()` returns a **different receipt shape** for these — `{doc_id, kind:
+"table", tables, next}`, each table carrying its sheet name, column names and types, row
+count and detected header row — with no `preview` and no `complete`, because a preview of
+a database means nothing. `es_read` refuses these handles by name (`docs.TABLE_KINDS`),
+and `reader.resolve_table` gives `es_doc_query` the exact mirror, so whichever tool the
+agent reaches for first, being wrong points it at the other one.
+
+- **Both formats go through DuckDB's CSV sniffer**, `.xlsx` by way of openpyxl serializing
+  each sheet to CSV first. DuckDB's own `read_xlsx` was measured and rejected: given a
+  sheet with an ordinary title banner it returned ONE column, named after the banner,
+  containing ZERO rows. The sniffer needed no configuration for the same shape
+  (`SkipRows: 4`, correct `BIGINT/VARCHAR/DOUBLE/DATE`). One door for both formats also
+  means preamble handling, header detection and type inference are one piece of machinery,
+  tested once.
+- **The serialization rule is load-bearing.** The sniffer identifies a preamble purely by
+  COLUMN-COUNT CONTRAST, so: a blank row is a blank line; a row with one non-empty cell
+  *before the first full-width row* is written as ONE field (a banner); everything else is
+  PADDED to the full sheet width. Both halves of that rule were established by finding the
+  bug: trimming trailing empties from every row, and treating a mid-data subtotal row as a
+  banner, each collapsed an entire file into a single VARCHAR column — silently, with no
+  error anywhere. See `doc_table.py`'s module docstring for the measured repros.
+- **`cells` is what makes the inference safe.** Header detection on a messy real sheet is a
+  guess, and a wrong guess is otherwise a silently wrong answer to every later question.
+  `cells` holds every non-empty cell as raw VARCHAR text, addressed by `sheet`/`row`/`col`
+  and by the A1 reference the user sees in their own spreadsheet window (`B7`, `AA12`). It
+  is built by re-reading the exact CSV DuckDB was fed, so the two are views of identical
+  bytes and can only disagree about inference — and its row numbers line up with
+  `tables_meta.header_row` by construction. Storage is sparse: an absent `(row, col)` means
+  empty, which is what a spreadsheet means by it too.
+- **Query safety is three separate things, because read-only alone is not enough.** Only
+  `StatementType.SELECT` is accepted, as classified by DuckDB's own parser rather than by
+  matching the leading word (which also gives DESCRIBE/SHOW/SUMMARIZE for free), and
+  exactly ONE statement, so `SELECT 1; DROP TABLE t` is refused as two rather than
+  half-run. A read-only connection stops writes to the database but not
+  `read_csv('/etc/passwd')` (a read) or `COPY (SELECT ...) TO '/tmp/x'` (a write that never
+  touches the database) — `enable_external_access=false` closes both, and DuckDB refuses to
+  re-enable it at runtime. Row bounds are applied by WRAPPING the query, never by appending
+  a `LIMIT` that would attach to the wrong arm of a UNION.
+- **The statement timeout is real and was measured.** DuckDB has no `statement_timeout`
+  setting; `con.interrupt()` from a timer stopped a genuine runaway in exactly the time
+  allowed. The test that pins it uses a predicate that forces materialization — a bare
+  `count(*)` over a cross join is answered from cardinality alone and would prove nothing.
+- **Known limits.** A sheet holding several unrelated tables is not split (no library
+  solves this; `cells` is the recovery path and `tables_meta.header_row` makes the misparse
+  *visible*, which is the actual requirement). `data_only=True` reads Excel's CACHED formula
+  result, so a workbook written by a tool that never opened Excel has empty formula cells —
+  `cells` shows the same blank, making it diagnosable rather than silently zero. A
+  non-UTF-8 CSV falls back to latin-1, gated on a NUL-byte binary check so a misnamed
+  binary file is still reported unreadable instead of converted to mojibake.
+
 ### One read path: `es_read`
 
-`es_read(target, section=None, query=None, offset=None)` (`es/es/capabilities/reader.py` +
+`es_read(target, section=None, search=None, offset=None)` (`es/es/capabilities/reader.py` +
 `es/es/capabilities/read.py`) replaced `es_notes_read` as the **only** way the agent reads a
 vault note, and is *also* the only way it reads a document previously converted by
 `es_doc_extract`. `target` is a vault-relative path, a topic name (the same convention
@@ -370,8 +436,8 @@ string plus a `kind` (`"note"` or `"doc"`), and hands that string to `read.py`'s
 format-agnostic primitives: `outline` (every ATX heading `#` through `######`, in order — a
 converter's `## Page N` and a note's own `# Title`/`### Sub` are all entries), `section` (one
 heading's body, its own subsections included), `window` (page by raw line, for structure-free
-content like a `.csv` that has no headings at all), and `query` (case-insensitive full-text
-search). `query` returns *matching outline entries* — the id a follow-up `section` call needs,
+content like a plain `.txt` that has no headings at all), and `search` (case-insensitive
+full-text search). `search` returns *matching outline entries* — the id a follow-up `section` call needs,
 not raw snippets — except for content with no headings at all, where there is no section to
 name and it returns `{offset, line}` hits the agent pages to with `offset` instead.
 

@@ -126,6 +126,10 @@ def test_generate_agents_md_documents_guidance(tmp_path):
         assert "es_doc_extract" in body
         assert "image_pages" in body
         assert "es_doc_render" not in body
+        # A spreadsheet is a database now, not a document to read — the
+        # agent's only manual is this file plus the tool docstrings, so if
+        # es_doc_query is not named here it will reach for es_read instead.
+        assert "es_doc_query" in body
         assert "It is saved at:" in body
         assert "vision_analyze" in body
         # The crux: an explicit override of Hermes's injected attachment note,

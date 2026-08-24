@@ -1,26 +1,26 @@
-"""Plain text, Markdown, CSV, and JSON documents.
+"""Plain text, Markdown, and JSON documents.
 
-None of these four formats have pages: this module deliberately does NOT
+None of these three formats have pages: this module deliberately does NOT
 implement `page_count`/`render` — their absence on a converter module IS the
 capability signal docs.py's dispatch relies on (see docs.py's `_page_count`
 docstring), telling the rest of docs.py "this format has no pages" without a
 separate hardcoded format list anywhere.
 
-IMPORTANT for whoever builds the future pageable-by-"##"-heading reader: do
-NOT retrofit synthetic headings into this module's output just to make these
-formats pageable that way. A CSV is a table, a .txt file is flat prose, a
-.json file is a blob — none of them have real document structure to hang a
-heading off of, and inventing one (e.g. "## Rows 1-100") would be a
-fabrication, not a description of the source, and would corrupt the one
-signal ("a `##` heading marks a real section") the reader is meant to trust.
-Flat content like this is exactly what that reader's plain offset/limit
-fallback exists for — leave it to that, don't paper over it here.
+`.csv` used to live here too, rendered as a Markdown pipe table. It does
+not any more: a CSV is a TABLE, and doc_table.py converts it to a DuckDB
+database the agent queries with SQL instead of paging. That move also took
+the reason for the warning this docstring used to carry — do NOT retrofit
+synthetic headings ("## Rows 1-100") onto the formats that remain. A .txt
+file is flat prose and a .json file is a blob; neither has document
+structure to hang a heading off, and inventing one would corrupt the single
+signal ("a `##` heading marks a real section") es_read is built to trust.
+Flat content is exactly what es_read's plain offset/limit paging exists for.
 
-Truncation seam: none of these four formats has PDF-style "## Page N"
-boundaries to cut at (a paginated PDF's own truncation, where it applies,
-lives in doc_pdf.py), so every converter in this module truncates ITSELF, at
-a boundary meaningful to its own format (a whole CSV row, a whole line of
-text/JSON), before returning. See MAX_CHARS below.
+Truncation seam: none of these formats has PDF-style "## Page N" boundaries
+to cut at (a paginated PDF's own truncation, where it applies, lives in
+doc_pdf.py), so every converter in this module truncates ITSELF, at a
+boundary meaningful to its own format (a whole line of text/JSON), before
+returning. See MAX_CHARS below.
 
 MAX_CHARS is a RESOURCE ceiling, not a context-window budget: the whole
 converted document is written to `doc.md` (a 24h-TTL cache) and paged from
@@ -33,23 +33,11 @@ pathological document from writing an unbounded amount to disk / making
 es_read's per-heading outline unusably large — see the constant's own
 comment.
 """
-import csv
-import io
 import json
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from es.capabilities.doc_support import (ParseFailed, format_cell, format_row,
-                                          truncation_marker)
-
-# Mirrors docs.CSV_FIELD_SIZE_LIMIT (10 MiB) — used ONLY for this module's own
-# ParseFailed message wording below, not to configure the csv module itself
-# (docs.py owns that process-wide call). Duplicated rather than imported for
-# the same reason MAX_CHARS is duplicated below: docs.py imports this module
-# at load time to populate CONVERTERS, so this module importing back from
-# docs.py to read the real constant would run while docs.py is still
-# mid-import. Keep the two values in sync by hand if either changes.
-_CSV_FIELD_SIZE_LIMIT_MB = 10
+from es.capabilities.doc_support import ParseFailed, truncation_marker
 
 # Character budget shared by every converter in this module (CSV rows,
 # text/Markdown/JSON lines), enforced by truncating at a whole-ROW or
@@ -151,69 +139,6 @@ def _read_text(source: Path) -> str:
     return source.read_text(encoding="utf-8", errors="replace")
 
 
-def _safe_csv_rows(reader, source: Path):
-    """Wrap ONLY the underlying csv.reader's own `next()` call. csv.reader is
-    LAZY — verified empirically: neither "a field larger than the size
-    limit" nor "an unbalanced quote runs to the end of the file" raises
-    `csv.Error` at `csv.reader(...)` construction, only while actually
-    ITERATING it (each `next()` call parses one more row's worth of the
-    underlying text). This function is the tightest boundary that still
-    catches the failure: the caller's own row-processing (the `if row`
-    filter, format_cell/format_row) stays entirely outside this function and
-    its try block, reached only via the rows this generator yields — a bug
-    in that logic can never be caught here and relabeled "corrupt CSV"."""
-    while True:
-        try:
-            row = next(reader)
-        except StopIteration:
-            return
-        except csv.Error as e:
-            raise ParseFailed(
-                f"{source.name} could not be parsed as a CSV — a field is "
-                f"larger than the {_CSV_FIELD_SIZE_LIMIT_MB}MB limit, or an "
-                "unbalanced quote runs to the end of the file; ask the user "
-                "to resend it or export a narrower/cleaner version") from e
-        yield row
-
-
-def _convert_csv(source: Path) -> str:
-    text = _read_text(source)
-    # csv.reader needs a real line iterator, not pre-split lines: a quoted
-    # field may legitimately contain an embedded newline (RFC 4180), and
-    # text.splitlines() would break that field's content across two "rows"
-    # before csv.reader ever gets a chance to see the surrounding quotes.
-    reader = csv.reader(io.StringIO(text))
-    rows = [row for row in _safe_csv_rows(reader, source) if row]
-    if not rows:
-        return ""
-
-    esc_rows = [[format_cell(c) for c in row] for row in rows]
-    width = max(len(r) for r in esc_rows)
-    header, *data_rows = esc_rows
-
-    lines = [format_row(header, width),
-             "|" + "|".join([" --- "] * width) + "|"]
-    used = len("\n".join(lines))
-    kept = 0
-    for row in data_rows:
-        line = format_row(row, width)
-        cost = len(line) + 1  # + the newline joining it to the previous line
-        if used + cost > MAX_CHARS:
-            break
-        lines.append(line)
-        used += cost
-        kept += 1
-
-    md = "\n".join(lines)
-    if kept < len(data_rows):
-        md += "\n\n" + truncation_marker(
-            f"after {kept} of {len(data_rows)} data rows "
-            f"— the {MAX_CHARS}-character limit was reached; this CSV "
-            f"{_NO_RESUME}, so ask for a narrower export, or filter it, "
-            "if the rest is needed")
-    return md
-
-
 def _convert_json(source: Path) -> str:
     text = _read_text(source)
     # Both json.loads AND json.dumps belong inside this one try: neither is
@@ -263,7 +188,6 @@ def _convert_plain(source: Path, kind: str) -> str:
 
 
 _HANDLERS = {
-    ".csv": _convert_csv,
     ".json": _convert_json,
     ".txt": lambda source: _convert_plain(source, "text"),
     ".md": lambda source: _convert_plain(source, "markdown"),

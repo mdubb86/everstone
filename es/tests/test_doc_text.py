@@ -5,20 +5,6 @@ import pytest
 from es.capabilities import doc_text
 
 
-def test_csv_becomes_a_markdown_table(csv_file, tmp_path):
-    md, images = doc_text.convert(csv_file, tmp_path)
-    assert "| Name | Position | Number |" in md
-    assert "| Alice | Forward | 9 |" in md
-    assert images == []
-
-
-def test_csv_escapes_pipes_in_cells(tmp_path):
-    p = tmp_path / "x.csv"
-    p.write_text("a,b\nfoo|bar,baz\n", encoding="utf-8")
-    md, _ = doc_text.convert(p, tmp_path)
-    assert r"foo\|bar" in md
-
-
 def test_json_is_pretty_printed_in_a_fenced_block(json_file, tmp_path):
     md, _ = doc_text.convert(json_file, tmp_path)
     assert "```json" in md
@@ -53,57 +39,8 @@ def test_undecodable_bytes_do_not_raise(tmp_path):
     assert isinstance(md, str) and md
 
 
-# A 3,000-row CSV is the design-flaw regression case (see doc_text.MAX_CHARS'
-# own comment): under the old 30,000-character conversion-time budget this
-# lost everything past row ~1,300 — permanently, since nothing downstream
-# (doc.md, es_read) ever saw the rest. It must now convert whole: the
-# budget on what's RETURNED lives elsewhere (docs.py/es_read); this module
-# only bounds what's genuinely absurd to store (see MAX_CHARS).
-def test_large_csv_converts_in_full(tmp_path):
-    p = tmp_path / "big.csv"
-    rows = "\n".join(f"r{i},v{i}" for i in range(3_000))
-    p.write_text("a,b\n" + rows + "\n", encoding="utf-8")
-    md, _ = doc_text.convert(p, tmp_path)
-    assert "truncated" not in md.lower()
-    table_lines = [l for l in md.splitlines() if l.startswith("|")]
-    # header + separator + one line per data row
-    assert len(table_lines) == 3_000 + 2
-    assert "| r2999 | v2999 |" in md
-
-
-# The resource ceiling (MAX_CHARS) still exists for a genuinely absurd CSV —
-# monkeypatched down here so the test doesn't need to generate tens of
-# millions of real characters to exercise it.
-def test_csv_resource_ceiling_truncates_at_a_row_boundary_with_an_honest_marker(
-        tmp_path, monkeypatch):
-    monkeypatch.setattr(doc_text, "MAX_CHARS", 200)
-    p = tmp_path / "big.csv"
-    rows = "\n".join(f"r{i},verylongvalue{i}" for i in range(2_000))
-    p.write_text("a,b\n" + rows + "\n", encoding="utf-8")
-    md, _ = doc_text.convert(p, tmp_path)
-
-    assert "truncated" in md.lower()
-    # Never leave a half-written table row — it reads as corrupt data.
-    table_lines = [l for l in md.splitlines() if l.startswith("|")]
-    assert all(l.rstrip().endswith("|") for l in table_lines)
-    # Content past the ceiling was never converted at all — no resume
-    # mechanism exists for this format, so the marker must say so plainly
-    # rather than implying the rest is reachable some other way.
-    assert "no page range to resume from" in md
-    assert "narrower export" in md
-
-
-def test_csv_field_with_embedded_newline_stays_one_row(tmp_path):
-    """A quoted CSV field may legitimately contain a literal newline (RFC
-    4180) — it must not be split into two table rows."""
-    p = tmp_path / "multiline.csv"
-    p.write_text('a,b\n"line one\nline two",baz\n', encoding="utf-8")
-    md, _ = doc_text.convert(p, tmp_path)
-    assert "| line one line two | baz |" in md
-
-
 def test_empty_file_does_not_raise(tmp_path):
-    p = tmp_path / "empty.csv"
+    p = tmp_path / "empty.txt"
     p.write_text("", encoding="utf-8")
     md, _ = doc_text.convert(p, tmp_path)
     assert isinstance(md, str)

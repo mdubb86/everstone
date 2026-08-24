@@ -1,7 +1,7 @@
 """Resolve an es_read `target` string to Markdown plus source metadata.
 
 This is the one place "what to read" turns into "here is the markdown", so
-that capabilities/read.py's pure primitives (outline/section/window/query)
+that capabilities/read.py's pure primitives (outline/section/window/search)
 have exactly one source of text to operate over, regardless of whether the
 underlying thing is a vault note or a converted document. No parsing of the
 Markdown itself happens here — that's read.py's job; this module is purely
@@ -58,20 +58,31 @@ class DocHandleExpired(Exception):
 class TableKindNotReadable(Exception):
     """Raised when a `doc:<id>` handle's recorded kind is table-shaped
     (docs.TABLE_KINDS) — es_read pages MARKDOWN (read.py's outline/section/
-    window/query machinery all assume prose with optional "## " headings),
+    window/search machinery all assume prose with optional "## " headings),
     so a table-kind handle must error here rather than come back as a null-
     filled or empty envelope. The message always names es_doc_query (the
     tool a table handle is meant to be read through instead) as the remedy.
 
-    No converter produces this kind yet — see docs.TABLE_KINDS's docstring
-    for why the guard exists ahead of need. Today this can only fire against
-    a handle a test constructs directly (docs._write_full_extract(...,
-    kind="table")); once a real converter emits "table", it fires for real.
+    Not a nicety: a table artifact has no doc.md at all (read_cached() gates
+    it on tables.json and the database instead), so without this the agent
+    would be told a perfectly good spreadsheet was an expired handle.
     """
     es_code = "doc_table_kind"
 
 
-def _resolve_doc(doc_id: str, cache_root: Path) -> dict:
+class NotATableDocument(Exception):
+    """The mirror of TableKindNotReadable, raised by resolve_table when
+    es_doc_query is pointed at a MARKDOWN handle (or at something that isn't
+    a handle at all). Both errors exist for the same reason: the agent has
+    two read tools and one document, and picking the wrong one must always
+    name the right one rather than return an empty result."""
+    es_code = "doc_not_table"
+
+
+def _load_doc(doc_id: str, cache_root: Path):
+    """Validate, locate, load and TOUCH one cached artifact — everything both
+    read paths need before they diverge on what kind it turned out to be.
+    Returns (handle, adir, cached)."""
     if not _DOC_ID_RE.match(doc_id):
         raise DocHandleExpired(
             f"{DOC_PREFIX}{doc_id!r} is not a valid document handle — call "
@@ -85,9 +96,40 @@ def _resolve_doc(doc_id: str, cache_root: Path) -> dict:
             "last use); call es_doc_extract again on the source file")
     doc_cache.touch(adir)  # a read through es_read is a use, same as a
                             # cache-hit inside es_doc_extract itself — true
-                            # even for a table-kind handle rejected below,
-                            # since the agent still just looked it up.
-    handle = f"{DOC_PREFIX}{doc_id}"
+                            # even for a handle rejected below as the wrong
+                            # kind, since the agent still just looked it up.
+    return f"{DOC_PREFIX}{doc_id}", adir, cached
+
+
+def resolve_table(target: str, cache_root: Path) -> dict:
+    """The es_doc_query counterpart to resolve(): the same handle lookup, with
+    the kind check running the other way round.
+
+    Returns {"handle", "doc_id", "adir", "tables"}. Raises DocHandleExpired
+    for an unknown/malformed/aged-out handle, or NotATableDocument when the
+    handle names a MARKDOWN document — the exact mirror of es_read's
+    TableKindNotReadable, so whichever of the two tools the agent reaches for
+    first, being wrong points it straight at the other one instead of
+    returning something empty or confusing.
+    """
+    if not target.startswith(DOC_PREFIX):
+        raise NotATableDocument(
+            f"{target!r} is not a document handle — es_doc_query only runs "
+            f'against a "{DOC_PREFIX}<id>" returned by es_doc_extract, never '
+            "a file path or a vault note (call es_read for a note)")
+    handle, adir, cached = _load_doc(target[len(DOC_PREFIX):], cache_root)
+    kind = cached["kind"]
+    if kind not in docs.TABLE_KINDS:
+        raise NotATableDocument(
+            f"{handle} is a {kind or 'markdown'} document, not tabular data "
+            f'— there is nothing to query; call es_read(target="{handle}") '
+            "to read it instead")
+    return {"handle": handle, "doc_id": target[len(DOC_PREFIX):],
+            "adir": adir, "tables": cached["tables"]}
+
+
+def _resolve_doc(doc_id: str, cache_root: Path) -> dict:
+    handle, adir, cached = _load_doc(doc_id, cache_root)
     kind = cached["kind"]
     if kind in docs.TABLE_KINDS:
         raise TableKindNotReadable(

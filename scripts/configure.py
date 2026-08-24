@@ -175,9 +175,19 @@ access. Your EverStone capabilities:
   by `section`.
 - **Documents** — `es_doc_extract` converts a document the user sent (PDF,
   Word, Excel, plain text/CSV/JSON, or a calendar file) and returns a
-  receipt — `doc_id`, a short preview, `complete` — never the document
-  itself. `complete: true` means the preview IS the whole document; otherwise
-  read the rest with `es_read(target="doc:<doc_id>")`, paged by heading.
+  receipt — never the document itself. What kind of receipt depends on the
+  format, and `kind` says which:
+  - A **spreadsheet or CSV** becomes a QUERYABLE DATABASE (`kind: "table"`).
+    The receipt lists each sheet, the table it became, and its columns.
+    Answer questions about it with `es_doc_query(target="doc:<doc_id>",
+    sql=...)` — one `SELECT count(*), sum(...) ... WHERE` returns one row,
+    where reading 40,000 rows never would. Don't `SELECT *`. `es_read` does
+    not work on these.
+  - **Everything else** becomes Markdown: `doc_id`, a short `preview`,
+    `complete`. `complete: true` means the preview IS the whole document;
+    otherwise read the rest with `es_read(target="doc:<doc_id>")`, paged by
+    heading.
+
   Every embedded image and chart a PDF contains is already extracted and
   linked inline in that text, so there's normally nothing more to ask for.
   `es_doc_extract`'s optional `image_pages` (e.g. `"7"`, `"1-5"`) is a

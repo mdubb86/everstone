@@ -131,21 +131,25 @@ def test_resolve_doc_handle_survives_a_missing_images_sidecar(text_pdf, cache_ro
 
 # --- table-kind handles are refused, not silently read as Markdown ------
 #
-# No converter produces a table kind yet (see docs.TABLE_KINDS's docstring:
-# a later plan converts .csv/.xlsx into a queryable DuckDB database instead,
-# addressed by a new es_doc_query tool rather than es_read) — so these tests
-# fabricate the artifact state directly, writing meta.json's `kind` straight
-# through docs._write_full_extract, the same way a real converter eventually
-# will. That is fine: the point is proving reader.py's rejection path is
-# already correct before that converter exists to trigger it for real.
+# doc_table produces this kind for every .csv/.xlsx, so these tests drive a
+# real conversion. The rejection matters more than it looks: a table artifact
+# has no doc.md at all, so without it es_read would report a perfectly good
+# spreadsheet as an expired handle.
 
-def _seed_table_doc(cache_root, markdown: str = "col_a,col_b\n1,2\n") -> str:
-    fake_source = cache_root / f"fake-table-{len(markdown)}.csv"
-    fake_source.write_bytes(os.urandom(8))
-    did = doc_cache.doc_id(fake_source, ".csv")
-    adir = doc_cache.artifact_dir(cache_root, did)
-    docs._write_full_extract(adir, markdown, [], kind="table")
-    return did
+def _seed_table_doc(cache_root, csv_text: str = "col_a,col_b\n1,2\n") -> str:
+    """A REAL table document, converted by the real converter.
+
+    Was a fabricated artifact (docs._write_full_extract(..., kind="table"))
+    back when no converter produced the kind. Now one does, and a fabricated
+    one would no longer even be found: a table artifact has no doc.md at all,
+    so read_cached() gates it on tables.json + the database — exactly the
+    kind of divergence between fixture and reality that makes a passing test
+    meaningless."""
+    src = cache_root / f"seed-table-{len(csv_text)}.csv"
+    src.write_text(csv_text, encoding="utf-8")
+    out = docs.extract(str(src), roots=[cache_root], cache_root=cache_root)
+    assert out["kind"] == "table", "fixture must actually produce a table document"
+    return out["doc_id"]
 
 
 def test_resolve_table_kind_handle_raises_naming_es_doc_query(cache_root):
@@ -343,7 +347,7 @@ def test_es_read_section_returns_only_that_section(wired_cache):
 def test_es_read_query_returns_matching_ids(wired_vault):
     wired_vault.write_topic(
         "Team", body="## Roster\n\nNo mention here.\n\n## Nickname\n\nThe Fury.\n")
-    out = mcp_server.es_read("Team", query="fury")
+    out = mcp_server.es_read("Team", search="fury")
     assert out["ok"] is True
     data = out["data"]
     assert [s["title"] for s in data["outline"]] == ["Nickname"]
@@ -353,7 +357,7 @@ def test_es_read_query_returns_matching_ids(wired_vault):
 
 def test_es_read_query_with_no_hits_explains_what_to_try(wired_vault):
     wired_vault.write_topic("Team", body="## Roster\n\nNothing relevant.\n")
-    out = mcp_server.es_read("Team", query="zebra")
+    out = mcp_server.es_read("Team", search="zebra")
     assert out["ok"] is True
     data = out["data"]
     assert data["outline"] == []
@@ -396,10 +400,7 @@ def test_es_read_expired_doc_handle(wired_cache):
 def test_es_read_table_kind_handle_errors_not_a_null_envelope(wired_cache):
     """es_read on a table-kind handle must come back as a genuine error
     envelope (ok=False, a real es_code naming es_doc_query as the remedy) —
-    never ok=True with content/outline left null, and never an empty read.
-    No converter produces this kind yet (see reader.TableKindNotReadable's
-    docstring), so the handle is fabricated directly via
-    docs._write_full_extract(..., kind="table")."""
+    never ok=True with content/outline left null, and never an empty read."""
     did = _seed_table_doc(wired_cache)
     out = mcp_server.es_read(f"doc:{did}")
     assert out["ok"] is False
@@ -448,8 +449,8 @@ def test_es_read_envelope_key_set_is_identical_across_all_modes(wired_vault, wir
         mcp_server.es_read("Small"),
         mcp_server.es_read(big_cal),
         mcp_server.es_read(big_cal, section=section_id),
-        mcp_server.es_read(big_cal, query="Event 3"),
-        mcp_server.es_read(big_cal, query="no-such-text-anywhere"),
+        mcp_server.es_read(big_cal, search="Event 3"),
+        mcp_server.es_read(big_cal, search="no-such-text-anywhere"),
     ]
     for out in modes:
         assert out["ok"] is True
@@ -732,28 +733,36 @@ def test_es_read_outline_mode_falls_back_to_first_section_when_preamble_empty(wi
     assert "Section B" not in data["content"]  # first section only, not everything
 
 
-def test_es_read_xlsx_outline_mode_returns_first_sheet_content_not_null(tmp_path, wired_cache):
-    """Every .xlsx sheet starts with its own "## <sheet>" heading (no
-    preamble is ever possible for this format) — this is the exact shape
-    verified live to regress to content=None."""
-    from openpyxl import Workbook
+def test_heading_first_document_outline_mode_returns_content_not_null(tmp_path, wired_cache):
+    """A document whose text STARTS at a heading has no preamble at all, so
+    outline mode's "return the preamble as a preview" path finds nothing —
+    the exact shape verified live to regress to content=None.
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Data"
-    for i in range(300):
-        ws.append([f"row{i}", i, "padding text to grow this sheet a bit"])
-    wb.create_sheet("Notes").append(["Remember to reconcile."])
-    p = tmp_path / "book.xlsx"
-    wb.save(str(p))
+    Written against an .xlsx originally (every sheet begins with its own
+    "## <sheet>" heading). An .xlsx is a table document now with no markdown
+    to page, so this uses a multi-page PDF: doc_pdf's output likewise starts
+    at "## Page 1" with nothing before it. A .ics would NOT do — doc_ics
+    emits an event-count preamble, so it takes the ordinary branch and never
+    reaches the fallback this test exists for."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    p = tmp_path / "manual.pdf"
+    c = canvas.Canvas(str(p), pagesize=letter)
+    for page in range(1, 4):
+        for line in range(40):
+            c.drawString(72, 720 - line * 16,
+                         f"Page {page} line {line}: padding text to grow this document.")
+        c.showPage()
+    c.save()
 
     extracted = docs.extract(str(p), roots=[p.parent], cache_root=wired_cache)
     out = mcp_server.es_read(f"doc:{extracted['doc_id']}")
     assert out["ok"] is True
     data = out["data"]
-    assert len(data["outline"]) == 2
+    assert len(data["outline"]) == 3
     assert data["content"] is not None
-    assert "row0" in data["content"]
+    assert "Page 1 line 0" in data["content"]
 
 
 # --- section="page-N" is the promised replacement for the deleted `pages`

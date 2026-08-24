@@ -5,16 +5,22 @@ cache and confinement concerns, and doc_cache free of parsing concerns.
 
 Dispatch is a table, CONVERTERS, keyed by lowercased extension; SUPPORTED is
 derived from it so the two can't drift apart. CONVERTERS holds ".pdf" (via
-doc_pdf, the reference/paginated converter), ".txt"/".md"/".csv"/".json"
-(all four via doc_text, the flat/non-paginated converter), ".ics" (via
-doc_ics, which synthesizes one "## " heading per VEVENT so a flat calendar
-feed still pages well), and ".docx"/".xlsx" (both via doc_office, which reads
-a Word document's own heading outline and gives each Excel sheet its own "##"
-heading — neither has page_count/render, same as doc_text's formats) —
-adding a new format is meant to be a pure addition (a new converter module +
-one new table entry), not a change to extract() itself.
+doc_pdf, the reference/paginated converter), ".txt"/".md"/".json" (via
+doc_text, the flat/non-paginated converter), ".ics" (via doc_ics, which
+synthesizes one "## " heading per VEVENT so a flat calendar feed still pages
+well), ".docx" (via doc_office, which reads a Word document's own heading
+outline), and ".csv"/".xlsx" (via doc_table) — adding a new format is meant
+to be a pure addition (a new converter module + one new table entry), not a
+change to extract() itself.
+
+The last of those is the odd one out and the reason extract() has two
+branches at all: a spreadsheet does not become a document here, it becomes a
+DATABASE. `.csv`/`.xlsx` produce a `data.duckdb` the agent queries with SQL
+through es_doc_query, with no doc.md, no preview, and nothing for es_read to
+page — because the question a spreadsheet gets asked ("how many transactions
+over $500 in September") has a one-row answer that no amount of paging
+through 40,000 rows of Markdown pipe table will produce.
 """
-import csv
 import json
 import os
 from pathlib import Path
@@ -24,7 +30,8 @@ from pdfminer.pdfdocument import PDFEncryptionError
 from pdfplumber.utils.exceptions import PdfminerException
 
 from es import config, doc_cache, paths
-from es.capabilities import doc_ics, doc_office, doc_pdf, doc_support, doc_text
+from es.capabilities import (doc_ics, doc_office, doc_pdf, doc_support,
+                            doc_table, doc_text)
 
 # extract() no longer returns the document — it returns a RECEIPT: a handle
 # plus just enough text (`preview`) for the agent to tell what it's holding
@@ -41,45 +48,37 @@ MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
 # apart.
 MAX_IMAGE_PAGES = doc_pdf.MAX_IMAGE_PAGES
 
-# The stdlib csv module's default field_size_limit (128 KiB) is a parser
-# safety valve, not a real document-shape limit — a single free-text CSV
-# column (a pasted comment, a description field) can legitimately exceed it,
-# and hitting the default raises `_csv.Error: field larger than field limit`,
-# which used to surface to the agent as the literal, unexplainable es_code
-# "Error". csv.field_size_limit() is a process-wide setting on the `_csv` C
-# module, not a per-Reader option, so it can be raised HERE — once, for the
-# life of the process — without doc_text.py (which owns the actual
-# `csv.reader()` call) needing to change at all. 10 MiB comfortably covers any
-# realistic single field while still being a real, bounded ceiling: a CSV
-# with an unbalanced/unterminated quote makes csv.reader treat everything
-# from that quote to EOF as ONE field (see doc_text._convert_csv's docstring
-# on why it must use a real line iterator, not splitlines()), so an
-# unterminated quote in a large file must still hit SOME limit rather than
-# buffer the rest of a 50MB upload into one Python string.
-CSV_FIELD_SIZE_LIMIT = 10 * 1024 * 1024
-csv.field_size_limit(CSV_FIELD_SIZE_LIMIT)
-
-# Maps a supported extension to its converter module. Each converter is
-# expected to implement a shared per-format contract (doc_pdf.py is the
-# reference): `convert(source, adir, pages=None) -> (markdown, images)` is
-# REQUIRED; `page_count(source) -> int` and `render(source, adir, pages) ->
-# images` are OPTIONAL — their presence is how the rest of this module tells
-# a paginated/renderable format (PDF, via doc_pdf) apart from a flat one
-# (txt/md/csv/json, via doc_text — none of the four have pages, so that
-# module implements neither attribute) without hardcoding a format list
-# anywhere else. SUPPORTED is DERIVED from this table rather than
-# hand-maintained alongside it, so the two can never drift apart: an entry
-# here is automatically "supported", and nothing can claim to be supported
-# without a converter.
+# Maps a supported extension to its converter module. A converter implements
+# ONE of two contracts, and which one it implements is read off the module
+# itself rather than from a format list kept anywhere else:
+#
+#   MARKDOWN converters (doc_pdf.py is the reference) implement
+#   `convert(source, adir, pages=None) -> (markdown, images)`. Two further
+#   attributes are OPTIONAL and their mere PRESENCE is the capability:
+#   `page_count(source) -> int` means "this format has pages", and
+#   `render(source, adir, pages) -> images` means "its pages can be
+#   rasterized" (only doc_pdf has either; the flat formats have neither).
+#
+#   TABLE converters implement `build(source, adir) -> {"tables": [...]}`
+#   and `query(adir, sql) -> {...}` instead — they produce a queryable
+#   database, not prose, and there is no markdown for es_read to page. Only
+#   doc_table today, serving .csv and .xlsx.
+#
+# extract() dispatches on `hasattr(mod, "build")`, the same
+# presence-IS-the-capability convention, so adding a format stays a pure
+# addition: a new converter module plus one entry here. SUPPORTED is DERIVED
+# from this table rather than hand-maintained alongside it, so the two can
+# never drift apart — an entry here is automatically "supported", and
+# nothing can claim to be supported without a converter.
 CONVERTERS = {
     ".pdf": doc_pdf,
     ".txt": doc_text,
     ".md": doc_text,
-    ".csv": doc_text,
+    ".csv": doc_table,
     ".json": doc_text,
     ".ics": doc_ics,
     ".docx": doc_office,
-    ".xlsx": doc_office,
+    ".xlsx": doc_table,
 }
 SUPPORTED = set(CONVERTERS)
 
@@ -97,6 +96,12 @@ DOC_IMAGES_MANIFEST = "images.json"
 # images.json already established: one small JSON file per artifact,
 # written once at conversion time, read by read_cached().
 DOC_META_NAME = "meta.json"
+# A table-kind artifact's equivalent of doc.md: the sheet -> table mapping
+# and each table's schema, as extract() reported it. Written LAST for the
+# same reason doc.md is (see _write_table_extract) — it is the file
+# read_cached() gates a table-kind cache HIT on, so it must not exist until
+# the database beside it is complete.
+DOC_TABLES_MANIFEST = "tables.json"
 
 # Kinds that are TABLE-shaped rather than Markdown-shaped. es_read exists to
 # page MARKDOWN (reader.py/read.py's whole outline/section/window/query
@@ -105,15 +110,12 @@ DOC_META_NAME = "meta.json"
 # tool instead, rather than silently handed markdown that happens to render
 # a table, or an empty/misleading read.
 #
-# No CONVERTER produces one of these kinds today: doc_text/doc_office's own
-# .csv/.xlsx converters still emit kind "csv"/"xlsx" — ordinary Markdown
-# pipe tables, fully readable via es_read like any other document. This set
-# is empty of real converter output on purpose, ahead of need: a later plan
-# converts .csv/.xlsx into a queryable DuckDB database instead (addressed by
-# a new es_doc_query tool, not es_read) and will record that conversion's
-# `kind` as "table". Defining the set — and reader.py's rejection path that
-# checks it — now means that plan lands into a surface that already refuses
-# correctly, rather than bolting the refusal on after the fact.
+# doc_table produces exactly this kind, for both .csv and .xlsx: one
+# `data.duckdb` the agent queries with es_doc_query. A table-kind artifact
+# has NO doc.md at all — read_cached() gates it on tables.json instead — so
+# the refusal in reader.py is not merely a nicety: without it, es_read would
+# report a table document as an expired handle, which is both wrong and
+# unactionable.
 TABLE_KINDS = frozenset({"table"})
 
 
@@ -423,6 +425,23 @@ def _read_images_manifest(adir: Path) -> List[str]:
         return []
 
 
+def _read_tables_manifest(adir: Path) -> Optional[List[dict]]:
+    """None means "treat as a cache MISS" — the same permissive handling
+    _read_cached_markdown gives a truncated doc.md, and for the same reason:
+    doc_id is a content hash, so a manifest half-written by a crash would
+    otherwise poison every future extract of this exact file for the full
+    24h TTL. Rebuilding is always safe here (the source is right there and
+    the conversion is deterministic); serving a broken one is not."""
+    manifest = adir / DOC_TABLES_MANIFEST
+    if not manifest.is_file():
+        return None
+    try:
+        tables = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return tables if isinstance(tables, list) else None
+
+
 def _read_meta_kind(adir: Path) -> Optional[str]:
     """None means "no recorded kind" — a plain absence (an artifact dir
     written before meta.json existed, or one partially purged) or an
@@ -467,11 +486,22 @@ def read_cached(adir: Path) -> Optional[dict]:
     a real access), but a lookup by doc_id that turns out to be a plain miss
     (no directory at all) has nothing worth touching.
     """
+    kind = _read_meta_kind(adir)
+    if kind in TABLE_KINDS:
+        tables = _read_tables_manifest(adir)
+        if tables is None or not (adir / doc_table.DB_NAME).is_file():
+            return None
+        # `markdown` is None, not "" — a table document HAS no markdown, and
+        # an empty string would read as "a document that happens to be
+        # empty". Every caller checks `kind in TABLE_KINDS` before touching
+        # it (reader.py refuses outright), so None is the value that makes a
+        # missed check fail loudly instead of returning a blank document.
+        return {"markdown": None, "images": [], "kind": kind, "tables": tables}
     markdown = _read_cached_markdown(adir)
     if markdown is None:
         return None
     return {"markdown": markdown, "images": _read_images_manifest(adir),
-            "kind": _read_meta_kind(adir)}
+            "kind": kind, "tables": None}
 
 
 def _write_full_extract(adir: Path, markdown: str, images: List[Path],
@@ -497,6 +527,46 @@ def _write_full_extract(adir: Path, markdown: str, images: List[Path],
     (adir / DOC_MD_NAME).write_text(markdown, encoding="utf-8")
 
 
+def _write_table_extract(adir: Path, tables: List[dict], kind: str) -> None:
+    """meta.json FIRST, tables.json LAST — the same ordering, for the same
+    reason, as _write_full_extract's meta-then-doc.md. read_cached() gates a
+    table-kind hit on tables.json, so a crash between the two writes must
+    leave the artifact looking UNCONVERTED (rebuild, correct) rather than
+    converted-but-kindless (which would fall through to the markdown branch
+    and report a table document as an expired handle)."""
+    (adir / DOC_META_NAME).write_text(json.dumps({"kind": kind}),
+                                      encoding="utf-8")
+    (adir / DOC_TABLES_MANIFEST).write_text(json.dumps(tables),
+                                            encoding="utf-8")
+
+
+def _table_receipt(did: str, tables: List[dict]) -> dict:
+    """A table document's receipt. Deliberately a DIFFERENT shape from a
+    markdown document's: no `preview`, no `complete`, no `page_count`,
+    because none of them mean anything here. The agent is not being handed
+    the start of something to read — it is being handed a schema and told to
+    ask a question.
+
+    The schema goes in the receipt (rather than making the agent call
+    something to discover it) because the first thing it must do is write
+    SQL, and it cannot do that without the table names and column names. The
+    sheet -> table mapping is included for the same reason `next` quotes a
+    literal handle: an identifier reconstructed from a sheet name is one that
+    will eventually be reconstructed wrong.
+    """
+    listed = ", ".join(t["table"] for t in tables) or "(none)"
+    return {
+        "doc_id": did, "kind": "table", "tables": tables,
+        "next": (f'call es_doc_query(target="doc:{did}", sql=...) '
+                 f"to ask questions of this data with SQL — tables: {listed}. "
+                 "Aggregate in SQL rather than listing rows: one COUNT/SUM "
+                 "answers the question, a SELECT * just moves the reading "
+                 "problem. If a column looks wrong, check header_row against "
+                 "the `cells` table, which holds every non-empty cell as raw "
+                 "text addressed by sheet/row/col."),
+    }
+
+
 def extract(source: str, roots, cache_root: Path,
             image_pages: Optional[str] = None) -> dict:
     """image_pages is ADDITIVE to the conversion, never a second document:
@@ -515,6 +585,29 @@ def extract(source: str, roots, cache_root: Path,
     real, did, adir = _prepare(source, roots, cache_root)
     ext = real.suffix.lower()
     mod = CONVERTERS[ext]
+
+    # A table converter (doc_table, serving .csv/.xlsx) produces a database
+    # rather than prose, so it short-circuits the whole markdown pipeline
+    # below — no page count, no preview, no doc.md, and image_pages is
+    # meaningless for it. Dispatched on the presence of `build`, the same
+    # convention `page_count`/`render` already use.
+    if hasattr(mod, "build"):
+        if image_pages is not None:
+            raise UnsupportedDocument(
+                f"{ext} has no pages to render — image_pages only works for "
+                "a PDF; call es_doc_extract without it")
+        cached = read_cached(adir)
+        if cached is not None:
+            doc_cache.touch(adir)
+            return _table_receipt(did, cached["tables"])
+        try:
+            built = mod.build(real, adir)
+        except doc_support.ParseFailed as e:
+            _reraise_conversion_error(real, e)
+        _write_table_extract(adir, built["tables"], kind="table")
+        doc_cache.touch(adir)
+        return _table_receipt(did, built["tables"])
+
     total = _page_count(mod, real)
     # Trivially the extension without its dot ("pdf" for ".pdf") — correct
     # today and requires no per-format table of its own. Computed once, up
@@ -607,3 +700,17 @@ def extract(source: str, roots, cache_root: Path,
     return {"doc_id": did, "kind": kind, "page_count": total,
             "preview": preview, "complete": complete,
             "page_images": page_images, "next": next_step}
+
+
+def query_tables(adir: Path, sql: str) -> dict:
+    """Run one read-only SQL statement against a table document's database.
+
+    A thin pass-through to the one table converter, kept here so the MCP
+    layer imports `docs` for every es_doc_* operation rather than reaching
+    into a specific converter module — the same reason extract() is here and
+    not in doc_pdf. Dispatch cannot go through CONVERTERS: a doc_id is a
+    one-way hash and the original extension is not recoverable from it, so
+    "which converter built this" is answered by the recorded kind, and
+    TABLE_KINDS has exactly one converter behind it.
+    """
+    return doc_table.query(adir, sql)
