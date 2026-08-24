@@ -453,16 +453,22 @@ def _doc_roots():
 @mcp.tool()
 @mcp_envelope
 def es_doc_extract(source: str, pages: Optional[str] = None) -> dict:
-    """Read a document — .pdf, .docx, .xlsx, .txt, .md, .csv, .json, or .ics —
-    and return it as Markdown. source is the local path of a file the user
-    uploaded (an absolute path) or a file in the vault, given as "$vault/..."
-    or a vault-relative path (e.g. "Topics/Manual.pdf", same convention as
-    es_read). pages optionally narrows a long PDF ("1-5", "1-2,7");
-    other formats have no pages and reject a pages argument. PDF pages that
-    are images rather than text are rendered to PNGs and linked inline as
-    ![page N](path) — read those with vision_analyze. Returns {doc_id, kind,
-    page_count, markdown, images, truncated}; truncated=true means use pages
-    (PDF) or ask for a narrower export (other formats)."""
+    """Convert a document — .pdf, .docx, .xlsx, .txt, .md, .csv, .json, or
+    .ics — and return a HANDLE plus a short preview, not the document itself.
+    source is the local path of a file the user uploaded (an absolute path)
+    or a file in the vault, given as "$vault/..." or a vault-relative path
+    (e.g. "Topics/Manual.pdf", same convention as es_read). pages optionally
+    narrows a long PDF ("1-5", "1-2,7"); other formats have no pages and
+    reject a pages argument.
+
+    Returns {doc_id, kind, page_count, preview, complete, next}. `preview` is
+    only the first ~800 characters — enough to tell what you're holding, not
+    to read it. `complete: true` means preview IS the whole document and
+    nothing else need be called; otherwise call `next` (es_read with the
+    "doc:<doc_id>" handle) to read the rest, paged by heading. PDF pages that
+    are images rather than text are still converted to inline ![page N](path)
+    links in the full document — read those with vision_analyze once you
+    reach them via es_read."""
     return docs_cap.extract(source, _doc_roots(), _doc_cache_root(), pages=pages)
 
 

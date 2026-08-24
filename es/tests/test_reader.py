@@ -74,6 +74,11 @@ def test_resolve_missing_note_path_raises_unchanged_not_found(vault):
 # --- cached documents ("doc:<id>") -------------------------------------
 
 def test_resolve_doc_handle_returns_cached_markdown(text_pdf, cache_root):
+    """extract() itself only returns a receipt (preview, not the document —
+    see docs.extract's new contract), so the full-markdown comparison below
+    checks that `preview` is a prefix of what reader.resolve() (which reads
+    the cached doc.md directly) returns, rather than comparing two full
+    markdown strings extract() no longer produces."""
     extracted = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=cache_root)
     target = f"doc:{extracted['doc_id']}"
 
@@ -81,7 +86,7 @@ def test_resolve_doc_handle_returns_cached_markdown(text_pdf, cache_root):
     assert out["kind"] == "doc"
     assert out["doc_id"] == extracted["doc_id"]
     assert out["source"] == target
-    assert out["markdown"] == extracted["markdown"]
+    assert out["markdown"].startswith(extracted["preview"])
     assert "Fall Season Schedule" in out["markdown"]
 
 
@@ -121,7 +126,7 @@ def test_resolve_doc_handle_survives_a_missing_images_sidecar(text_pdf, cache_ro
     (adir / docs.DOC_IMAGES_MANIFEST).unlink()
 
     out = reader.resolve(f"doc:{extracted['doc_id']}", vault=None, cache_root=cache_root)
-    assert out["markdown"] == extracted["markdown"]
+    assert out["markdown"].startswith(extracted["preview"])
 
 
 # --- target cannot escape the vault or the cache ------------------------

@@ -31,6 +31,13 @@ MAX_MARKDOWN_CHARS = 40_000
 # Upper bound on the truncation marker appended by _truncate_markdown, held
 # back from the cut so cut+marker still fits inside MAX_MARKDOWN_CHARS.
 _MARKER_RESERVE = 400
+# extract() no longer returns the document — it returns a RECEIPT: a handle
+# plus just enough text (`preview`) for the agent to tell what it's holding
+# before deciding whether to page through the rest via es_read. 800 is sized
+# for that identification job (a title, a first paragraph, a table header),
+# not for reading — es_read (paging the full doc.md this module still
+# caches in full) is the only path meant to return enough to actually read.
+PREVIEW_CHARS = 800
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
 # Mirrors doc_pdf.MAX_AUTO_RENDER_PAGES rather than duplicating the number —
 # render() and extract()'s auto-render both bound the same disk-fill risk
@@ -468,7 +475,13 @@ def _converter_self_truncated(markdown: str) -> bool:
     MAX_MARKDOWN_CHARS by the time _truncate_markdown looks at it — which
     otherwise reports `truncated: False` even though real content was
     genuinely cut, contradicting es_doc_extract's own docstring that
-    `truncated` is the agent's signal to look for more."""
+    `truncated` is the agent's signal to look for more.
+
+    Historical note: extract() itself no longer calls this (its return is a
+    receipt — {doc_id, kind, page_count, preview, complete, next} — with no
+    `truncated` key at all; see extract()'s own comment). Kept, along with
+    _truncate_markdown/MAX_MARKDOWN_CHARS, for a follow-up task to remove
+    together with the tests that exercise it directly."""
     return doc_support.TRUNCATION_SENTINEL in markdown
 
 
@@ -584,7 +597,6 @@ def extract(source: str, roots, cache_root: Path,
                                     # "24h since conversion" — a cache hit is
                                     # a use.
             markdown = cached["markdown"]
-            images = cached["images"]
         else:
             try:
                 markdown, image_paths = mod.convert(real, adir, pages=None)
@@ -592,7 +604,6 @@ def extract(source: str, roots, cache_root: Path,
                 _reraise_conversion_error(real, e)
             _write_full_extract(adir, markdown, image_paths)
             doc_cache.touch(adir)
-            images = [str(i) for i in image_paths]
     else:
         # A page-SUBSET extract is never written to doc.md/images.json: those
         # two files are the whole-document artifact that a future es_read
@@ -601,25 +612,41 @@ def extract(source: str, roots, cache_root: Path,
         # future reader of this doc_id — worse than not caching at all. So
         # subsets always convert fresh and are simply never persisted; only
         # the full-document result is cached.
+        #
+        # `images` (the manifest list a receipt used to return) is likewise
+        # not built here anymore — the receipt has no `images` key to fill
+        # (see the return below); the PNGs mod.convert() may have written
+        # for this subset still land on disk under `adir`, same as before.
         try:
-            markdown, image_paths = mod.convert(real, adir, pages=wanted)
+            markdown, _image_paths = mod.convert(real, adir, pages=wanted)
         except (doc_support.ParseFailed, PdfminerException) as e:
             _reraise_conversion_error(real, e)
         doc_cache.touch(adir)
-        images = [str(i) for i in image_paths]
 
-    # Checked against the PRE-outer-cap markdown (whether it just came out of
-    # convert() or out of the cache): a converter's own self-truncation
-    # marker is the only signal docs.py gets that IT already cut real
-    # content at its own, smaller budget — _truncate_markdown below only
-    # ever sees "## Page N" boundaries, so it can't detect that on its own.
-    self_truncated = _converter_self_truncated(markdown)
-    markdown, truncated = _truncate_markdown(markdown, total)
-    truncated = truncated or self_truncated
+    # A RECEIPT, not the document: doc.md (written above, in full, before any
+    # of this) is what es_read pages — this return value only has to let the
+    # agent identify what it's holding and decide whether it needs to call
+    # es_read at all. MAX_MARKDOWN_CHARS/_truncate_markdown are deliberately
+    # NOT invoked here anymore (kept, unused, for a follow-up task to remove
+    # alongside their own tests) — truncating THIS markdown would only ever
+    # discard content still safely sitting in doc.md, never anything the
+    # agent could no longer reach through es_read.
+    complete = len(markdown) <= PREVIEW_CHARS
+    preview = markdown[:PREVIEW_CHARS]
+    # Always names BOTH the tool and the handle — even when complete=true —
+    # so the agent copies `next` verbatim rather than constructing a
+    # "doc:<id>" string itself (a transcription slip there is exactly the
+    # DocHandleExpired failure mode reader.py's hex check guards against).
+    next_step = (
+        f'preview is the whole document — nothing else to call for this '
+        f'document (es_read(target="doc:{did}") would just return it again)'
+        if complete else
+        f'call es_read(target="doc:{did}") to read the rest, paged by heading'
+    )
     # kind is trivially the extension without its dot ("pdf" for ".pdf") —
     # correct today and requires no per-format table of its own.
     return {"doc_id": did, "kind": ext.lstrip("."), "page_count": total,
-            "markdown": markdown, "images": images, "truncated": truncated}
+            "preview": preview, "complete": complete, "next": next_step}
 
 
 DEFAULT_RENDER_PAGES_HI = 10
