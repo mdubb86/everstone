@@ -452,14 +452,15 @@ def _doc_roots():
 
 @mcp.tool()
 @mcp_envelope
-def es_doc_extract(source: str, pages: Optional[str] = None) -> dict:
+def es_doc_extract(source: str) -> dict:
     """Convert a document — .pdf, .docx, .xlsx, .txt, .md, .csv, .json, or
     .ics — and return a HANDLE plus a short preview, not the document itself.
     source is the local path of a file the user uploaded (an absolute path)
     or a file in the vault, given as "$vault/..." or a vault-relative path
-    (e.g. "Topics/Manual.pdf", same convention as es_read). pages optionally
-    narrows a long PDF ("1-5", "1-2,7"); other formats have no pages and
-    reject a pages argument.
+    (e.g. "Topics/Manual.pdf", same convention as es_read). Always converts
+    (and caches) the whole document — to read only part of it, extract here
+    once and then page through the result with es_read's own `section`
+    (e.g. "page-37"), not by narrowing what gets extracted.
 
     Returns {doc_id, kind, page_count, preview, complete, next}. `preview` is
     only the first ~800 characters — enough to tell what you're holding, not
@@ -469,7 +470,7 @@ def es_doc_extract(source: str, pages: Optional[str] = None) -> dict:
     are images rather than text are still converted to inline ![page N](path)
     links in the full document — read those with vision_analyze once you
     reach them via es_read."""
-    return docs_cap.extract(source, _doc_roots(), _doc_cache_root(), pages=pages)
+    return docs_cap.extract(source, _doc_roots(), _doc_cache_root())
 
 
 @mcp.tool()
@@ -495,10 +496,9 @@ def es_doc_render(source: str, pages: Optional[str] = None) -> dict:
 
 # es_read's own whole-vs-outline threshold — for a DOCUMENT (kind == "doc":
 # something es_doc_extract converted from outside the vault). Deliberately
-# smaller than es_doc_extract's 40,000-character conversion cap, and smaller
-# than read.DEFAULT_WINDOW_LIMIT's own ~16,000-character "a window's worth of
-# lines" estimate — a document built from many SMALL units (the motivating
-# case: a 100+-event calendar where each event is only a couple dozen
+# smaller than read.DEFAULT_WINDOW_LIMIT's own ~16,000-character "a window's
+# worth of lines" estimate — a document built from many SMALL units (the
+# motivating case: a 100+-event calendar where each event is only a couple dozen
 # characters) needs to cross this threshold reliably, and a bound sized only
 # for "large in total characters" would let exactly that document slip
 # through as "small enough to return whole", one heading at a time, 100+
@@ -562,8 +562,8 @@ _CONTENT_CHAR_CAP = 32_000
 
 def _cap_content(text: str, resume_hint: str) -> str:
     """Cut `text` to at most _CONTENT_CHAR_CAP characters and say so in-band
-    — the same "*(truncated ...)*" convention es_doc_extract's own
-    docs._truncate_markdown uses (built through the shared
+    — the same "*(truncated ...)*" convention every doc_* converter's own
+    self-truncation already uses (built through the shared
     doc_support.truncation_marker, so detection/wording stays one
     convention rather than a second, divergent one for es_read).
 

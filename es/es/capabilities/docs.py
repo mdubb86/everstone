@@ -17,9 +17,8 @@ one new table entry), not a change to extract()/render() themselves.
 import csv
 import json
 import os
-import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from pdfminer.pdfdocument import PDFEncryptionError
 from pdfplumber.utils.exceptions import PdfminerException
@@ -27,10 +26,6 @@ from pdfplumber.utils.exceptions import PdfminerException
 from es import config, doc_cache, paths
 from es.capabilities import doc_ics, doc_office, doc_pdf, doc_support, doc_text
 
-MAX_MARKDOWN_CHARS = 40_000
-# Upper bound on the truncation marker appended by _truncate_markdown, held
-# back from the cut so cut+marker still fits inside MAX_MARKDOWN_CHARS.
-_MARKER_RESERVE = 400
 # extract() no longer returns the document — it returns a RECEIPT: a handle
 # plus just enough text (`preview`) for the agent to tell what it's holding
 # before deciding whether to page through the rest via es_read. 800 is sized
@@ -359,9 +354,14 @@ def _prepare(source: str, roots, cache_root: Path):
             "could not read this file from disk; ask the user to resend it"
         ) from e
     if size > MAX_DOCUMENT_BYTES:
+        # This check runs against the RAW source file, before pages is ever
+        # parsed for either extract() or render() — a page range was never a
+        # real escape from it (the whole file must still be read off disk
+        # regardless of how much of it is requested), so the remedy names
+        # only the thing that actually helps.
         raise DocumentTooLarge(
             f"{real.name} is larger than the {MAX_DOCUMENT_BYTES // (1024*1024)}MB "
-            "limit; ask for a smaller file or a page range")
+            "limit; ask the user for a smaller file")
     did = doc_cache.doc_id(real, ext)
     adir = doc_cache.artifact_dir(cache_root, did)
     return real, did, adir
@@ -425,212 +425,37 @@ def _write_full_extract(adir: Path, markdown: str, images: List[Path]) -> None:
         json.dumps([str(i) for i in images]), encoding="utf-8")
 
 
-# Matches the "\n\n" that doc_pdf.convert's "\n\n".join(parts) puts before
-# every page's "## Page N" heading except the very first — i.e. every safe
-# block-boundary cut point in the markdown.
-_PAGE_BOUNDARY_RE = re.compile(r"\n\n(?=## Page (\d+)\b)")
-# The very first heading in the markdown — for a page-SUBSET extract (e.g.
-# pages="5-8") this is NOT page 1, so the no-earlier-boundary fallback must
-# read the real number here rather than assume 1.
-_FIRST_PAGE_RE = re.compile(r"\A## Page (\d+)\b")
-# A markdown image link as doc_pdf.convert emits it: "![page N](/path.png)".
-# Used only to keep a HARD (no-boundary-available) cut from landing inside
-# one — the boundary cut above never can, since links are their own block.
-_IMAGE_LINK_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
-
-
-def _safe_hard_cut(text: str, limit: int) -> int:
-    """A cut index <= limit that never lands inside a markdown image link —
-    landing inside one would hand the agent a truncated, unusable path."""
-    cut = min(limit, len(text))
-    for m in _IMAGE_LINK_RE.finditer(text):
-        if m.start() < cut < m.end():
-            return m.start()
-    return cut
-
-
-# Every converter's own self-truncation marker — doc_text (CSV/JSON/txt/md),
-# doc_office (docx/xlsx), and doc_ics all follow the same "\n\n*(truncated
-# ...)*" convention this module's own PDF marker uses (see each module's own
-# MAX_CHARS/MAX_ICS_CHARS comments), because none of them can rely on
-# _truncate_markdown below to do it for them — that function only knows
-# "## Page N" PDF-style boundaries. Detection used to be a regex requiring NO
-# parentheses between "*(" and the closing ")*" — that broke the moment a
-# converter's own detail text legitimately needed a nested parenthetical
-# aside (verified live: a write_only .xlsx sheet with no <dimension> element
-# emits "...could not be determined (its XML has no declared dimension)",
-# which the regex silently stopped matching, so `truncated` came back False
-# on a document missing most of its rows). Detection now anchors on
-# doc_support.TRUNCATION_SENTINEL, a fixed prefix every converter's marker is
-# built through (doc_support.truncation_marker) — a plain substring check,
-# not a regex trying to parse prose that four independently-maintained
-# converter modules are free to reword.
-def _converter_self_truncated(markdown: str) -> bool:
-    """True if a converter already truncated ITS OWN output (before this
-    module's outer MAX_MARKDOWN_CHARS cap ever ran) and said so in-band.
-    Needed because every non-PDF converter self-truncates at its own,
-    smaller budget (see doc_text.MAX_CHARS / doc_office.MAX_CHARS /
-    doc_ics.MAX_ICS_CHARS, all well under this module's 40_000), so the
-    result docs.extract() gets back is very often already under
-    MAX_MARKDOWN_CHARS by the time _truncate_markdown looks at it — which
-    otherwise reports `truncated: False` even though real content was
-    genuinely cut, contradicting es_doc_extract's own docstring that
-    `truncated` is the agent's signal to look for more.
-
-    Historical note: extract() itself no longer calls this (its return is a
-    receipt — {doc_id, kind, page_count, preview, complete, next} — with no
-    `truncated` key at all; see extract()'s own comment). Kept, along with
-    _truncate_markdown/MAX_MARKDOWN_CHARS, for a follow-up task to remove
-    together with the tests that exercise it directly."""
-    return doc_support.TRUNCATION_SENTINEL in markdown
-
-
-def _truncate_markdown(markdown: str, total_pages: Optional[int]) -> Tuple[str, bool]:
-    """Cut `markdown` to at most MAX_MARKDOWN_CHARS at a page-block boundary
-    (the last "## Page N" heading before the limit), never mid-word or
-    mid-image-link, and append a marker naming where extraction stopped and
-    how to resume. Returns (markdown, truncated).
-
-    If even the FIRST page's content alone exceeds the limit there is no
-    earlier block boundary to cut at — a page-range resume can't help (the
-    identical oversized page would just come back truncated the same way
-    again), so that case falls back to a hard cut (still guarded against
-    landing inside an image link) and says plainly why a resume marker isn't
-    offered, rather than pretending a narrower range would fix anything.
-    Reads the real page number off the first heading rather than assuming 1
-    — a page-SUBSET extract (e.g. pages="5-8") starts with "## Page 5", not 1.
-
-    `total_pages` is None for a non-paginated format (every converter except
-    doc_pdf — see docs._page_count). The "page N" wording above only ever
-    makes sense when a document actually HAS pages: a "## Page N" boundary
-    can only occur in doc_pdf's own output (no other converter emits that
-    literal heading text), so `candidates` is guaranteed empty whenever
-    `total_pages is None` and only the hard-cut branch below can fire for a
-    flat format — which is exactly why that branch, and only that branch,
-    needs a second, page-free wording.
-    """
-    if len(markdown) <= MAX_MARKDOWN_CHARS:
-        return markdown, False
-
-    # Room for the marker itself. Every branch below returns cut + marker, so
-    # cutting AT the limit and appending would return more than the limit —
-    # which it silently did until converters stopped self-truncating below
-    # 40,000 and this path started actually running. The reserve is a ceiling
-    # on the longest marker any branch builds; _fits() re-checks rather than
-    # trusting it, so a future reword can't quietly reintroduce the overshoot.
-    limit = MAX_MARKDOWN_CHARS - _MARKER_RESERVE
-
-    def _fits(cut: str, marker: str) -> str:
-        out = cut + marker
-        if len(out) <= MAX_MARKDOWN_CHARS:
-            return out
-        return cut[:MAX_MARKDOWN_CHARS - len(marker)] + marker
-
-    boundaries = [(m.start(), int(m.group(1)))
-                  for m in _PAGE_BOUNDARY_RE.finditer(markdown)]
-    candidates = [b for b in boundaries if b[0] <= limit]
-
-    if candidates:
-        cut_pos, next_page = max(candidates)
-        stopped_after = next_page - 1
-        marker = "\n\n" + doc_support.truncation_marker(
-            f"after page {stopped_after} of {total_pages} "
-            f"— call es_doc_extract again with pages=\"{stopped_after + 1}-"
-            f"{total_pages}\" to continue")
-        return _fits(markdown[:cut_pos], marker), True
-
-    cut_pos = _safe_hard_cut(markdown, limit)
-    if total_pages is None:
-        # A flat format (csv/json/txt/md/ics/docx/xlsx): there are no pages
-        # to narrow and no es_doc_render to fall back to (render() itself
-        # refuses any format without page_count — see render()'s own
-        # UnsupportedDocument check) — naming either would send the agent
-        # chasing a remedy that provably doesn't exist for this document.
-        # The honest answer is that one indivisible block (a row, a
-        # paragraph, an event) is simply too large, with no narrower view
-        # available at all.
-        marker = "\n\n" + doc_support.truncation_marker(
-            f"— a single block of content exceeds the "
-            f"{MAX_MARKDOWN_CHARS}-character limit with no earlier "
-            "boundary to stop at, and this format has no narrower "
-            "view to fall back to; ask the user for a smaller/"
-            "narrower version of this document")
-        return _fits(markdown[:cut_pos], marker), True
-
-    first_match = _FIRST_PAGE_RE.match(markdown)
-    first_page = int(first_match.group(1)) if first_match else 1
-    marker = "\n\n" + doc_support.truncation_marker(
-        f"inside page {first_page} — its content alone "
-        f"exceeds the {MAX_MARKDOWN_CHARS}-character limit, so there is "
-        "no earlier page boundary to stop at; narrowing pages won't "
-        f"help since page {first_page} alone is already too large — try "
-        "es_doc_render on this page instead")
-    return _fits(markdown[:cut_pos], marker), True
-
-
-def extract(source: str, roots, cache_root: Path,
-            pages: Optional[str] = None) -> dict:
+def extract(source: str, roots, cache_root: Path) -> dict:
     real, did, adir = _prepare(source, roots, cache_root)
     ext = real.suffix.lower()
     mod = CONVERTERS[ext]
     total = _page_count(mod, real)
 
-    # `pages` on a format with no pages (total is None) is a loud error, not
-    # a silent no-op — same philosophy as render()'s explicit-out-of-range
-    # behavior below: an argument that cannot mean anything for this
-    # document is more likely a mistaken assumption about its format than an
-    # intentional "give me everything" request (which is already spelled by
-    # omitting pages entirely).
-    if pages is not None and total is None:
-        raise InvalidPageRange(
-            f"{ext} documents do not have pages — omit the pages argument "
-            "to extract the whole document")
-    wanted = parse_pages(pages, total) if pages is not None else None
-
-    if wanted is None:
-        # Full-document extract: doc_id is a content hash, so a previous
-        # conversion of this exact content is still correct — check the
-        # cache before paying for another convert().
-        cached = read_cached(adir)
-        if cached is not None:
-            doc_cache.touch(adir)  # TTL means "24h since last USE", not
-                                    # "24h since conversion" — a cache hit is
-                                    # a use.
-            markdown = cached["markdown"]
-        else:
-            try:
-                markdown, image_paths = mod.convert(real, adir, pages=None)
-            except (doc_support.ParseFailed, PdfminerException) as e:
-                _reraise_conversion_error(real, e)
-            _write_full_extract(adir, markdown, image_paths)
-            doc_cache.touch(adir)
+    # Full-document extract only: doc_id is a content hash, so a previous
+    # conversion of this exact content is still correct — check the cache
+    # before paying for another convert(). (A page-SUBSET extract used to be
+    # a second, uncached code path here — removed along with the `pages`
+    # argument: `section="page-37"` through es_read already expresses that
+    # intent, and the subset path was never cached anyway, so it produced a
+    # dead `doc:<id>` handle and an error telling the agent to retry the very
+    # thing that had just failed.)
+    cached = read_cached(adir)
+    if cached is not None:
+        doc_cache.touch(adir)  # TTL means "24h since last USE", not "24h
+                                # since conversion" — a cache hit is a use.
+        markdown = cached["markdown"]
     else:
-        # A page-SUBSET extract is never written to doc.md/images.json: those
-        # two files are the whole-document artifact that a future es_read
-        # will address as `doc:<id>` (Phase 2). Writing a subset there would
-        # silently replace the full document with a fragment for every
-        # future reader of this doc_id — worse than not caching at all. So
-        # subsets always convert fresh and are simply never persisted; only
-        # the full-document result is cached.
-        #
-        # `images` (the manifest list a receipt used to return) is likewise
-        # not built here anymore — the receipt has no `images` key to fill
-        # (see the return below); the PNGs mod.convert() may have written
-        # for this subset still land on disk under `adir`, same as before.
         try:
-            markdown, _image_paths = mod.convert(real, adir, pages=wanted)
+            markdown, image_paths = mod.convert(real, adir, pages=None)
         except (doc_support.ParseFailed, PdfminerException) as e:
             _reraise_conversion_error(real, e)
+        _write_full_extract(adir, markdown, image_paths)
         doc_cache.touch(adir)
 
     # A RECEIPT, not the document: doc.md (written above, in full, before any
     # of this) is what es_read pages — this return value only has to let the
     # agent identify what it's holding and decide whether it needs to call
-    # es_read at all. MAX_MARKDOWN_CHARS/_truncate_markdown are deliberately
-    # NOT invoked here anymore (kept, unused, for a follow-up task to remove
-    # alongside their own tests) — truncating THIS markdown would only ever
-    # discard content still safely sitting in doc.md, never anything the
-    # agent could no longer reach through es_read.
+    # es_read at all.
     complete = len(markdown) <= PREVIEW_CHARS
     preview = markdown[:PREVIEW_CHARS]
     # Always names BOTH the tool and the handle — even when complete=true —
@@ -659,10 +484,10 @@ def render(source: str, roots, cache_root: Path, pages: Optional[str] = None) ->
     for) doesn't error just because it's shorter than the default window.
 
     An EXPLICIT pages argument is never clamped: if the agent asks for a
-    range that runs past the document's end, that's a loud error (same as
-    extract()'s explicit-range behavior) rather than a silent partial
-    result — an explicit out-of-range ask is more likely a wrong page
-    number than an intentional "give me what you can" request.
+    range that runs past the document's end, that's a loud error rather
+    than a silent partial result — an explicit out-of-range ask is more
+    likely a wrong page number than an intentional "give me what you can"
+    request.
     """
     real, did, adir = _prepare(source, roots, cache_root)
     ext = real.suffix.lower()
