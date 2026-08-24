@@ -74,6 +74,11 @@ def test_resolve_missing_note_path_raises_unchanged_not_found(vault):
 # --- cached documents ("doc:<id>") -------------------------------------
 
 def test_resolve_doc_handle_returns_cached_markdown(text_pdf, cache_root):
+    """extract() itself only returns a receipt (preview, not the document —
+    see docs.extract's new contract), so the full-markdown comparison below
+    checks that `preview` is a prefix of what reader.resolve() (which reads
+    the cached doc.md directly) returns, rather than comparing two full
+    markdown strings extract() no longer produces."""
     extracted = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=cache_root)
     target = f"doc:{extracted['doc_id']}"
 
@@ -81,7 +86,7 @@ def test_resolve_doc_handle_returns_cached_markdown(text_pdf, cache_root):
     assert out["kind"] == "doc"
     assert out["doc_id"] == extracted["doc_id"]
     assert out["source"] == target
-    assert out["markdown"] == extracted["markdown"]
+    assert out["markdown"].startswith(extracted["preview"])
     assert "Fall Season Schedule" in out["markdown"]
 
 
@@ -121,7 +126,61 @@ def test_resolve_doc_handle_survives_a_missing_images_sidecar(text_pdf, cache_ro
     (adir / docs.DOC_IMAGES_MANIFEST).unlink()
 
     out = reader.resolve(f"doc:{extracted['doc_id']}", vault=None, cache_root=cache_root)
-    assert out["markdown"] == extracted["markdown"]
+    assert out["markdown"].startswith(extracted["preview"])
+
+
+# --- table-kind handles are refused, not silently read as Markdown ------
+#
+# No converter produces a table kind yet (see docs.TABLE_KINDS's docstring:
+# a later plan converts .csv/.xlsx into a queryable DuckDB database instead,
+# addressed by a new es_doc_query tool rather than es_read) — so these tests
+# fabricate the artifact state directly, writing meta.json's `kind` straight
+# through docs._write_full_extract, the same way a real converter eventually
+# will. That is fine: the point is proving reader.py's rejection path is
+# already correct before that converter exists to trigger it for real.
+
+def _seed_table_doc(cache_root, markdown: str = "col_a,col_b\n1,2\n") -> str:
+    fake_source = cache_root / f"fake-table-{len(markdown)}.csv"
+    fake_source.write_bytes(os.urandom(8))
+    did = doc_cache.doc_id(fake_source, ".csv")
+    adir = doc_cache.artifact_dir(cache_root, did)
+    docs._write_full_extract(adir, markdown, [], kind="table")
+    return did
+
+
+def test_resolve_table_kind_handle_raises_naming_es_doc_query(cache_root):
+    did = _seed_table_doc(cache_root)
+    with pytest.raises(reader.TableKindNotReadable) as e:
+        reader.resolve(f"doc:{did}", vault=None, cache_root=cache_root)
+    assert e.value.es_code == "doc_table_kind"
+    assert "es_doc_query" in str(e.value)
+    assert f"doc:{did}" in str(e.value)
+
+
+def test_resolve_table_kind_handle_still_touches_the_artifact_dir(cache_root):
+    """Even though the read is refused, the agent did just look this handle
+    up — the same "a lookup is a use" reasoning
+    test_resolve_doc_handle_touches_the_artifact_dir already applies to a
+    successful read applies here too, so the artifact should not expire
+    while the agent is actively (if unsuccessfully) trying to use it."""
+    did = _seed_table_doc(cache_root)
+    adir = doc_cache.artifact_dir(cache_root, did)
+    stale = time.time() - (25 * 3600)
+    os.utime(adir, (stale, stale))
+
+    with pytest.raises(reader.TableKindNotReadable):
+        reader.resolve(f"doc:{did}", vault=None, cache_root=cache_root)
+
+    assert adir.stat().st_mtime > stale
+
+
+def test_resolve_markdown_kind_handle_is_unaffected_by_the_table_guard(text_pdf, cache_root):
+    """The guard must not fire on the common case: an ordinary (markdown-
+    kind) extract still resolves exactly as before."""
+    extracted = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=cache_root)
+    out = reader.resolve(f"doc:{extracted['doc_id']}", vault=None, cache_root=cache_root)
+    assert out["kind"] == "doc"
+    assert "Fall Season Schedule" in out["markdown"]
 
 
 # --- target cannot escape the vault or the cache ------------------------
@@ -332,6 +391,20 @@ def test_es_read_expired_doc_handle(wired_cache):
     assert out["ok"] is False
     assert out["error"]["code"] == "doc_handle_expired"
     assert "es_doc_extract" in out["error"]["message"]
+
+
+def test_es_read_table_kind_handle_errors_not_a_null_envelope(wired_cache):
+    """es_read on a table-kind handle must come back as a genuine error
+    envelope (ok=False, a real es_code naming es_doc_query as the remedy) —
+    never ok=True with content/outline left null, and never an empty read.
+    No converter produces this kind yet (see reader.TableKindNotReadable's
+    docstring), so the handle is fabricated directly via
+    docs._write_full_extract(..., kind="table")."""
+    did = _seed_table_doc(wired_cache)
+    out = mcp_server.es_read(f"doc:{did}")
+    assert out["ok"] is False
+    assert out["error"]["code"] == "doc_table_kind"
+    assert "es_doc_query" in out["error"]["message"]
 
 
 def test_es_read_note_by_path_and_topic_name_match_with_frontmatter(wired_vault):
@@ -681,3 +754,29 @@ def test_es_read_xlsx_outline_mode_returns_first_sheet_content_not_null(tmp_path
     assert len(data["outline"]) == 2
     assert data["content"] is not None
     assert "row0" in data["content"]
+
+
+# --- section="page-N" is the promised replacement for the deleted `pages`
+# argument (docs.extract's own comment: "section=\"page-37\" through es_read
+# already expresses that intent") — its predecessor test (page-subset
+# extraction) was deleted along with `pages`, and nothing else in the suite
+# exercises reaching a PAGE well past the old front-of-document budgets.
+
+def test_es_read_section_reaches_a_deep_pdf_page(wired_cache):
+    """A page whose own content starts well past 40,000 characters into
+    doc.md must still be reachable by `section="page-N"` — es_read pages the
+    FULL cached document, not just some early prefix of it."""
+    parts = []
+    for i in range(1, 51):
+        parts.append(f"## Page {i}\n\nFiller text unique to page {i}. " + ("x" * 900))
+    md = "\n\n".join(parts)
+    deep_start = md.index("## Page 45")
+    assert deep_start > 40_000, "fixture must actually exercise a deep offset"
+    target = _seed_doc(wired_cache, md, ext=".pdf")
+
+    out = mcp_server.es_read(target, section="page-45")
+    assert out["ok"] is True
+    data = out["data"]
+    assert "Filler text unique to page 45." in data["content"]
+    assert "page 44" not in data["content"]
+    assert "page 46" not in data["content"]

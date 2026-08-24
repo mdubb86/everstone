@@ -55,6 +55,22 @@ class DocHandleExpired(Exception):
     es_code = "doc_handle_expired"
 
 
+class TableKindNotReadable(Exception):
+    """Raised when a `doc:<id>` handle's recorded kind is table-shaped
+    (docs.TABLE_KINDS) — es_read pages MARKDOWN (read.py's outline/section/
+    window/query machinery all assume prose with optional "## " headings),
+    so a table-kind handle must error here rather than come back as a null-
+    filled or empty envelope. The message always names es_doc_query (the
+    tool a table handle is meant to be read through instead) as the remedy.
+
+    No converter produces this kind yet — see docs.TABLE_KINDS's docstring
+    for why the guard exists ahead of need. Today this can only fire against
+    a handle a test constructs directly (docs._write_full_extract(...,
+    kind="table")); once a real converter emits "table", it fires for real.
+    """
+    es_code = "doc_table_kind"
+
+
 def _resolve_doc(doc_id: str, cache_root: Path) -> dict:
     if not _DOC_ID_RE.match(doc_id):
         raise DocHandleExpired(
@@ -68,8 +84,17 @@ def _resolve_doc(doc_id: str, cache_root: Path) -> dict:
             "aged out of the cache (documents are kept for 24 hours since "
             "last use); call es_doc_extract again on the source file")
     doc_cache.touch(adir)  # a read through es_read is a use, same as a
-                            # cache-hit inside es_doc_extract itself.
-    return {"kind": "doc", "source": f"{DOC_PREFIX}{doc_id}",
+                            # cache-hit inside es_doc_extract itself — true
+                            # even for a table-kind handle rejected below,
+                            # since the agent still just looked it up.
+    handle = f"{DOC_PREFIX}{doc_id}"
+    kind = cached["kind"]
+    if kind in docs.TABLE_KINDS:
+        raise TableKindNotReadable(
+            f"{handle} is a {kind} document — es_read only reads Markdown, "
+            f"never tabular data; call es_doc_query(target=\"{handle}\") "
+            "to query it instead")
+    return {"kind": "doc", "source": handle,
             "doc_id": doc_id, "markdown": cached["markdown"]}
 
 
@@ -87,8 +112,10 @@ def resolve(target: str, *, vault: VaultClient, cache_root: Path) -> dict:
     always name what it just read regardless of which branch served it. A
     note's dict additionally carries `path` (== source) and `frontmatter`.
 
-    Raises vault_client.NoteNotFound for an unknown note path/topic, or
-    DocHandleExpired for an unknown, malformed, or aged-out `doc:<id>`.
+    Raises vault_client.NoteNotFound for an unknown note path/topic,
+    DocHandleExpired for an unknown, malformed, or aged-out `doc:<id>`, or
+    TableKindNotReadable for a `doc:<id>` whose recorded kind is
+    table-shaped (docs.TABLE_KINDS) — es_read pages Markdown only.
     """
     if target.startswith(DOC_PREFIX):
         return _resolve_doc(target[len(DOC_PREFIX):], cache_root)

@@ -16,21 +16,22 @@ signal ("a `##` heading marks a real section") the reader is meant to trust.
 Flat content like this is exactly what that reader's plain offset/limit
 fallback exists for — leave it to that, don't paper over it here.
 
-Truncation seam: docs._truncate_markdown assumes paginated PDF output (it
-cuts at "## Page N" boundaries) and none of these formats emit those
-markers, so it cannot truncate them sensibly — every converter in this
-module truncates ITSELF, at a boundary meaningful to its own format (a whole
-CSV row, a whole line of text/JSON), before returning. See MAX_CHARS below.
+Truncation seam: none of these four formats has PDF-style "## Page N"
+boundaries to cut at (a paginated PDF's own truncation, where it applies,
+lives in doc_pdf.py), so every converter in this module truncates ITSELF, at
+a boundary meaningful to its own format (a whole CSV row, a whole line of
+text/JSON), before returning. See MAX_CHARS below.
 
 MAX_CHARS is a RESOURCE ceiling, not a context-window budget: the whole
 converted document is written to `doc.md` (a 24h-TTL cache) and paged from
 there by es_read, so bounding what gets STORED to fit inside one MCP
 response would only destroy data nothing needs destroyed — es_doc_extract's
-own response is already trimmed separately (docs.MAX_MARKDOWN_CHARS), and
-that trim no longer implies loss now that the untrimmed result lives in
-`doc.md`. MAX_CHARS below exists only to stop a genuinely pathological
-document from writing an unbounded amount to disk / making es_read's
-per-heading outline unusably large — see the constant's own comment.
+own response is now a small receipt (a fixed-size preview plus a `doc:<id>`
+handle), never the document itself, so it has no response-sized budget of
+its own to protect. MAX_CHARS below exists only to stop a genuinely
+pathological document from writing an unbounded amount to disk / making
+es_read's per-heading outline unusably large — see the constant's own
+comment.
 """
 import csv
 import io
@@ -92,12 +93,12 @@ MAX_CHARS = 20_000_000
 # these formats: unlike a PDF's `pages="N-M"`, there is no sub-range these
 # flat formats support re-requesting narrower — so every marker below says
 # that explicitly rather than gesturing at a resume mechanism that doesn't
-# exist for this format (the same honesty docs._truncate_markdown itself
-# uses for a PDF's oversized first page). Content past MAX_CHARS genuinely
-# never exists anywhere (it is cut before `doc.md` is ever written), unlike
-# es_doc_extract's own separate RESPONSE-level trim — which es_read can page
-# past — so "no resume" stays an honest thing for this marker to say even
-# though the document as a whole is otherwise fully cached and pageable.
+# exist for this format. Content past MAX_CHARS genuinely never exists
+# anywhere (it is cut before `doc.md` is ever written) — unlike es_read's
+# own separate per-call content cap (mcp_server._CONTENT_CHAR_CAP), which the
+# agent CAN page past via `offset` — so "no resume" stays an honest thing for
+# this marker to say even though the document as a whole (up to MAX_CHARS)
+# is otherwise fully cached and pageable.
 _NO_RESUME = "has no page range to resume from"
 
 

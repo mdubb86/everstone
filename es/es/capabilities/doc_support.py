@@ -62,18 +62,27 @@ def format_row(cells: List[str], width: int) -> str:
 
 
 # The fixed opening every converter's self-truncation marker starts with —
-# owned here, once, so docs.py can tell "this converter already cut real
-# content and said so" apart from ordinary document text with a plain
-# substring check instead of a regex that has to parse the free-form prose
-# after it. That regex used to require NO parentheses between "*(" and the
-# closing ")*" — reasonable until a converter's message legitimately needed
-# a nested parenthetical aside (e.g. "...could not be determined (its XML
-# has no declared dimension)"), at which point the regex silently stopped
-# matching and the whole marker went undetected. Anchoring on this fixed,
+# owned here, once, so "this converter already cut real content and said so"
+# can be recognized apart from ordinary document text with a plain substring
+# check instead of a regex that has to parse the free-form prose after it.
+# That regex used to require NO parentheses between "*(" and the closing
+# ")*" — reasonable until a converter's message legitimately needed a nested
+# parenthetical aside (e.g. "...could not be determined (its XML has no
+# declared dimension)"), at which point the regex silently stopped matching
+# and the whole marker went undetected. Anchoring on this fixed,
 # converter-agnostic PREFIX instead means a converter's own detail text
 # after it can say anything — including its own nested parens — without
-# ever being able to change the boolean docs.py derives from it. See
-# docs.py's `_converter_self_truncated`, the sole reader of this constant.
+# ever being able to change what a substring check derives from it.
+#
+# docs.py no longer reads this constant back out to decide anything itself:
+# `_converter_self_truncated`, the response-level check this constant used
+# to feed, was deleted along with the response-level trim
+# (docs.MAX_MARKDOWN_CHARS) it existed for — es_doc_extract returns a
+# receipt now, not a trimmed excerpt, so there is nothing left to derive
+# that boolean for. truncation_marker() below is the sole remaining
+# reader/writer of this constant; a caller that wants to detect a marker
+# in-band (as tests/test_reader.py does) does its own plain substring check
+# against it directly.
 TRUNCATION_SENTINEL = "*(truncated"
 
 
@@ -93,6 +102,26 @@ def truncation_marker(detail: str) -> str:
     so joining is left to each call site rather than assumed here.
     """
     return f"{TRUNCATION_SENTINEL} {detail})*"
+
+
+def rfind_safe_cut(text: str, limit: int) -> int:
+    """Return a cut index <= min(limit, len(text)) that falls on a line
+    boundary — the last newline at or before `limit` — so slicing `text` at
+    the returned index can never land inside a single-line token such as a
+    Markdown image link (`![page N](path)`, always emitted on one line by
+    doc_pdf.convert). Falls back to `limit` itself when no newline exists
+    before it (the whole span up to `limit` is one unbroken line) — a
+    nicety when a line boundary is available, not a guarantee independent
+    of the text's shape.
+
+    Shared by mcp_server._cap_content (capping `es_read`'s returned content)
+    and docs.extract()'s `preview` cut — both need "cut near a character
+    budget without slicing a token in half", so one function owns the
+    rfind rather than two independently-maintained copies of it.
+    """
+    limit = max(0, min(limit, len(text)))
+    cut = text.rfind("\n", 0, limit)
+    return cut if cut > 0 else limit
 
 
 def table_to_markdown(table: List[List[Optional[str]]]) -> str:

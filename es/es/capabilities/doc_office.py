@@ -59,18 +59,18 @@ a foundation this module can build predictable behavior on.
 
 Both formats truncate at a whole-BLOCK boundary against a shared RESOURCE
 ceiling (MAX_CHARS below) — a whole paragraph/table for .docx, a whole row
-for .xlsx — mirroring doc_text.MAX_CHARS / doc_ics.MAX_ICS_CHARS: docs.py's
-own _truncate_markdown only knows PDF-style "## Page N" boundaries, so
-neither format here can rely on it and each truncates itself before
-returning. MAX_CHARS is deliberately NOT sized to fit inside one MCP
-response (that job now belongs entirely to docs.MAX_MARKDOWN_CHARS, applied
-in docs.py against the RETURNED excerpt only) — it exists so that a
-genuinely pathological document (a zip-bomb-style .docx, a workbook someone
-managed to inflate to gigabytes of text) still can't make doc.md, and
-therefore es_read's outline, unbounded; see MAX_CHARS's own comment for the
-sizing rationale. Every ordinary document — including every deliberately
-oversized one this module's own test suite builds — converts in full and
-never reaches it.
+for .xlsx — mirroring doc_text.MAX_CHARS / doc_ics.MAX_ICS_CHARS: neither
+format here has PDF-style "## Page N" boundaries to cut at, so each
+truncates itself before returning. MAX_CHARS is deliberately NOT sized to
+fit inside one MCP response — es_doc_extract's own response is now a small
+receipt (a fixed-size preview plus a `doc:<id>` handle), never the document
+itself, so there is no response-sized budget for this ceiling to clear at
+all — it exists so that a genuinely pathological document (a zip-bomb-style
+.docx, a workbook someone managed to inflate to gigabytes of text) still
+can't make doc.md, and therefore es_read's outline, unbounded; see
+MAX_CHARS's own comment for the sizing rationale. Every ordinary document —
+including every deliberately oversized one this module's own test suite
+builds — converts in full and never reaches it.
 
 XLSX_MAX_ROWS/XLSX_MAX_COLS are a SEPARATE, structural cap on top of that
 ceiling: a sheet's reported used range can be dramatically larger than its
@@ -201,15 +201,17 @@ from es.capabilities.doc_support import (ParseFailed, format_cell, format_row,
 # entry es_read pages by section/line, not something returned whole, so the
 # only real costs a full conversion imposes are disk (cheap at this size) and
 # the size of es_read's outline (built from "## " headings — still trivially
-# fast to scan at tens of megabytes). This is deliberately NOT sized to just
-# clear docs.MAX_MARKDOWN_CHARS (40_000, an MCP-response-sized number) —
-# that cap still runs, in docs.py, against the RETURNED excerpt only, never
-# against what gets cached; the two budgets protect different things now.
-# A .docx/.xlsx is a zip, so MAX_DOCUMENT_BYTES only bounds the COMPRESSED
-# input size — a pathological file could still try to inflate far past this
-# ceiling, which is exactly why this ceiling exists at all (see also the
-# lazy .docx walk and the per-table/per-sheet structural caps below, which
-# bound the COST of touching such a file, not just the characters it emits).
+# fast to scan at tens of megabytes). This is deliberately NOT sized against
+# any MCP-response-sized number at all — es_doc_extract's own response is a
+# small fixed-size receipt (a preview plus a handle) regardless of how big
+# the source document is, so there is no response budget for this ceiling to
+# clear; it protects only what gets cached and paged, never what gets
+# returned. A .docx/.xlsx is a zip, so MAX_DOCUMENT_BYTES only bounds the
+# COMPRESSED input size — a pathological file could still try to inflate far
+# past this ceiling, which is exactly why this ceiling exists at all (see
+# also the lazy .docx walk and the per-table/per-sheet structural caps
+# below, which bound the COST of touching such a file, not just the
+# characters it emits).
 MAX_CHARS = 50_000_000
 
 # --------------------------------------------------------------------------

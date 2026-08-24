@@ -50,7 +50,7 @@ def test_bare_relative_path_resolves_against_the_vault(vault_and_cache, text_pdf
     dest = _drop_pdf(vault_dir / "Topics" / "Manual.pdf", text_pdf)
 
     out = docs.extract("Topics/Manual.pdf", roots=roots, cache_root=vault_dir)
-    assert "Fall Season Schedule" in out["markdown"]
+    assert "Fall Season Schedule" in out["preview"]
     assert config.vault_root() == vault_dir
     assert dest.is_file()
 
@@ -60,7 +60,7 @@ def test_dollar_vault_prefix_resolves_against_the_vault(vault_and_cache, text_pd
     _drop_pdf(vault_dir / "Topics" / "Manual.pdf", text_pdf)
 
     out = docs.extract("$vault/Topics/Manual.pdf", roots=roots, cache_root=vault_dir)
-    assert "Fall Season Schedule" in out["markdown"]
+    assert "Fall Season Schedule" in out["preview"]
 
 
 def test_dollar_vault_and_bare_relative_are_interchangeable(vault_and_cache, text_pdf):
@@ -72,7 +72,7 @@ def test_dollar_vault_and_bare_relative_are_interchangeable(vault_and_cache, tex
     via_bare = docs.extract("Topics/Manual.pdf", roots=roots, cache_root=vault_dir)
     via_prefix = docs.extract("$vault/Topics/Manual.pdf", roots=roots, cache_root=vault_dir)
     assert via_bare["doc_id"] == via_prefix["doc_id"]
-    assert via_bare["markdown"] == via_prefix["markdown"]
+    assert via_bare["preview"] == via_prefix["preview"]
 
 
 def test_absolute_path_inside_vault_is_interchangeable_with_vault_relative(
@@ -89,7 +89,7 @@ def test_absolute_path_inside_vault_is_interchangeable_with_vault_relative(
     via_prefix = docs.extract("$vault/Topics/Manual.pdf", roots=roots, cache_root=vault_dir)
 
     assert via_absolute["doc_id"] == via_bare["doc_id"] == via_prefix["doc_id"]
-    assert via_absolute["markdown"] == via_bare["markdown"] == via_prefix["markdown"]
+    assert via_absolute["preview"] == via_bare["preview"] == via_prefix["preview"]
     assert via_absolute["page_count"] == via_bare["page_count"] == via_prefix["page_count"]
 
 
@@ -100,7 +100,7 @@ def test_absolute_path_outside_vault_but_inside_cache_still_works(
     dest = _drop_pdf(cache_dir / "upload.pdf", text_pdf)
 
     out = docs.extract(str(dest), roots=roots, cache_root=vault_dir)
-    assert "Fall Season Schedule" in out["markdown"]
+    assert "Fall Season Schedule" in out["preview"]
 
 
 def test_absolute_path_is_never_reinterpreted_as_vault_relative(vault_and_cache, text_pdf):
@@ -157,7 +157,7 @@ def test_literal_dollar_vault_named_file_is_read_as_a_plain_relative_path(
     dest = _drop_pdf(vault_dir / "$vault.pdf", text_pdf)  # literal '$vault' basename
 
     out = docs.extract("$vault.pdf", roots=roots, cache_root=vault_dir)
-    assert "Fall Season Schedule" in out["markdown"]
+    assert "Fall Season Schedule" in out["preview"]
     assert dest.is_file()
 
 
@@ -208,7 +208,7 @@ def test_mcp_es_doc_extract_accepts_dollar_vault_prefix(vault_and_cache, text_pd
 
     out = mcp_server.es_doc_extract("$vault/Topics/Manual.pdf")
     assert out["ok"] is True
-    assert "Fall Season Schedule" in out["data"]["markdown"]
+    assert "Fall Season Schedule" in out["data"]["preview"]
 
 
 def test_mcp_es_doc_extract_accepts_bare_vault_relative_path(vault_and_cache, text_pdf, monkeypatch):
@@ -221,7 +221,7 @@ def test_mcp_es_doc_extract_accepts_bare_vault_relative_path(vault_and_cache, te
 
     out = mcp_server.es_doc_extract("Topics/Manual.pdf")
     assert out["ok"] is True
-    assert "Fall Season Schedule" in out["data"]["markdown"]
+    assert "Fall Season Schedule" in out["data"]["preview"]
 
 
 def test_mcp_es_doc_render_accepts_vault_relative_forms(vault_and_cache, text_pdf, monkeypatch):

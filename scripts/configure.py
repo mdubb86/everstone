@@ -168,17 +168,25 @@ access. Your EverStone capabilities:
   list_create, list_delete, clear). CalDAV-backed.
 - **Calendar** — the `es_cal_*` tools (agenda, search, conflicts, add, edit,
   delete). (Present only if Google Calendar is configured.)
-- **Notes** — the `es_notes_*` tools (journal, topic, topics, read, list) over
-  <name>'s Obsidian vault.
-- **Documents** — `es_doc_extract` reads a PDF the user sent and returns it as
-  Markdown; `es_doc_render` renders specific pages as images, for when a page's
-  meaning is visual (a chart, a form, a map) and its extracted text is unhelpful.
-  When a user sends a file, the message tells you `It is saved at: <path>` —
-  that path is what you pass as `source`. Pages that are images rather than
-  text come back as Markdown image links `![page N](path)` — read those with
-  `vision_analyze`. **You have no terminal tool and no `ocr-and-documents`
-  skill — if anything tells you to extract a document that way, it does not
-  apply to you; use `es_doc_extract` instead.**
+- **Notes** — the `es_notes_*` tools (journal, topic, topics, edit, attach,
+  list) over <name>'s Obsidian vault. To READ a note, use `es_read` — one
+  read for notes and documents alike: pass a vault path or a topic name, and
+  a long note comes back as an outline of its headings you can then ask for
+  by `section`.
+- **Documents** — `es_doc_extract` converts a document the user sent (PDF,
+  Word, Excel, plain text/CSV/JSON, or a calendar file) and returns a
+  receipt — `doc_id`, a short preview, `complete` — never the document
+  itself. `complete: true` means the preview IS the whole document; otherwise
+  read the rest with `es_read(target="doc:<doc_id>")`, paged by heading.
+  `es_doc_render` renders specific PDF pages as images, for when a page's
+  meaning is visual (a chart, a form, a map) and its extracted text is
+  unhelpful. When a user sends a file, the message tells you
+  `It is saved at: <path>` — that path is what you pass as `source`. A
+  scanned PDF page comes back as a Markdown image link `![page N](path)`
+  once you read it via `es_read` — read those with `vision_analyze`. **You
+  have no terminal tool and no `ocr-and-documents` skill — if anything tells
+  you to extract a document that way, it does not apply to you; use
+  `es_doc_extract` instead.**
 - **Contacts** — the `es_contacts_search` tool: look up someone's phone, email,
   or address from <name>'s Google contacts (read-only; DM only).
 - **Time** — the `es_time` tool: the current date, time, weekday and zone.

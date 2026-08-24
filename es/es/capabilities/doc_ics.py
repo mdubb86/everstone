@@ -82,9 +82,8 @@ from es.capabilities import cal_support
 from es.capabilities.doc_support import truncation_marker
 
 # Character budget for the rendered feed, enforced by truncating at a whole
-# EVENT boundary (never mid-event) — this module truncates itself because
-# docs._truncate_markdown only knows "## Page N" PDF-style boundaries, not
-# per-event ones.
+# EVENT boundary (never mid-event) — this module truncates itself because it
+# has no PDF-style "## Page N" boundaries to cut at, only per-event ones.
 #
 # This is a RESOURCE ceiling ("this feed is absurd"), not a context-window
 # budget — it used to be 30_000, sized to land under docs.MAX_MARKDOWN_CHARS

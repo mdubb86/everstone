@@ -131,6 +131,13 @@ def test_generate_agents_md_documents_guidance(tmp_path):
         # which points the (toolless) agent at a terminal/skill it doesn't have.
         assert "no terminal tool" in body
         assert "ocr-and-documents" in body
+        # The receipt contract, pinned so it can't silently drift back to the
+        # old (false) "returns it as Markdown" claim: extract hands back a
+        # doc_id + preview + complete, and the rest is read via es_read.
+        assert "returns it as" not in body
+        assert "receipt" in body
+        assert 'es_read(target="doc:<doc_id>")' in body
+        assert "complete: true" in body
     finally:
         del os.environ["EVERSTONE_DATA_DIR"]
 

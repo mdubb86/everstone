@@ -59,7 +59,7 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   - **Notes** — `es_notes_*` (journal/topic/topics/edit/attach/list) → the Obsidian
     vault via `es.vault_client.VaultClient` (see "Notes vault & LiveSync" below).
     Reading a note is no longer one of these tools — see `es_read` below.
-  - **Documents** — `es_doc_extract(source, pages=None)` / `es_doc_render(source, pages)`
+  - **Documents** — `es_doc_extract(source)` / `es_doc_render(source, pages)`
     read eight formats the agent otherwise has no way to open (no terminal, no OCR
     skill): `.pdf`, `.docx`, `.xlsx`, `.txt`, `.md`, `.csv`, `.json`, `.ics` — backed
     by `es.capabilities.docs` (confinement/caching/dispatch), one converter module
@@ -274,6 +274,19 @@ never claim to be supported without a converter actually behind it. Adding a nin
 meant to be a pure addition — one new converter module plus one new table entry — never a
 change to `extract()`/`render()` themselves.
 
+- **`extract()` returns a receipt, not the document.** The full return shape is `{doc_id, kind,
+  page_count, preview, complete, next}` — never the converted Markdown itself. `preview` is the
+  first ~800 characters (`docs.PREVIEW_CHARS`), sized to let the agent identify what it's holding
+  (a title, a first paragraph, a table header), not to read it; `complete` is an exact test
+  (`len(markdown) <= PREVIEW_CHARS`), so the agent can trust it rather than guess from the
+  preview's own shape. The cut itself never lands mid-token: a raw `markdown[:PREVIEW_CHARS]`
+  slice can end inside a single-line `![page N](path)` image link (every scanned PDF page emits
+  one), handing back a truncated, unusable path — the cut instead falls back to the last line
+  boundary at or before the limit (`doc_support.rfind_safe_cut`, also used by `es_read`'s own
+  content cap below, so the two don't grow independent copies of the same rfind). `doc.md` still
+  caches the **entire** converted document regardless of preview size; `es_read` (below), given
+  the `next`-supplied `doc:<doc_id>` handle, pages that full cache by heading — the preview cap
+  bounds only what one `es_doc_extract` call returns, never what the agent can eventually read.
 - **Output is Markdown, not raw text — and every converter emits a `## ` heading everywhere the
   SOURCE has real structure.** This is the load-bearing design choice the rest of this section
   depends on. `doc_pdf` emits `## Page N` per page; `doc_office` emits one heading per Word

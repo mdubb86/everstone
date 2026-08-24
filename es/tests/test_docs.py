@@ -91,8 +91,8 @@ def test_extract_returns_markdown_and_doc_id(text_pdf, tmp_path):
     assert len(out["doc_id"]) == 12
     assert out["kind"] == "pdf"
     assert out["page_count"] == 2
-    assert "Fall Season Schedule" in out["markdown"]
-    assert out["truncated"] is False
+    assert "Fall Season Schedule" in out["preview"]
+    assert out["complete"] is True
 
 
 def test_extract_rejects_path_outside_roots(text_pdf, tmp_path):
@@ -117,215 +117,30 @@ def test_extract_writes_markdown_into_the_cache(text_pdf, tmp_path):
     assert "Fall Season Schedule" in cached.read_text(encoding="utf-8")
 
 
-def test_extract_truncates_oversized_output_but_caches_the_full_markdown(
-        text_pdf, tmp_path, monkeypatch):
-    """Regression guard for writing the TRUNCATED copy to disk: this uses the
-    SAME call/fixture for both assertions, so a future change that truncates
-    before writing doc.md would fail here (a version that truncated first and
-    used a different fixture for the doc.md check could pass both tests
-    without ever proving the two stay in sync)."""
-    monkeypatch.setattr(docs, "MAX_MARKDOWN_CHARS", 40)
-    out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
-    assert out["truncated"] is True
-    # The content actually kept (everything before the appended resume
-    # marker) stays bounded by the limit; the marker itself is allowed to
-    # push the total past it (it's operator text, not document content).
-    assert len(out["markdown"].rsplit("\n\n*(truncated", 1)[0]) <= 40
-
-    cached = (tmp_path / ".es" / out["doc_id"] / "doc.md").read_text(encoding="utf-8")
-    assert len(cached) > 40
-    assert "Fall Season Schedule" in cached
+def _full_cached_markdown(out: dict, cache_root) -> str:
+    """The full doc.md extract() cached."""
+    return (cache_root / ".es" / out["doc_id"] / "doc.md").read_text(encoding="utf-8")
 
 
-def _two_page_pdf(path, per_page_lines=60):
-    """A PDF whose pages are big enough that a cap can sit BETWEEN "page 1 plus
-    its truncation marker" and "the whole document". The small `text_pdf`
-    fixture has no such cap: _truncate_markdown holds back _MARKER_RESERVE, and
-    reserving that much from a ~200-character document leaves a cap larger than
-    the document itself, so nothing truncates at all."""
-    from reportlab.lib.pagesizes import letter
-    from reportlab.pdfgen import canvas
-    c = canvas.Canvas(str(path), pagesize=letter)
-    for page in (1, 2):
-        for i in range(per_page_lines):
-            c.drawString(40, 750 - i * 11, f"Page {page} line {i}: lorem ipsum dolor sit amet")
-        c.showPage()
-    c.save()
-    return path
-
-
-def test_truncation_cuts_at_a_page_boundary_with_a_correct_usable_resume_range(
-        tmp_path, monkeypatch):
-    """When truncation lands past page 1, the cut must land exactly at the
-    "## Page N" heading boundary (not mid-page), and the resume marker must
-    name a page range that (a) picks up exactly where output stopped and
-    (b) actually works if the agent uses it."""
-    text_pdf = _two_page_pdf(tmp_path / "big_two_page.pdf")
-    baseline = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
-    assert baseline["truncated"] is False
-    boundary = baseline["markdown"].index("\n\n## Page 2")
-    # Room for the marker as well as the content: _truncate_markdown holds
-    # back _MARKER_RESERVE so cut+marker still fits the cap. A cap of exactly
-    # boundary+2 genuinely cannot hold page 1 AND a marker, so it would
-    # (correctly) fall through to the hard-cut branch — which is not the
-    # branch this test is pinning.
-    monkeypatch.setattr(docs, "MAX_MARKDOWN_CHARS",
-                        boundary + 2 + docs._MARKER_RESERVE)
-
-    out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
-    assert out["truncated"] is True
-    assert out["markdown"].endswith(
-        '*(truncated after page 1 of 2 — call es_doc_extract again with '
-        'pages="2-2" to continue)*')
-    # The cut landed cleanly at the page boundary: page 1's content survives
-    # whole, page 2's content is entirely gone (not a partial fragment of it).
-    assert "Page 1 line 0" in out["markdown"]
-    assert "Page 2 line 0" not in out["markdown"]
-
-    # The marker's suggested range is actually usable.
-    resumed = docs.extract(str(text_pdf), roots=[text_pdf.parent],
-                           cache_root=tmp_path, pages="2-2")
-    assert "Page 2 line 0" in resumed["markdown"]
-
-
-def test_truncation_never_splits_a_markdown_image_link(tmp_path, monkeypatch):
-    """Build a multi-page all-image PDF long enough that a naive
-    markdown[:MAX_MARKDOWN_CHARS] slice would land inside one of the
-    "![page N](/long/tmp/path/pNNN.png)" links; the fix must cut at a page
-    boundary instead, so no link is ever left half-written."""
-    from PIL import Image
-    from reportlab.lib.pagesizes import letter
-    from reportlab.pdfgen import canvas
-
-    png = tmp_path / "scan.png"
-    Image.new("RGB", (400, 300), (200, 200, 200)).save(png)
-    pdf = tmp_path / "all_scanned.pdf"
-    c = canvas.Canvas(str(pdf), pagesize=letter)
-    for _ in range(5):
-        c.drawImage(str(png), 72, 400, width=400, height=300)
-        c.showPage()
-    c.save()
-
-    baseline = docs.extract(str(pdf), roots=[tmp_path], cache_root=tmp_path)
-    assert baseline["truncated"] is False
-    link_start = baseline["markdown"].index("![page 3]")
-    # Land the limit squarely inside page 3's image link.
-    monkeypatch.setattr(docs, "MAX_MARKDOWN_CHARS", link_start + 5)
-
-    out = docs.extract(str(pdf), roots=[tmp_path], cache_root=tmp_path)
-    assert out["truncated"] is True
-    for m in re.finditer(r"!\[", out["markdown"]):
-        tail = out["markdown"][m.start():]
-        assert re.match(r"!\[[^\]]*\]\([^)]*\)", tail), \
-            "an image link was cut in half by truncation"
-
-
-def test_truncation_when_even_page_one_alone_exceeds_the_limit(text_pdf, tmp_path, monkeypatch):
-    """No earlier page boundary exists to cut at, so this falls back to a hard
-    cut. It must still say why (rather than silently truncating) and must not
-    offer a page-range resume marker, since re-requesting page 1 alone would
-    reproduce the identical oversized page."""
-    monkeypatch.setattr(docs, "MAX_MARKDOWN_CHARS", 10)
-    out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
-    assert out["truncated"] is True
-    assert "page 1" in out["markdown"].lower()
-    assert 'pages="' not in out["markdown"]
-
-
-# --- outer 40k marker must not name an impossible remedy on flat formats ---
-# (item 4: the marker must not mention "page"/es_doc_render for a format
-# that has no pages and for which es_doc_render always raises
-# UnsupportedDocument by design.) Each fixture below builds a SINGLE
-# indivisible block (one CSV header row / one calendar event / one paragraph
-# / one spreadsheet row) that alone exceeds MAX_MARKDOWN_CHARS — every one of
-# these converters unconditionally keeps its first block regardless of size
-# (mirroring doc_pdf's own "page 1 alone" case), so none of them self-
-# truncates first; docs.py's own outer cap is what fires here.
-
-def _assert_flat_format_overflow_marker(markdown: str) -> None:
-    assert "es_doc_render" not in markdown
-    assert 'pages="' not in markdown
-    assert "page " not in markdown.lower()
-    assert "no narrower view to fall back to" in markdown
-
-
-def test_outer_truncation_marker_is_format_aware_for_csv(tmp_path):
-    """8000-column CSV: the header row alone is a single indivisible block
-    far over the 40k limit, with no earlier row boundary to cut at."""
-    header = ",".join(f"col_{i:05d}" for i in range(8000))
-    p = tmp_path / "wide.csv"
-    p.write_text(header + "\n", encoding="utf-8")
-    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    assert out["truncated"] is True
-    assert out["page_count"] is None
-    _assert_flat_format_overflow_marker(out["markdown"])
-
-
-def test_outer_truncation_marker_is_format_aware_for_ics(tmp_path):
-    """One VEVENT with a giant DESCRIPTION: a single event is doc_ics's
-    indivisible block, and it alone exceeds the limit."""
-    huge = "x" * 45_000
-    p = tmp_path / "huge_event.ics"
-    p.write_text(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n"
-        "BEGIN:VEVENT\r\nUID:1\r\nSUMMARY:Huge event\r\n"
-        "DTSTART:20260905T140000Z\r\n"
-        f"DESCRIPTION:{huge}\r\n"
-        "END:VEVENT\r\nEND:VCALENDAR\r\n", encoding="utf-8")
-    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    assert out["truncated"] is True
-    assert out["page_count"] is None
-    _assert_flat_format_overflow_marker(out["markdown"])
-
-
-def test_outer_truncation_marker_is_format_aware_for_docx(tmp_path):
-    """One giant paragraph: a single paragraph is doc_office's indivisible
-    block for .docx, and it alone exceeds the limit."""
-    from docx import Document
-
-    p = tmp_path / "huge_paragraph.docx"
-    d = Document()
-    d.add_paragraph("word " * 10_000)
-    d.save(str(p))
-    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    assert out["truncated"] is True
-    assert out["page_count"] is None
-    _assert_flat_format_overflow_marker(out["markdown"])
-
-
-def test_outer_truncation_marker_is_format_aware_for_xlsx(tmp_path):
-    """One giant row: a single row is doc_office's indivisible block for
-    .xlsx, and it alone exceeds the limit. A wide row of many COLUMNS would
-    be capped at XLSX_MAX_COLS (256) before ever reaching this size, and a
-    single CELL is capped at Excel's own real 32,767-character limit
-    (enforced by openpyxl itself on save) — so this uses two near-max cells
-    in one row instead — still one row, one indivisible block, well under
-    the 256-column cap, comfortably over the 40k character limit combined."""
-    from openpyxl import Workbook
-
-    p = tmp_path / "huge_row.xlsx"
-    wb = Workbook()
-    ws = wb.active
-    ws.append(["x" * 32_000, "y" * 32_000])
-    wb.save(str(p))
-    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    assert out["truncated"] is True
-    assert out["page_count"] is None
-    _assert_flat_format_overflow_marker(out["markdown"])
-
-
-# --- truncated must be True whenever a converter self-truncated, even when ---
-# --- the RESULT stays under the outer 40k cap -------------------------------
-# A converter that truncates ITSELF says so in-band; docs.py must surface that
-# as `truncated`, not only reflect its OWN outer cap — otherwise the agent is
-# handed less than the full document with the flag reading False.
+# --- a converter's own self-truncation must still be detectable in-band ----
+# A converter that truncates ITSELF (doc_text/doc_office/doc_ics, each at its
+# own resource-ceiling MAX_CHARS — see each module's own comment) says so with
+# a "*(truncated ...)*" marker built through doc_support.truncation_marker,
+# so a plain `"truncated after" in cached` substring check is enough to
+# confirm it — no detector function needed on this side. (Older versions of
+# these tests also asserted docs._converter_self_truncated(cached) directly;
+# that helper only ever existed to feed extract()'s pre-receipt `truncated`
+# flag, has no other caller now that the flag is gone, and is removed. The
+# property it duplicated — self-truncation is honestly marked in-band — is
+# still exercised by the plain substring check every test below already made
+# independently of it.)
 #
 # Converters now convert in FULL (bounded by a resource ceiling in the tens of
 # millions of characters, not a context-window budget), because doc.md is
 # cached and es_read pages it — truncating at conversion time destroyed data
 # nothing needed to destroy. So these tests monkeypatch the ceiling DOWN to
 # force self-truncation, rather than relying on a real document crossing it.
-# The property under test is unchanged; only how it is provoked.
+# The property under test is unchanged; only how it is provoked and checked.
 
 def test_self_truncation_is_reported_for_csv(tmp_path, monkeypatch):
     monkeypatch.setattr(doc_text, "MAX_CHARS", 4_000)
@@ -333,9 +148,8 @@ def test_self_truncation_is_reported_for_csv(tmp_path, monkeypatch):
     p = tmp_path / "many_rows.csv"
     p.write_text("id,value\n" + rows + "\n", encoding="utf-8")
     out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS  # outer cap never fired
-    assert out["truncated"] is True
-    assert "truncated after" in out["markdown"]
+    cached = _full_cached_markdown(out, tmp_path)
+    assert "truncated after" in cached
 
 
 def test_self_truncation_is_reported_for_json(tmp_path, monkeypatch):
@@ -345,9 +159,8 @@ def test_self_truncation_is_reported_for_json(tmp_path, monkeypatch):
     p = tmp_path / "big.json"
     p.write_text(jsonlib.dumps(data), encoding="utf-8")
     out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS
-    assert out["truncated"] is True
-    assert "truncated after" in out["markdown"]
+    cached = _full_cached_markdown(out, tmp_path)
+    assert "truncated after" in cached
 
 
 def test_self_truncation_is_reported_for_txt(tmp_path, monkeypatch):
@@ -356,9 +169,8 @@ def test_self_truncation_is_reported_for_txt(tmp_path, monkeypatch):
     p = tmp_path / "big.txt"
     p.write_text(line * 1000, encoding="utf-8")
     out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS
-    assert out["truncated"] is True
-    assert "truncated after" in out["markdown"]
+    cached = _full_cached_markdown(out, tmp_path)
+    assert "truncated after" in cached
 
 
 def test_self_truncation_is_reported_for_md(tmp_path, monkeypatch):
@@ -367,9 +179,8 @@ def test_self_truncation_is_reported_for_md(tmp_path, monkeypatch):
     p = tmp_path / "big.md"
     p.write_text(line * 1000, encoding="utf-8")
     out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS
-    assert out["truncated"] is True
-    assert "truncated after" in out["markdown"]
+    cached = _full_cached_markdown(out, tmp_path)
+    assert "truncated after" in cached
 
 
 def test_self_truncation_is_reported_for_ics(tmp_path, monkeypatch):
@@ -385,9 +196,8 @@ def test_self_truncation_is_reported_for_ics(tmp_path, monkeypatch):
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n"
         + "".join(events) + "END:VCALENDAR\r\n", encoding="utf-8")
     out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS
-    assert out["truncated"] is True
-    assert "truncated after" in out["markdown"]
+    cached = _full_cached_markdown(out, tmp_path)
+    assert "truncated after" in cached
 
 
 def test_self_truncation_is_reported_for_docx(tmp_path, monkeypatch):
@@ -401,9 +211,8 @@ def test_self_truncation_is_reported_for_docx(tmp_path, monkeypatch):
         d.add_paragraph(f"Paragraph number {i} with some filler text to pad it out.")
     d.save(str(p))
     out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS
-    assert out["truncated"] is True
-    assert "truncated after" in out["markdown"]
+    cached = _full_cached_markdown(out, tmp_path)
+    assert "truncated after" in cached
 
 
 def test_self_truncation_is_reported_for_xlsx(tmp_path, monkeypatch):
@@ -418,9 +227,8 @@ def test_self_truncation_is_reported_for_xlsx(tmp_path, monkeypatch):
         ws.append([f"row{i:05d}", f"val-{i:05d}", f"val-{i:05d}"])
     wb.save(str(p))
     out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS
-    assert out["truncated"] is True
-    assert "truncated after" in out["markdown"]
+    cached = _full_cached_markdown(out, tmp_path)
+    assert "truncated after" in cached
 
 
 def test_self_truncation_is_reported_for_write_only_xlsx_with_no_dimension(tmp_path, monkeypatch):
@@ -459,20 +267,19 @@ def test_self_truncation_is_reported_for_write_only_xlsx_with_no_dimension(tmp_p
     wb.save(str(p))
 
     out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    assert len(out["markdown"]) < docs.MAX_MARKDOWN_CHARS  # outer cap never fired
-    assert out["truncated"] is True
-    assert "truncated after" in out["markdown"]
-    assert "no declared dimension" in out["markdown"]
+    cached = _full_cached_markdown(out, tmp_path)
+    assert "truncated after" in cached
+    assert "no declared dimension" in cached
 
 
 def test_small_write_only_xlsx_with_no_dimension_is_not_falsely_truncated(tmp_path):
     """The other half of the write_only regression above: a small
-    dimension-less sheet must report `truncated: False`. Found while
-    manually verifying this fix — `doc_office._sheet_truncation_note` used
-    to infer "was this cut short?" from `kept < capped_rows`, where
-    `capped_rows` was silently the bare XLSX_MAX_ROWS fallback ceiling (not
-    this sheet's real size) whenever the dimension was unknown, so even a
-    2-row write_only sheet satisfied that comparison and was falsely
+    dimension-less sheet must not be falsely detected as self-truncated.
+    Found while manually verifying this fix — `doc_office._sheet_truncation_
+    note` used to infer "was this cut short?" from `kept < capped_rows`,
+    where `capped_rows` was silently the bare XLSX_MAX_ROWS fallback ceiling
+    (not this sheet's real size) whenever the dimension was unknown, so even
+    a 2-row write_only sheet satisfied that comparison and was falsely
     reported as truncated. Fixed alongside the detection bug since both
     live in the same code path this task touches."""
     from openpyxl import Workbook
@@ -485,30 +292,9 @@ def test_small_write_only_xlsx_with_no_dimension_is_not_falsely_truncated(tmp_pa
     wb.save(str(p))
 
     out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
-    assert out["truncated"] is False
-    assert "truncated" not in out["markdown"].lower()
-
-
-def test_self_truncation_detection_is_a_sentinel_check_not_a_regex(tmp_path):
-    """The structural fix for the write_only-xlsx bug above: detection must
-    not depend on parsing a converter's own prose at all. Build a marker
-    (via the same doc_support.truncation_marker every converter now uses)
-    whose detail text contains deeply nested parentheses far beyond what any
-    real converter emits today — proving detection is a plain check for
-    doc_support.TRUNCATION_SENTINEL, not a regex reconstructing balanced
-    parens around free-form text that could break again the next time a
-    converter's message is reworded."""
-    from es.capabilities import doc_support
-
-    markdown = "some real document content\n\n" + doc_support.truncation_marker(
-        "after 1 (of an unknown total (nested (again) for good measure)) rows")
-    assert docs._converter_self_truncated(markdown) is True
-
-    # And the inverse: ordinary content that merely contains the word
-    # "truncated" (no marker, no sentinel) must NOT be mistaken for one —
-    # the fix must not trade a false negative for a false positive.
-    assert docs._converter_self_truncated(
-        "the report was truncated by the printer, not by us") is False
+    cached = _full_cached_markdown(out, tmp_path)
+    assert "truncated" not in cached.lower()
+    assert out["complete"] is True
 
 
 def test_extract_purges_stale_artifacts(text_pdf, tmp_path):
@@ -518,14 +304,6 @@ def test_extract_purges_stale_artifacts(text_pdf, tmp_path):
     os.utime(stale, (old, old))
     docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
     assert not stale.exists()
-
-
-def test_extract_narrows_to_requested_pages(text_pdf, tmp_path):
-    out = docs.extract(str(text_pdf), roots=[text_pdf.parent],
-                        cache_root=tmp_path, pages="1")
-    assert out["page_count"] == 2  # total pages in the document
-    assert "Fall Season Schedule" in out["markdown"]
-    assert "Game 1" not in out["markdown"]  # page 2's content, excluded
 
 
 def test_extract_second_call_is_a_cache_hit_not_a_reconvert(text_pdf, tmp_path, monkeypatch):
@@ -542,7 +320,7 @@ def test_extract_second_call_is_a_cache_hit_not_a_reconvert(text_pdf, tmp_path, 
     second = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
 
     assert len(calls) == 1  # convert() ran once; the second call was a cache hit
-    assert second["markdown"] == first["markdown"]
+    assert second["preview"] == first["preview"]
     assert second["doc_id"] == first["doc_id"]
 
 
@@ -558,7 +336,7 @@ def test_extract_recovers_from_a_corrupted_cached_doc_md(text_pdf, tmp_path):
     md_path.write_bytes(b"\xff\xfe\x00 not valid utf-8 \x80\x81")
 
     out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
-    assert "Fall Season Schedule" in out["markdown"]
+    assert "Fall Season Schedule" in out["preview"]
 
     # The bad cache entry was overwritten with the good reconversion.
     assert "Fall Season Schedule" in md_path.read_text(encoding="utf-8")
@@ -569,10 +347,19 @@ def test_cache_hit_images_come_from_manifest_not_a_directory_scan(
     """A cache-hit extract must report only the images the ORIGINAL extract
     produced (from images.json) — not every PNG that happens to sit in the
     artifact dir, including ones a later es_doc_render call drops there for
-    pages the extract itself never rendered."""
+    pages the extract itself never rendered.
+
+    extract()'s own return no longer carries `images` at all (the receipt
+    contract this task adds — see test_extract_returns_a_receipt_not_the_
+    document); the manifest itself is still cached and still the thing a
+    cache-hit must not let a later render() call corrupt, so this asserts
+    against docs.read_cached() (the shared accessor for that cache entry)
+    directly."""
     first = docs.extract(str(one_scanned_one_text_pdf),
                          roots=[one_scanned_one_text_pdf.parent], cache_root=tmp_path)
-    assert len(first["images"]) == 1  # only page 1, the image-only page
+    adir = tmp_path / ".es" / first["doc_id"]
+    first_images = docs.read_cached(adir)["images"]
+    assert len(first_images) == 1  # only page 1, the image-only page
 
     # es_doc_render page 2 into the SAME artifact dir — page 2 has real text
     # and was never rendered by extract(), so its PNG is new to the dir.
@@ -580,26 +367,12 @@ def test_cache_hit_images_come_from_manifest_not_a_directory_scan(
                            roots=[one_scanned_one_text_pdf.parent],
                            cache_root=tmp_path, pages="2")
     assert rendered["images"]
-    adir = tmp_path / ".es" / first["doc_id"]
     assert len(list(adir.glob("*.png"))) == 2  # both PNGs now physically present
 
-    second = docs.extract(str(one_scanned_one_text_pdf),
-                          roots=[one_scanned_one_text_pdf.parent], cache_root=tmp_path)
-    assert second["images"] == first["images"]  # unchanged by the render() call
-
-
-def test_extract_page_subset_does_not_clobber_full_extract_cache(text_pdf, tmp_path):
-    full = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
-    md_path = tmp_path / ".es" / full["doc_id"] / "doc.md"
-    before = md_path.read_text(encoding="utf-8")
-
-    subset = docs.extract(str(text_pdf), roots=[text_pdf.parent],
-                           cache_root=tmp_path, pages="2")
-    assert "Fall Season Schedule" not in subset["markdown"]  # page 1's content
-
-    after = md_path.read_text(encoding="utf-8")
-    assert after == before
-    assert "Fall Season Schedule" in after  # still the whole document on disk
+    docs.extract(str(one_scanned_one_text_pdf),
+                 roots=[one_scanned_one_text_pdf.parent], cache_root=tmp_path)  # cache hit
+    second_images = docs.read_cached(adir)["images"]
+    assert second_images == first_images  # unchanged by the render() call
 
 
 def test_extract_cache_hit_still_touches_artifact_dir(text_pdf, tmp_path):
@@ -671,12 +444,12 @@ def test_extract_rejects_over_long_path_without_leaking_oserror(tmp_path):
     assert e.value.es_code == "doc_unreadable"
 
 
-def test_extract_and_render_agree_on_empty_pages_string(text_pdf, tmp_path):
-    """pages="" is a malformed selector in both tools, not a synonym for
-    'whole document' — only omitting the argument (None) means that."""
-    with pytest.raises(docs.InvalidPageRange):
-        docs.extract(str(text_pdf), roots=[text_pdf.parent],
-                     cache_root=tmp_path, pages="")
+def test_render_rejects_empty_pages_string(text_pdf, tmp_path):
+    """pages="" is a malformed selector, not a synonym for "the default
+    window" — only omitting the argument (None) means that. (Used to also
+    assert the same for extract(), which had its own `pages` argument; that
+    argument is gone — extract() always converts the whole document now, so
+    there is no pages="" case left to be malformed.)"""
     with pytest.raises(docs.InvalidPageRange):
         docs.render(str(text_pdf), roots=[text_pdf.parent],
                     cache_root=tmp_path, pages="")
@@ -799,7 +572,7 @@ def test_mcp_extract_returns_envelope_on_success(text_pdf, monkeypatch, tmp_path
     monkeypatch.setattr(mcp_server, "_doc_cache_root", lambda: tmp_path)
     out = mcp_server.es_doc_extract(str(text_pdf))
     assert out["ok"] is True
-    assert "Fall Season Schedule" in out["data"]["markdown"]
+    assert "Fall Season Schedule" in out["data"]["preview"]
 
 
 def test_mcp_render_returns_envelope_on_success(text_pdf, monkeypatch, tmp_path):
@@ -914,16 +687,7 @@ def test_extract_dispatches_a_csv_to_doc_text_with_no_page_count(csv_file, tmp_p
     out = docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path)
     assert out["kind"] == "csv"
     assert out["page_count"] is None
-    assert out["images"] == []
-    assert "| Name | Position | Number |" in out["markdown"]
-
-
-def test_extract_rejects_pages_argument_for_a_flat_format(csv_file, tmp_path):
-    """`pages` presumes pagination; a flat format has none, so an explicit
-    pages= is a loud InvalidPageRange, not a silent no-op."""
-    with pytest.raises(docs.InvalidPageRange):
-        docs.extract(str(csv_file), roots=[csv_file.parent], cache_root=tmp_path,
-                     pages="1")
+    assert "| Name | Position | Number |" in out["preview"]
 
 
 # --- non-PDF error mapping --------------------------------------------------
@@ -954,11 +718,11 @@ def test_render_rejects_a_non_pdf_with_a_clear_reason(csv_file, tmp_path):
 def test_every_format_returns_the_stable_shape(
         csv_file, json_file, txt_file, ics_file, docx_file, xlsx_file, text_pdf, tmp_path):
     from es.capabilities import docs
-    expected = {"doc_id", "kind", "page_count", "markdown", "images", "truncated"}
+    expected = {"doc_id", "kind", "page_count", "preview", "complete", "next"}
     for f in (csv_file, json_file, txt_file, ics_file, docx_file, xlsx_file, text_pdf):
         out = docs.extract(str(f), roots=[f.parent], cache_root=tmp_path)
         assert set(out) == expected, f.name
-        assert out["markdown"].strip(), f.name
+        assert out["preview"].strip(), f.name
         assert out["kind"] == f.suffix.lstrip("."), f.name
 
 
@@ -1218,8 +982,8 @@ def test_cross_format_cache_collision_is_fixed(text_pdf, tmp_path):
     assert csv_out["kind"] == "csv"
     assert pdf_out["kind"] == "pdf"
     assert pdf_out["page_count"] == 2
-    assert "Fall Season Schedule" in pdf_out["markdown"]
-    assert "Fall Season Schedule" not in csv_out["markdown"]
+    assert "Fall Season Schedule" in pdf_out["preview"]
+    assert "Fall Season Schedule" not in csv_out["preview"]
 
     # Each format landed in its own artifact directory, keyed by its own id.
     assert (tmp_path / ".es" / csv_out["doc_id"] / "doc.md").is_file()
@@ -1235,8 +999,8 @@ def test_cross_format_cache_collision_is_fixed(text_pdf, tmp_path):
     as_csv2.write_bytes(content)
     pdf_out2 = docs.extract(str(as_pdf2), roots=[other_root], cache_root=tmp_path)
     csv_out2 = docs.extract(str(as_csv2), roots=[other_root], cache_root=tmp_path)
-    assert pdf_out2["kind"] == "pdf" and "Fall Season Schedule" in pdf_out2["markdown"]
-    assert csv_out2["kind"] == "csv" and "Fall Season Schedule" not in csv_out2["markdown"]
+    assert pdf_out2["kind"] == "pdf" and "Fall Season Schedule" in pdf_out2["preview"]
+    assert csv_out2["kind"] == "csv" and "Fall Season Schedule" not in csv_out2["preview"]
 
 
 def test_cross_format_cache_collision_is_fixed_for_zero_byte_files(tmp_path):
@@ -1272,4 +1036,132 @@ def test_extract_same_extension_repeat_is_still_a_cache_hit(csv_file, tmp_path, 
 
     assert len(calls) == 1
     assert first["doc_id"] == second["doc_id"]
-    assert first["markdown"] == second["markdown"]
+    assert first["preview"] == second["preview"]
+
+
+# --- extract() is a receipt, not the document (Task 1) ---------------------
+
+def test_extract_returns_a_receipt_not_the_document(text_pdf, tmp_path):
+    out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
+    assert set(out) == {"doc_id", "kind", "page_count", "preview", "complete", "next"}
+    assert "markdown" not in out and "truncated" not in out and "images" not in out
+
+
+def test_preview_is_capped(tmp_path):
+    p = tmp_path / "long.txt"
+    p.write_text("x" * 5000, encoding="utf-8")
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert len(out["preview"]) <= docs.PREVIEW_CHARS
+    assert out["complete"] is False
+
+
+def test_preview_chars_is_pinned_at_800():
+    """The docstring on PREVIEW_CHARS promises the agent "the first ~800
+    characters" (see mcp_server.es_doc_extract's own docstring) — both
+    boundary tests here are written RELATIVE to the constant, so nothing
+    else in the suite would notice if it silently drifted (e.g. 800 -> 200).
+    Pin the literal directly."""
+    assert docs.PREVIEW_CHARS == 800
+
+
+def test_preview_never_splits_a_markdown_image_link(tmp_path):
+    """The now-deleted _safe_hard_cut existed exactly to stop a truncation
+    cut from landing inside a "![page N](path)" link — that property moved
+    to `preview` (the only place extract() still cuts text) but nothing
+    guarded it there. Reproduced empirically: every scanned PDF of 7+ pages
+    ends an 800-char raw slice mid-path once the cache path is
+    production-length. A short tmp_path-rooted cache_root is NOT long
+    enough to reproduce this (each "![page N](...)" link is too short to
+    straddle the 800-char boundary) — this test deliberately nests the
+    cache_root under a realistic prefix
+    (.../hermes/profiles/everstone/cache/documents/.es/<id>/pNNN.png) to
+    match cella's actual on-disk path depth."""
+    from PIL import Image
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    png = tmp_path / "scan.png"
+    Image.new("RGB", (400, 300), (200, 200, 200)).save(png)
+    pdf = tmp_path / "scanned9.pdf"
+    c = canvas.Canvas(str(pdf), pagesize=letter)
+    for _ in range(9):
+        c.drawImage(str(png), 72, 400, width=400, height=300)
+        c.showPage()
+    c.save()
+
+    cache_root = (tmp_path / "opt" / "data" / "hermes" / "profiles" /
+                  "everstone" / "cache" / "documents")
+    cache_root.mkdir(parents=True)
+
+    out = docs.extract(str(pdf), roots=[tmp_path], cache_root=cache_root)
+    assert out["complete"] is False  # otherwise the cut never fires at all
+    assert not re.search(r"!\[[^\]]*\]\([^)]*$", out["preview"]), \
+        "preview ended inside an unterminated markdown image link"
+
+
+def test_complete_is_true_when_the_preview_is_the_whole_document(tmp_path):
+    p = tmp_path / "short.txt"
+    p.write_text("Practice moved to Thursday.\n", encoding="utf-8")
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert out["complete"] is True
+    assert "Practice moved to Thursday." in out["preview"]
+
+
+def test_complete_is_exact_at_the_boundary(tmp_path):
+    """complete must be an exact test (len(markdown) <= PREVIEW_CHARS), not a
+    heuristic — that exactness is why preview is a character count rather than
+    'the first section'."""
+    for delta, expected in ((0, True), (1, False)):
+        p = tmp_path / f"b{delta}.txt"
+        p.write_text("y" * (docs.PREVIEW_CHARS + delta), encoding="utf-8")
+        out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+        assert out["complete"] is expected, delta
+
+
+def test_next_names_the_tool_and_the_handle(text_pdf, tmp_path):
+    out = docs.extract(str(text_pdf), roots=[text_pdf.parent], cache_root=tmp_path)
+    assert "es_read" in out["next"]
+    assert out["doc_id"] in out["next"], "the agent should copy the handle, not build it"
+
+
+def test_next_names_the_handle_on_the_incomplete_branch_too(tmp_path):
+    """text_pdf (~130 chars) only ever exercises the complete=True branch of
+    `next` — every long document (the common case) takes the OTHER branch,
+    which was untested: a mutation dropping the handle there left every
+    existing test passing."""
+    p = tmp_path / "long.txt"
+    p.write_text("x" * 5000, encoding="utf-8")
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert out["complete"] is False
+    assert "es_read" in out["next"]
+    assert out["doc_id"] in out["next"], "the agent should copy the handle, not build it"
+
+
+def test_the_full_markdown_is_still_cached(tmp_path):
+    """The receipt is small; doc.md still caches the FULL document, unaffected
+    by the preview cap — es_read pages that full cached copy.
+
+    Uses a document whose full markdown genuinely exceeds PREVIEW_CHARS
+    (rather than the small `text_pdf` fixture, whose ~130-character output is
+    itself under PREVIEW_CHARS — `complete` would be True and preview would
+    equal the cached copy exactly, making `len(cached) > len(preview)`
+    impossible to satisfy by construction, not a real assertion)."""
+    p = tmp_path / "long.txt"
+    p.write_text("Fall Season Schedule\n" + ("x" * 5000), encoding="utf-8")
+    out = docs.extract(str(p), roots=[tmp_path], cache_root=tmp_path)
+    assert out["complete"] is False
+    cached = (tmp_path / ".es" / out["doc_id"] / "doc.md").read_text(encoding="utf-8")
+    assert len(cached) > len(out["preview"])
+    assert cached.startswith(out["preview"][:50])
+
+
+def test_es_read_still_reaches_the_whole_document_after_extract(text_pdf, tmp_path,
+                                                               monkeypatch):
+    """The contract change must not cost reach: everything the old dump returned
+    is still retrievable through es_read."""
+    from es import mcp_server
+    monkeypatch.setattr(mcp_server, "_doc_roots", lambda: [text_pdf.parent])
+    monkeypatch.setattr(mcp_server, "_doc_cache_root", lambda: tmp_path)
+    did = mcp_server.es_doc_extract(str(text_pdf))["data"]["doc_id"]
+    r = mcp_server.es_read("doc:" + did)["data"]
+    assert "Fall Season Schedule" in (r["content"] or "") or r["outline"]
