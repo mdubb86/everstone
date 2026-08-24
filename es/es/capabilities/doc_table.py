@@ -602,7 +602,11 @@ def _table_summary(con) -> str:
     if not rows:
         return ""
     listed = ", ".join(f"{t} (sheet {s!r})" for t, s in rows)
-    return f" Tables in this document: {listed}."
+    # Its OWN line: DuckDB's catalog error ends with a caret pointing under
+    # the offending token, so appending inline puts the table list next to
+    # that caret where it reads as part of the position marker rather than
+    # as the answer to "then what IS it called".
+    return f"\n\nTables in this document: {listed}."
 
 
 def _json_safe(value):

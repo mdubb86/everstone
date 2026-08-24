@@ -603,6 +603,10 @@ def test_an_unknown_table_error_names_the_real_tables(txns):
     # The mapping too — the agent asked for the SHEET name, so the error has
     # to bridge from what it typed to what the table is called.
     assert "Txns" in msg
+    # On its own line. DuckDB's catalog error ends with a caret pointing under
+    # the offending token; appended inline (verified live) the table list read
+    # as part of that position marker instead of as the answer.
+    assert "\n\nTables in this document:" in msg
 
 
 def test_introspection_commands_are_allowed(txns):
