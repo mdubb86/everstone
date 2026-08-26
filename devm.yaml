@@ -164,6 +164,12 @@ env:
   # workspace dir like the old $WORKSPACE/.devm/.everstone would be wiped by the
   # fresh clone. The volume survives `devm teardown`. (Claude state is its own volume.)
   EVERSTONE_DATA_DIR: /home/devm/.everstone
+  # config.yaml must ALSO live in the persistent volume, not the workspace root — the
+  # 0.16 fresh clone wipes a gitignored root file the same way it wiped the data dir
+  # (that's exactly what bit us). The Justfile's CONFIG var reads this override
+  # (env_var_or_default EVERSTONE_CONFIG). Path is inside the everstone-data volume, so
+  # it survives teardown; `just dev` mounts it at /opt/config.yaml.
+  EVERSTONE_CONFIG: /home/devm/.everstone/config.yaml
   # Maps Platform API key — kept out of the VM entirely. This `!secret` ref makes
   # devm resolve `google_api_key` from the macOS keychain and hand iron-proxy the
   # real value; the VM/config only ever see the opaque token
