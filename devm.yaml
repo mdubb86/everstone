@@ -20,6 +20,16 @@ memory: "6G"
 # SocketGroup override — the feature owns daemon install and guest-user access.
 docker: true
 
+# devm 0.16 git-clone workspace model: the VM hydrates by cloning origin into a
+# per-project volume, so Mac and VM are SEPARATE clones synced only via origin —
+# `git push` is the only sync, push every branch before a teardown. gh_token
+# authenticates the VM's own git over HTTPS (the repo is public so the clone needs
+# no auth, but push does).
+repo:
+  url: https://github.com/mdubb86/everstone.git
+  secret: gh_token
+  branch: main
+
 # Apt packages installed at VM creation. everstone's dev workflow is entirely
 # `just`-driven (build/dev/es/esadmin/e2e); trixie ships `just` in apt.
 packages:
@@ -149,10 +159,11 @@ env:
   # only the interpreter pre-seeded in the boot window; a miss fails loudly rather
   # than hanging on a blocked fetch.
   UV_PYTHON_DOWNLOADS: manual
-  # everstone's /opt/data binds from here. $WORKSPACE expands to the repo root at
-  # load time; .devm/ is gitignored and rides the workspace bind-mount (Mac-side),
-  # surviving `devm teardown`. (Claude state moved to the `claude` volume below.)
-  EVERSTONE_DATA_DIR: $WORKSPACE/.devm/.everstone
+  # everstone's /opt/data binds from here. In the 0.16 clone model this MUST be a
+  # persistent volume (see `everstone-data` under volumes: below): a gitignored
+  # workspace dir like the old $WORKSPACE/.devm/.everstone would be wiped by the
+  # fresh clone. The volume survives `devm teardown`. (Claude state is its own volume.)
+  EVERSTONE_DATA_DIR: /home/devm/.everstone
   # Maps Platform API key — kept out of the VM entirely. This `!secret` ref makes
   # devm resolve `google_api_key` from the macOS keychain and hand iron-proxy the
   # real value; the VM/config only ever see the opaque token
@@ -161,6 +172,11 @@ env:
   # egress to the Maps hosts bound under network.allow below. The env var is the
   # resolution trigger + a paper trail; nothing in es consumes it.
   GOOGLE_API_KEY: !secret google_api_key
+  # gh_token — delivers the GitHub PAT to the guest so devm provisions
+  # /home/devm/.git-credentials for VM-side git push (repo: block), and iron-proxy can
+  # inject it on egress to github.com (network.allow). The guest only ever sees the
+  # opaque __DEVM_SECRET_gh_token__ token.
+  GH_TOKEN: !secret gh_token
 
 # Persistent named volumes (devm 0.9): Mac-backed stores mounted into the guest that
 # survive `devm teardown` (unlike the VM disk and unlike masks). Add/retarget is a
@@ -171,6 +187,13 @@ volumes:
   # sessions, settings. Replaces the old CLAUDE_CONFIG_DIR redirect. Mac-side dir:
   # ~/Library/Application Support/devm/volumes/everstone/claude/.
   claude: /home/devm/.claude
+  # everstone's dev data — the Hermes profile (skills), the dev vault, CouchDB, the
+  # livesync-bridge state. Under the old bind-mount this was $WORKSPACE/.devm/.everstone
+  # (gitignored, but survived teardown via the Mac-side bind-mount). In the 0.16 clone
+  # model a gitignored workspace dir is WIPED by the fresh clone, so it moves to a
+  # persistent volume like `claude`. EVERSTONE_DATA_DIR (above) points here. Mac-side
+  # dir: ~/Library/Application Support/devm/volumes/everstone/everstone-data/.
+  everstone-data: /home/devm/.everstone
 
 # iron-proxy egress allowlist (per-project; enforced by SNI/Host on the Mac).
 # Gates the RUNNING VM only — install steps above run with unrestricted egress.
@@ -192,7 +215,10 @@ network:
     - proxy.golang.org
     - sum.golang.org
     - fnm.vercel.app              # fnm install script (tool/lang/node)
-    - github.com
+    # VM-side git over HTTPS (repo: block). Clone is public — no auth — but the VM's
+    # own push needs the token; the {host, secrets} form injects gh_token on egress here.
+    - host: github.com
+      secrets: [gh_token]
     - api.github.com              # uv git-dependency resolution (.[all]) + gh metadata
     - objects.githubusercontent.com     # legacy GitHub release-asset CDN
     - release-assets.githubusercontent.com  # current GitHub release-asset CDN (xcaddy/s6/deno/camoufox)
@@ -247,6 +273,10 @@ network:
     - "*.googleapis.com"
     - "*.googleusercontent.com"
     - "*.ggpht.com"
+    # DuckDB extension repository — DuckDB INSTALL/LOAD fetches extension bundles
+    # from here at runtime (engraph's DuckDB backend). Denied in `devm denials`
+    # until allowlisted.
+    - extensions.duckdb.org
     # Maps Platform (es_maps_* tools): the *.googleapis.com wildcard above already
     # permits egress, but secret INJECTION requires exact-host {host, secrets}
     # entries. es sends the `__DEVM_SECRET_google_api_key__` token as the key
