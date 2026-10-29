@@ -102,13 +102,23 @@ ENV UV_NATIVE_TLS=1
 RUN pip install --break-system-packages uv
 # Canonical layout at a FIXED path — the final stage COPYs to the identical path
 # so the venv's absolute paths + the editable install resolve.
-RUN git clone --depth 1 --branch main \
-        https://github.com/NousResearch/hermes-agent /usr/local/lib/hermes-agent
+#
+# PINNED to a known-good hermes-agent commit. hermes-agent's `main` drifts hard: by
+# Oct 2026 it moved to a one-host-gateway model that *refuses* `gateway run` for a
+# named profile (needs the `gateway.standalone` shim or a multiplex migration), and
+# it imports ruamel.yaml / psutil / wcwidth without declaring them — a clean
+# `.[all]` install omits them and the gateway can't boot. This SHA is `main` as of
+# the v0.7.0 image build (2026-08-21), the last tree we've verified end-to-end.
+# Bump DELIBERATELY: change the ref, then `just e2e` must pass. Never track `main`.
+ARG HERMES_AGENT_REF=b6bcb3e791c673e63974029bbab40cc9326803ff
+RUN mkdir -p /usr/local/lib/hermes-agent && cd /usr/local/lib/hermes-agent && \
+    git init -q && git remote add origin https://github.com/NousResearch/hermes-agent && \
+    git fetch -q --depth 1 origin "$HERMES_AGENT_REF" && git checkout -q FETCH_HEAD
 WORKDIR /usr/local/lib/hermes-agent
 # Pin the venv Python: es requires >=3.12 and hermes-agent requires >=3.11,<3.14,
 # so the venv MUST be 3.12/3.13. `uv venv` unpinned picks the low end (3.11) uv can
 # find, which es then rejects ("No solution found"). 3.13 satisfies both and matches
-# the dev build. (hermes-agent is cloned unpinned above — a separate drift risk.)
+# the dev build.
 RUN uv venv --python 3.13 && uv pip install -e '.[all]'
 # Telegram adapter (NOT in .[all]) + es package + access_hook plugin go into the
 # venv so Hermes runs one interpreter that can load the plugin (hermes_plugins

@@ -7,28 +7,37 @@ project:
 # The 32GB default is tight; 64GB gives headroom for the build + cross-run cache.
 disk: "64GB"
 
-# VM RAM (devm 0.10 `memory:` field — restart bucket). The 4G default OOM-kills the
-# in-VM Claude/Orca session when the full everstone container is also running. 6G
-# physical + devm's auto-swap (50% → 3G) gives a 9G virtual ceiling for spikes while
-# reserving less Mac RAM than a flat 8G. Applied on the next VM restart (stop + start).
+# VM RAM (restart bucket). The 4G default OOM-kills the in-VM Claude/Orca session
+# when the full everstone container is also running. 6G physical + devm's auto-swap
+# (50% → 3G) gives a 9G virtual ceiling for spikes while reserving less Mac RAM than
+# a flat 8G. Applied on the next VM restart (stop + start).
 memory: "6G"
 
-# Docker as a first-class devm feature (devm 0.7): installs Docker in the VM AND
-# makes container egress trust iron-proxy transparently. everstone builds + runs
-# as a Docker container *inside* the VM (couchdb/caddy/radicale/hermes/engraph).
-# This supersedes the old hand-rolled `packages: [docker.io]` + docker.socket
-# SocketGroup override — the feature owns daemon install and guest-user access.
+# Docker as a first-class devm feature: installs Docker in the VM AND makes container
+# egress trust iron-proxy transparently. everstone builds + runs as a Docker container
+# *inside* the VM (couchdb/caddy/radicale/hermes/engraph). Auto-allows the Docker Hub
+# hosts, but a live reconcile drops the implicit ones — so they're pinned in
+# network.allow below.
 docker: true
 
-# devm 0.16 git-clone workspace model: the VM hydrates by cloning origin into a
-# per-project volume, so Mac and VM are SEPARATE clones synced only via origin —
-# `git push` is the only sync, push every branch before a teardown. gh_token
-# authenticates the VM's own git over HTTPS (the repo is public so the clone needs
-# no auth, but push does).
-repo:
-  url: https://github.com/mdubb86/everstone.git
-  secret: gh_token
-  branch: main
+# git-clone workspace model: the VM hydrates by cloning origin into a per-project
+# volume and mutagen-syncing it against this Mac project dir, so Mac and VM stay in
+# step. The primary repo omits `url:` (derived from `git remote get-url origin`) and
+# is marked primary. gh_token authenticates the VM's own git push over HTTPS (the
+# repo is public so the clone needs no auth, but push does — iron-proxy injects the
+# token on egress to github.com, see network.allow).
+#
+# `ignore:` replaces the old top-level `masks:` — es/.venv and e2e/.venv stay
+# guest-local (NOT mutagen-synced to the Mac). uv/pytest write linux-aarch64 native
+# .so files + a VM-only python symlink into .venv; syncing those back would collide
+# with the Mac clone's own venvs (same failure class as node_modules).
+repos:
+  everstone:
+    secret: gh_token
+    primary: true
+    ignore:
+      - es/.venv
+      - e2e/.venv
 
 # Apt packages installed at VM creation. everstone's dev workflow is entirely
 # `just`-driven (build/dev/es/esadmin/e2e); trixie ships `just` in apt.
@@ -37,82 +46,6 @@ packages:
   - build-essential     # Orca ADE relay: node-gyp toolchain — its node-pty compiles from
                         # source on first attach (no linux-arm64 prebuilt)
   - unzip               # fnm install (tool/lang/node) downloads a zipped binary
-
-# Named script library (devm 0.10): reusable multi-command shell snippets,
-# referenced from `install:`/`startup:` by a single `>NAME` entry. Keeps the
-# install list readable and matches the shape `devm recipes` publishes.
-scripts:
-  # Claude Code — per `devm recipes get tool/ai/claude`, adapted for this VM.
-  # Two paths matter and the recipe creates both:
-  #   /usr/local/bin/claude        the real binary, on the default system PATH
-  #                                (survives login-shell PATH resets).
-  #   ~devm/.local/bin/claude      the canonical path Claude self-checks for; it
-  #                                warns/refuses some operations without it.
-  # `sudo` on the privileged steps rather than the recipe's bare form: it is a
-  # no-op when provisioning runs as root and required when it runs as `devm`
-  # (which has passwordless sudo), so this works either way. Likewise `$HOME`
-  # instead of a hardcoded /root — the installer drops the versioned binary under
-  # whichever HOME it ran with. State (OAuth, transcripts, memory) is NOT here —
-  # it lives in the `claude` volume below.
-  install-claude-cli:
-    # Symlink FIRST: the installer runs claude, which would otherwise write a
-    # fresh stub at $HOME root that startup's save-back copies over the good
-    # volume config (deterministic clobber, since install: precedes startup:).
-    - ln -sf /home/devm/.claude/.claude.json /home/devm/.claude.json
-    - curl -fsSL https://claude.ai/install.sh | bash
-    - sudo install -m 755 "$HOME/.local/share/claude/versions/"* /usr/local/bin/claude
-    - sudo install -d -o devm -g devm /home/devm/.local/bin
-    - sudo ln -sf /usr/local/bin/claude /home/devm/.local/bin/claude
-
-  # Node.js via fnm — per `devm recipes get tool/lang/node`. fnm installs as the
-  # devm user; the binary is copied to /usr/local/bin for system PATH, and the
-  # `path:` entry below puts node/npm/npx on PATH everywhere (incl. non-login SSH —
-  # what Orca's relay needs). --skip-shell: no ~/.bashrc hook (path: replaces it).
-  install-fnm-and-node:
-    - curl -fsSL https://fnm.vercel.app/install | bash -s -- --skip-shell
-    - sudo install -m 755 /home/devm/.local/share/fnm/fnm /usr/local/bin/fnm
-    - fnm install --lts
-    - fnm default lts-latest
-
-  # Persist Claude's ~/.claude.json (login/account/project trust) — it lives in
-  # $HOME, OUTSIDE the ~/.claude volume, so symlink it to a file ON the volume,
-  # re-linked every boot. NOT CLAUDE_CONFIG_DIR: the VS Code extension and Orca
-  # ignore that env and read/write the default ~/.claude.json regardless → the
-  # default path must stay canonical. Save-back guard: Claude writes config via
-  # atomic temp+rename, which replaces the symlink with a real file — fold it back
-  # into the volume before re-linking. The oauthAccount grep stops a fresh
-  # onboarding stub from overwriting a real login. (Per `devm recipes get tool/ai/claude`.)
-  link-claude-config:
-    # Restore-only: fold a real ~/.claude.json back to the volume ONLY if it's
-    # genuinely onboarded (a mid-session clobber) or the volume has none yet
-    # (first seed). A fresh stub (no hasCompletedOnboarding) is discarded, never
-    # copied over good persisted state.
-    - if [ -f /home/devm/.claude.json ] && [ ! -L /home/devm/.claude.json ]; then if grep -qE '"hasCompletedOnboarding"[[:space:]]*:[[:space:]]*true' /home/devm/.claude.json 2>/dev/null || [ ! -f /home/devm/.claude/.claude.json ]; then cp -f /home/devm/.claude.json /home/devm/.claude/.claude.json; fi; fi
-    - ln -sf /home/devm/.claude/.claude.json /home/devm/.claude.json
-
-  # uv (Python) — per `devm recipes get tool/lang/uv`. CLAUDE.md mandates uv for
-  # es + e2e. Installed in the install: OPEN window, so astral.sh is reachable at
-  # provisioning and NEVER needs a runtime allowlist entry (installing uv at
-  # runtime 403s — that's the trap). uv's rustls TLS through iron-proxy works via
-  # devm's auto-set UV_SYSTEM_CERTS=1.
-  install-uv:
-    - curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
-    - env UV_INSTALL_DIR=/home/devm/.local/bin INSTALLER_NO_MODIFY_PATH=1 sh /tmp/uv-install.sh
-  # Pre-seed the managed CPython in the startup OPEN window: uv fetches
-  # python-build-standalone from release-assets.githubusercontent.com (a signed
-  # redirect that can't be allowlisted), so downloading it here keeps that host
-  # OUT of the runtime allowlist. Idempotent (fast no-op once cached VM-local).
-  # Reads .python-version (3.12).
-  preseed-python:
-    - /home/devm/.local/bin/uv python install "$(cat "$WORKSPACE/.python-version" 2>/dev/null || echo 3.12)"
-
-# Egress is UNRESTRICTED during provisioning; the iron-proxy allowlist below only
-# gates the running VM. `install:` is first-boot-only (marker-gated) and is in the
-# RECREATE bucket — edits here take effect on the next cold start, not live.
-install:
-  - ">install-claude-cli"
-  - ">install-fnm-and-node"
-  - ">install-uv"
 
 # PATH additions for every shell — login, non-login SSH (Orca relay, `just`),
 # services, scripts — with no shell hook:
@@ -126,87 +59,66 @@ path:
   - /home/devm/.local/share/fnm/aliases/default/bin
   - /home/devm/.local/bin
 
-# Give the project venvs a private guest-local ext4 view (LIVE bucket — applied by
-# `devm reconcile`, no restart). uv/pytest write linux-aarch64 native .so files plus a
-# VM-only python symlink into .venv; on the Mac↔VM bind-mount those break the instant
-# they cross back to macOS (same failure class as node_modules). Base-repo venvs only —
-# per-worktree venvs (es worktrees) would each need their own entry, but none exist now.
-masks:
-  - es/.venv
-  - e2e/.venv
-
-# Per-boot setup (RESTART bucket; runs every boot in the open-egress window). Re-links
-# Claude's ~/.claude.json symlink — it lives in ephemeral $HOME (the `claude` volume
-# only covers ~/.claude/), so the target on the volume persists but the pointer must
-# be recreated each boot.
-startup:
-  - ">link-claude-config"
-  - ">preseed-python"
-
-# Claude Code state (OAuth login + conversation transcripts + memory) persists via
-# the `claude` VOLUME below (devm 0.9), mounted at Claude's DEFAULT ~/.claude
-# (/home/devm/.claude). Volumes live Mac-side under
-# ~/Library/Application Support/devm/volumes/<project>/ and survive `devm teardown`,
-# so the old CLAUDE_CONFIG_DIR redirect into .devm/.claude is no longer needed.
+# Project-wide environment (live bucket). Claude Code state (OAuth login +
+# conversation transcripts + memory) persists via the `claude` VOLUME below, mounted
+# at Claude's DEFAULT ~/.claude.
 env:
-  # Moved from project.hostname_apex (deprecated in devm 0.3). Exposed to templates
-  # as {{.Env.HOSTNAME_APEX}}; not used by Caddy/devm — just a template variable.
+  # Exposed to templates as {{.Env.HOSTNAME_APEX}}; not used by Caddy/devm — just a
+  # template variable.
   HOSTNAME_APEX: test.everstone.waage.haus
   # Kill Sentry error reporting + telemetry (cleaner than allowlisting *.sentry.io).
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
   # Never let uv auto-fetch a CPython at runtime — the download host is an
-  # un-allowlistable signed redirect (see preseed-python). `manual` makes uv use
-  # only the interpreter pre-seeded in the boot window; a miss fails loudly rather
-  # than hanging on a blocked fetch.
+  # un-allowlistable signed redirect (see preseed-python in devm.sh). `manual` makes
+  # uv use only the interpreter pre-seeded in the boot window; a miss fails loudly
+  # rather than hanging on a blocked fetch.
   UV_PYTHON_DOWNLOADS: manual
-  # everstone's /opt/data binds from here. In the 0.16 clone model this MUST be a
+  # everstone's /opt/data binds from here. In the clone model this MUST be a
   # persistent volume (see `everstone-data` under volumes: below): a gitignored
-  # workspace dir like the old $WORKSPACE/.devm/.everstone would be wiped by the
-  # fresh clone. The volume survives `devm teardown`. (Claude state is its own volume.)
+  # workspace dir would be wiped by the fresh clone. The volume survives teardown.
   EVERSTONE_DATA_DIR: /home/devm/.everstone
   # config.yaml must ALSO live in the persistent volume, not the workspace root — the
-  # 0.16 fresh clone wipes a gitignored root file the same way it wiped the data dir
-  # (that's exactly what bit us). The Justfile's CONFIG var reads this override
-  # (env_var_or_default EVERSTONE_CONFIG). Path is inside the everstone-data volume, so
-  # it survives teardown; `just dev` mounts it at /opt/config.yaml.
+  # fresh clone wipes a gitignored root file the same way it wiped the data dir. The
+  # Justfile's CONFIG var reads this override (env_var_or_default EVERSTONE_CONFIG).
   EVERSTONE_CONFIG: /home/devm/.everstone/config.yaml
-  # Maps Platform API key — kept out of the VM entirely. This `!secret` ref makes
-  # devm resolve `google_api_key` from the macOS keychain and hand iron-proxy the
-  # real value; the VM/config only ever see the opaque token
-  # `__DEVM_SECRET_google_api_key__`. es reads the key from config.yaml (not this
-  # env var), where the same token is set; iron-proxy substitutes the real key on
-  # egress to the Maps hosts bound under network.allow below. The env var is the
-  # resolution trigger + a paper trail; nothing in es consumes it.
+  # Maps Platform API key — kept out of the VM entirely. This `!secret` ref makes devm
+  # resolve `google_api_key` from the macOS keychain and hand iron-proxy the real
+  # value; the VM/config only ever see the opaque token `__DEVM_SECRET_google_api_key__`.
+  # es reads the key from config.yaml (not this env var); iron-proxy substitutes the
+  # real key on egress to the Maps hosts bound under network.allow below.
   GOOGLE_API_KEY: !secret google_api_key
-  # gh_token — delivers the GitHub PAT to the guest so devm provisions
-  # /home/devm/.git-credentials for VM-side git push (repo: block), and iron-proxy can
-  # inject it on egress to github.com (network.allow). The guest only ever sees the
-  # opaque __DEVM_SECRET_gh_token__ token.
+  # gh_token — delivers the GitHub PAT to the guest for VM-side git push, and lets
+  # iron-proxy inject it on egress to github.com (network.allow). The guest only ever
+  # sees the opaque __DEVM_SECRET_gh_token__ token.
   GH_TOKEN: !secret gh_token
 
-# Persistent named volumes (devm 0.9): Mac-backed stores mounted into the guest that
-# survive `devm teardown` (unlike the VM disk and unlike masks). Add/retarget is a
-# restart-bucket change (VM stop + ~5s cold start, no data loss).
+# Persistent named volumes: Mac-backed stores mounted into the guest that survive
+# `devm teardown` (unlike the VM disk). Explicit `label:` on each — the label names
+# both the mutagen session and the Mac-side storage dir
+# (~/Library/Application Support/devm/volumes/everstone/<label>/). These labels MUST
+# stay pinned to the existing dirs (`claude`, `everstone-data`); without them the new
+# schema would default the label to the path's leaf (".claude"/".everstone") and
+# repoint sync at an empty dir, orphaning the existing Claude state + dev data.
 volumes:
-  # Claude Code state at its DEFAULT path (~/.claude for the guest `devm` user):
-  # OAuth login (.credentials.json), conversation transcripts (projects/), plugins,
-  # sessions, settings. Replaces the old CLAUDE_CONFIG_DIR redirect. Mac-side dir:
-  # ~/Library/Application Support/devm/volumes/everstone/claude/.
-  claude: /home/devm/.claude
+  # Claude Code state at its DEFAULT path (~/.claude): OAuth login
+  # (.credentials.json), transcripts (projects/), plugins, sessions, settings.
+  claude:
+    path: /home/devm/.claude
+    label: claude
   # everstone's dev data — the Hermes profile (skills), the dev vault, CouchDB, the
-  # livesync-bridge state. Under the old bind-mount this was $WORKSPACE/.devm/.everstone
-  # (gitignored, but survived teardown via the Mac-side bind-mount). In the 0.16 clone
-  # model a gitignored workspace dir is WIPED by the fresh clone, so it moves to a
-  # persistent volume like `claude`. EVERSTONE_DATA_DIR (above) points here. Mac-side
-  # dir: ~/Library/Application Support/devm/volumes/everstone/everstone-data/.
-  everstone-data: /home/devm/.everstone
+  # livesync-bridge state, and config.yaml. EVERSTONE_DATA_DIR/EVERSTONE_CONFIG point
+  # here. A gitignored workspace dir would be wiped by the fresh clone, so it lives in
+  # this volume instead.
+  everstone-data:
+    path: /home/devm/.everstone
+    label: everstone-data
 
-# iron-proxy egress allowlist (per-project; enforced by SNI/Host on the Mac).
-# Gates the RUNNING VM only — install steps above run with unrestricted egress.
-# iron-proxy egress allowlist. `docker: true` auto-allows the Docker Hub hosts, BUT
-# a live `devm reconcile` rebuilds the running allowlist from THIS list and drops the
-# implicit ones — so we pin them explicitly here to survive reconciles. The rest are
-# what the image build + agent need: Alpine, Go (caddy), CouchDB source, Rust/engraph
+# iron-proxy egress allowlist (per-project; enforced by SNI/Host on the Mac). Gates
+# the RUNNING VM only — the provisioning window (install()/startup() in devm.sh) runs
+# with unrestricted egress. `docker: true` auto-allows the Docker Hub hosts, BUT a
+# live reconcile rebuilds the running allowlist from THIS list and drops the implicit
+# ones — so they're pinned explicitly here to survive reconciles. The rest are what
+# the image build + agent need: Alpine, Go (caddy), CouchDB source, Rust/engraph
 # crates, Python wheels, JSR (livesync-bridge/Deno), Telegram bot API, ChatGPT/Codex.
 network:
   allow:
@@ -221,8 +133,8 @@ network:
     - proxy.golang.org
     - sum.golang.org
     - fnm.vercel.app              # fnm install script (tool/lang/node)
-    # VM-side git over HTTPS (repo: block). Clone is public — no auth — but the VM's
-    # own push needs the token; the {host, secrets} form injects gh_token on egress here.
+    # VM-side git over HTTPS. Clone is public — no auth — but the VM's own push needs
+    # the token; the {host, secrets} form injects gh_token on egress here.
     - host: github.com
       secrets: [gh_token]
     - api.github.com              # uv git-dependency resolution (.[all]) + gh metadata
@@ -238,8 +150,8 @@ network:
     - files.pythonhosted.org
     - jsr.io
     # livesync-bridge (notes sync) — deno fetches its deps from these at build
-    # pre-cache time and at runtime. jsr.io + registry.npmjs.org (above/below)
-    # cover jsr/npm specifiers; these cover deno.land/x + deno's own downloads.
+    # pre-cache time and at runtime. jsr.io + registry.npmjs.org (above/below) cover
+    # jsr/npm specifiers; these cover deno.land/x + deno's own downloads.
     - deno.land
     - dl.deno.land
     - api.telegram.org
@@ -270,25 +182,23 @@ network:
     - en.wikipedia.org
     - grokipedia.com
     # Google web surfaces for the persistent-web-login browser (Camoufox): the sign-in
-    # flow (accounts.google.com) and Maps/other Google apps fan out across many *.google.com
-    # subdomains, with static assets on gstatic, APIs on googleapis, user content on
-    # googleusercontent, and Maps/Photos image tiles on ggpht. Wildcards because Google
-    # rotates subdomains dynamically — enumerating exact hosts breaks the login flow.
+    # flow (accounts.google.com) and Maps/other Google apps fan out across many
+    # *.google.com subdomains, with static assets on gstatic, APIs on googleapis, user
+    # content on googleusercontent, and Maps/Photos image tiles on ggpht. Wildcards
+    # because Google rotates subdomains dynamically — enumerating exact hosts breaks login.
     - "*.google.com"
     - "*.gstatic.com"
     - "*.googleapis.com"
     - "*.googleusercontent.com"
     - "*.ggpht.com"
-    # DuckDB extension repository — DuckDB INSTALL/LOAD fetches extension bundles
-    # from here at runtime (engraph's DuckDB backend). Denied in `devm denials`
-    # until allowlisted.
+    # DuckDB extension repository — DuckDB INSTALL/LOAD fetches extension bundles from
+    # here at runtime (engraph's DuckDB backend).
     - extensions.duckdb.org
-    # Maps Platform (es_maps_* tools): the *.googleapis.com wildcard above already
-    # permits egress, but secret INJECTION requires exact-host {host, secrets}
+    # Maps Platform (es_maps_* / es_weather tools): the *.googleapis.com wildcard above
+    # already permits egress, but secret INJECTION requires exact-host {host, secrets}
     # entries. es sends the `__DEVM_SECRET_google_api_key__` token as the key
     # (X-Goog-Api-Key header for Places/Routes; ?key= query param for legacy
-    # Geocoding); iron-proxy substitutes the real key only on requests to these
-    # hosts. Nothing else in the VM carries the token, so nothing else leaks it.
+    # Geocoding); iron-proxy substitutes the real key only on requests to these hosts.
     - host: maps.googleapis.com          # Geocoding API (legacy GET, ?key=)
       secrets: [google_api_key]
     - host: places.googleapis.com        # Places API (New) — search + details
@@ -300,14 +210,10 @@ network:
 
 # everstone's internal Caddy serves the sync surfaces (/db, /caldav, /git, /health)
 # inside the VM. It MUST NOT publish on VM :80 — devm runs its OWN Caddy on :80 to
-# front `hostname` services (and reverse-proxies each hostname to localhost:<port>).
-# So the dev container publishes on VM :8080 (`just dev` -p 8080:80) and this
-# service points there; devm's Caddy fronts everstone.test → localhost:8080.
-# `expose_host: true` opts the hostname into devm's shared LAN dispatcher on
-# <mac-lan-ip>:42000 (devm 0.9.7 — the old "0.0.0.0:80" bind-IP is ignored). LAN
-# path: NPM (holding the trusted cert for the public apex) forwards to
-# <mac-lan-ip>:42000 preserving the Host header; devm dispatches by Host → this
-# service. The hostname below is what NPM must send as Host.
+# front `hostname` services. So the dev container publishes on VM :8080 (`just dev`
+# -p 8080:80) and this service points there; devm's Caddy fronts
+# everstone.test → localhost:8080. `expose_host: true` opts the hostname into devm's
+# shared LAN dispatcher on <mac-lan-ip>:42000.
 services:
   everstone:
     port: 8080
