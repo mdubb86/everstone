@@ -147,6 +147,60 @@ Radicale (CalDAV), Caddy, and the Obsidian LiveSync bridge — supervised by s6.
   the dropped terminal/file toolsets are what make the agent "locked"; `access_hook`
   then narrows that set further per chat type.
 
+## Authenticated MCP endpoint (`es-mcp-http`)
+
+The **same `es_*` tool set** is also exposed as a remote, OAuth-protected
+`streamable-http` MCP server, so Claude Code (desktop + the native phone app) can
+drive the same capabilities as the Hermes/Telegram agent. It's **opt-in and off by
+default**; nothing changes unless you enable it.
+
+- **One service, one process.** `es-mcp-http` is an s6 longrun (mirrors
+  `hermes-webui`: stays up but idle when disabled, so s6 doesn't restart-loop).
+  It serves a **single Starlette ASGI app** (`es/es/mcp_http.py`, `build_app`) that is
+  simultaneously the MCP **resource server** (`mcp.streamable_http_app()` mounted at
+  `/mcp`) and the OAuth 2.1 **authorization server** (`/authorize`, `/token`,
+  `/register`, `/revoke` + metadata). It's **one app, not two** — not a separate RS and
+  AS process. Binds **`127.0.0.1:9400`**.
+- **Full tools, no chat gate.** It reuses the existing `es.mcp_server.mcp` object, so it
+  exposes the **complete `es_*` set** — vault read/write, calendar, contacts, web-fetch,
+  the authenticated browser. The DM-vs-group `access_hook` gate is a **Hermes plugin**,
+  not part of this surface, so it does **not** apply here.
+- **OAuth 2.1** (`es/es/oauth_server.py` + `oauth_store.py`): authorization-code flow
+  with **PKCE (S256)**, **Dynamic Client Registration**, a **single-user consent gate** at
+  `/authorize` (shared `mcp_http.consent_password`), and RFC 8414/9728 metadata. Tokens are
+  **opaque and rotating** (`at-…`/`rt-…`, not JWTs), kept in an in-process **SQLite** store at
+  **`/opt/data/mcp-oauth/oauth.db`**. Only Claude's redirect URIs are allowed
+  (`https://claude.ai/api/mcp/auth_callback`, `http://localhost(:port)/callback`).
+- **Routing — existing private site, no new port.** When `mcp_http.enabled`,
+  `configure.py` injects a Caddy block (`mcp_caddy_block`, at the `# ==MCP_ROUTES==`
+  marker) that `reverse_proxy`s `/mcp`, `/authorize`, `/token`, `/register`, `/revoke` and
+  the two `/.well-known/oauth-*` paths to `localhost:9400`. These go on the **same `:80`
+  site** every other EverStone surface uses (reached privately as
+  `everstone.waage.haus`) — **not** a separate port, **not** the public internet.
+- **Config** (opt-in): `mcp_http: {enabled, issuer_url, consent_password}`. `issuer_url`
+  defaults to `public_url` (so dev and prod derive it automatically). To turn it on, set
+  `enabled: true` + a `consent_password` and restart.
+- **Security caveat.** This endpoint grants the **full `es_*` power** — vault read/write,
+  web-fetch (an SSRF vector), calendar/contacts, the authenticated browser — behind **one
+  consent gate + OAuth**. It is served the same **private-only** way as everything else
+  (Pi-hole/Tailscale DNS for `waage.haus`); it is never on the public internet. **If
+  EverStone is ever exposed publicly, this endpoint inherits that exposure** — treat
+  enabling it as granting remote full-tool access.
+
+**Client setup** (the endpoint is `https://everstone.waage.haus/mcp`):
+
+- **Desktop Claude Code:**
+
+  ```
+  claude mcp add --transport http everstone https://everstone.waage.haus/mcp
+  ```
+
+  The OAuth flow runs in the browser — there's no token to paste.
+- **Phone (native Claude app):** Add a custom connector → URL
+  `https://everstone.waage.haus/mcp` → complete the in-app OAuth flow. **Prerequisite:** the
+  phone must resolve `everstone.waage.haus` **privately** (Pi-hole on home wifi, or Tailscale
+  MagicDNS) — the endpoint isn't public.
+
 ## Google auth
 
 - **One shared Google credential** — JSON at

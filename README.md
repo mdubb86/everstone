@@ -10,6 +10,8 @@ to manage your calendar, tasks, and notes:
 - **CalDAV tasks** via Radicale (the `es_tasks_*` tools) — to-dos, shopping lists,
   checklists, due dates, reminders, and one level of subtasks. Syncs with apps like Tasks.org.
 - **Obsidian notes** (the `es_notes_*` tools) via CouchDB + the LiveSync bridge.
+- **Authenticated MCP endpoint** (opt-in) — the same `es_*` tools over an OAuth-protected
+  remote MCP server for Claude Code (desktop + phone); see `docs/architecture.md`.
 - **Caddy** reverse proxy and **s6** supervision tie it together.
 
 The agent acts through a curated set of **MCP tools** (`es_*`) — not ad-hoc shell — so the
