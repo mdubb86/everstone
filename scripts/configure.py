@@ -44,6 +44,21 @@ def deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def resolve_mcp_http(config: dict):
+    """Normalized mcp_http settings, or None when disabled/absent.
+
+    issuer_url defaults to public_url (trailing slash stripped)."""
+    block = config.get("mcp_http") or {}
+    if not block.get("enabled"):
+        return None
+    issuer = (block.get("issuer_url") or config.get("public_url") or "").rstrip("/")
+    return {
+        "enabled": True,
+        "issuer_url": issuer,
+        "consent_password": block.get("consent_password", ""),
+    }
+
+
 def load_yaml(path: Path) -> dict:
     with open(path) as f:
         return yaml.safe_load(f) or {}

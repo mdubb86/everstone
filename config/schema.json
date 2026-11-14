@@ -285,6 +285,21 @@
         }
       }
     },
+    "mcp_http": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "issuer_url": {
+          "type": "string"
+        },
+        "consent_password": {
+          "type": "string"
+        }
+      }
+    },
     "timezone": {
       "type": "string",
       "description": "Operator home IANA timezone for es cal (e.g. America/Chicago). Per-call --tz overrides."
