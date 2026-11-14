@@ -32,6 +32,10 @@ telegram:
   bot_token: TEST_TOKEN
 brave:
   api_key: test-brave-key-e2e
+mcp_http:
+  enabled: true
+  issuer_url: http://localhost:{port}
+  consent_password: e2e-consent
 """)
 
 @pytest.fixture(scope="session")
