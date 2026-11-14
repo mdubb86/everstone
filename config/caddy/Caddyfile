@@ -72,6 +72,8 @@
 		respond `<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Login window closed</title><body style='font-family:system-ui,sans-serif;max-width:34rem;margin:14vh auto;padding:0 1.5rem;text-align:center;color:#1c1c1e'><h1 style='font-size:1.35rem;margin-bottom:.4rem'>Login window isn't active</h1><p style='color:#555;line-height:1.55'>There's no sign-in in progress right now. Ask your assistant to start the login again, then open the fresh link it sends you.</p></body>` 200
 	}
 
+	# ==MCP_ROUTES==
+
 	# Everything else (bare /, old root bookmarks, bare /hermes without the slash) →
 	# send to the UI. /hermes/* is handled above, so this never loops. The `*`
 	# matcher is REQUIRED: `redir /hermes/ 302` mis-parses `/hermes/` as a path

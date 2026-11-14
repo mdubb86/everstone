@@ -59,6 +59,43 @@ def resolve_mcp_http(config: dict):
     }
 
 
+MCP_ROUTES_MARKER = "# ==MCP_ROUTES=="
+
+
+def mcp_caddy_block() -> str:
+    # Each path reverse-proxied to the es-mcp-http service on localhost:9400.
+    return "\n".join([
+        "\thandle /mcp* {",
+        "\t\treverse_proxy localhost:9400 {",
+        "\t\t\tflush_interval -1",
+        "\t\t}",
+        "\t}",
+        "\thandle /authorize* {",
+        "\t\treverse_proxy localhost:9400",
+        "\t}",
+        "\thandle /token {",
+        "\t\treverse_proxy localhost:9400",
+        "\t}",
+        "\thandle /register {",
+        "\t\treverse_proxy localhost:9400",
+        "\t}",
+        "\thandle /revoke {",
+        "\t\treverse_proxy localhost:9400",
+        "\t}",
+        "\thandle /.well-known/oauth-authorization-server {",
+        "\t\treverse_proxy localhost:9400",
+        "\t}",
+        "\thandle /.well-known/oauth-protected-resource* {",
+        "\t\treverse_proxy localhost:9400",
+        "\t}",
+    ])
+
+
+def render_caddyfile(template: str, config: dict) -> str:
+    block = mcp_caddy_block() if resolve_mcp_http(config) else ""
+    return template.replace(MCP_ROUTES_MARKER, block)
+
+
 def load_yaml(path: Path) -> dict:
     with open(path) as f:
         return yaml.safe_load(f) or {}
@@ -89,11 +126,12 @@ def generate_couchdb_config(config: dict) -> None:
 
 
 def generate_caddy_config(config: dict) -> None:
-    """Copy Caddyfile template (no substitution needed)."""
+    """Render Caddyfile from template (injects MCP routes when mcp_http.enabled)."""
     template_path = DEFAULTS_CONFIG_DIR / "caddy" / "Caddyfile"
     output_dir = _config_dir() / "caddy"
     output_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy(template_path, output_dir / "Caddyfile")
+    rendered = render_caddyfile(template_path.read_text(), config)
+    (output_dir / "Caddyfile").write_text(rendered)
 
 
 def generate_setup_livesync_script(config: dict) -> None:
