@@ -5,7 +5,31 @@ Dynamic Client Registration → consent-gated authorize (S256 PKCE) → token �
 MCP streamable-http initialize handshake → tools/list → an actual tools/call
 whose real {ok:true} envelope must come back. Nothing here is mocked.
 """
-import base64, hashlib, json, re, requests
+import base64, hashlib, json, re, time, requests
+import pytest
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _mcp_ready(everstone):
+    """Gate this module on the es-mcp-http backend actually listening.
+
+    The container's /health is a static Caddy response that goes green before
+    es-mcp-http has bound uvicorn on 127.0.0.1:9400. Until it does, Caddy's
+    /mcp + OAuth routes reverse-proxy to a dead port, 502, and surface as the
+    "web UI not enabled" fallback (HTTP 200, text/plain) — not the real OAuth
+    responses. Poll the AS metadata endpoint, which is served only once the
+    backend is up, before any assertion runs (mirrors the fixture's /health
+    gate for this opt-in service)."""
+    b = everstone["base_url"]
+    for _ in range(90):
+        try:
+            r = requests.get(b + "/.well-known/oauth-authorization-server", timeout=2)
+            if r.status_code == 200 and "application/json" in r.headers.get("content-type", ""):
+                return
+        except requests.RequestException:
+            pass
+        time.sleep(1)
+    pytest.fail("es-mcp-http did not become ready (OAuth AS metadata never served)")
 
 
 def _parse_sse(resp):
