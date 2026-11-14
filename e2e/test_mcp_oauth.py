@@ -5,7 +5,22 @@ Dynamic Client Registration → consent-gated authorize (S256 PKCE) → token �
 MCP streamable-http initialize handshake → tools/list → an actual tools/call
 whose real {ok:true} envelope must come back. Nothing here is mocked.
 """
-import base64, hashlib, re, requests
+import base64, hashlib, json, re, requests
+
+
+def _parse_sse(resp):
+    """Parse an MCP streamable-http reply into its JSON-RPC object.
+
+    The transport frames each response as an SSE event:
+    ``event: message\\r\\ndata: {<json-rpc>}\\r\\n\\r\\n``. Pull the ``data:``
+    payload and decode it (falling back to a plain JSON body if the server
+    ever answers un-framed)."""
+    if "text/event-stream" in resp.headers.get("content-type", ""):
+        for line in resp.text.splitlines():
+            if line.startswith("data:"):
+                return json.loads(line[len("data:"):].strip())
+        raise AssertionError(f"no data: line in SSE body: {resp.text!r}")
+    return resp.json()
 
 
 def _pkce():
@@ -71,13 +86,19 @@ def test_full_process_initialize_list_and_call(everstone):
     tl = s.post(b + "/mcp", headers=H,
                 json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     assert tl.status_code == 200, tl.text
-    assert "es_notes_journal" in tl.text and "es_tasks_add" in tl.text and "es_tasks_lists" in tl.text
+    tools = _parse_sse(tl)["result"]["tools"]
+    names = {t["name"] for t in tools}
+    assert {"es_notes_journal", "es_tasks_add", "es_tasks_lists"} <= names, names
     # 3) tools/call a safe read-only tool → a real {ok:true,...} envelope comes back
     call = s.post(b + "/mcp", headers=H, json={
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
         "params": {"name": "es_tasks_lists", "arguments": {}}})
     assert call.status_code == 200, call.text
-    assert '"ok": true' in call.text or '"ok":true' in call.text, call.text
+    result = _parse_sse(call)["result"]
+    assert result.get("isError") is False, result
+    payload = json.loads(result["content"][0]["text"])  # the es envelope, as a JSON string
+    assert payload["ok"] is True, payload
+    assert isinstance(payload["data"], list), payload
 
 
 def test_no_token_cannot_call(everstone):
