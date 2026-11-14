@@ -241,7 +241,8 @@ COPY --from=engraph /usr/local/bin/engraph /usr/local/bin/engraph
 # by the apt packages above — detected via shutil.which on PATH.
 COPY --from=hermes-build /usr/local/lib/hermes-agent /usr/local/lib/hermes-agent
 RUN ln -sf /usr/local/lib/hermes-agent/.venv/bin/hermes /usr/local/bin/hermes && \
-    ln -sf /usr/local/lib/hermes-agent/.venv/bin/es-mcp /usr/local/bin/es-mcp
+    ln -sf /usr/local/lib/hermes-agent/.venv/bin/es-mcp /usr/local/bin/es-mcp && \
+    ln -sf /usr/local/lib/hermes-agent/.venv/bin/es-mcp-http /usr/local/bin/es-mcp-http
 
 # radicale is EverStone's CalDAV server (run by s6, not imported by Hermes) —
 # keep it decoupled in system python (pure-python, no build deps).
