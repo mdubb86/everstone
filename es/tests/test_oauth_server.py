@@ -1,4 +1,4 @@
-import base64, hashlib, json
+import base64, hashlib
 import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
@@ -74,6 +74,17 @@ def test_pkce_mismatch_rejected(client):
     })
     assert bad.status_code == 400
     assert bad.json()["error"] == "invalid_grant"
+
+def test_authorize_get_escapes_reflected_params(client):
+    malicious = '"><script>alert(1)</script>'
+    body = client.get("/authorize", params={"state": malicious}).text
+    # the raw attribute-breaking / script payload must NOT appear unescaped
+    assert "<script>alert(1)</script>" not in body
+    assert '"><script>' not in body
+    # it must come back HTML-escaped inside the hidden field
+    assert "&lt;script&gt;" in body
+    assert "&quot;&gt;" in body
+
 
 def test_disallowed_redirect_rejected(client):
     cid = client.post("/register", json={"redirect_uris": ["http://127.0.0.1/callback"]}).json()["client_id"]

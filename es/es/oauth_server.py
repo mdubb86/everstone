@@ -1,4 +1,4 @@
-import base64, hashlib, re, secrets
+import base64, hashlib, html, re, secrets
 from urllib.parse import urlencode
 from starlette.responses import JSONResponse, HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
@@ -11,7 +11,7 @@ ALLOWED_REDIRECT_PATTERNS = [
 
 
 def is_allowed_redirect(uri: str) -> bool:
-    return any(p.match(uri or "") for p in ALLOWED_REDIRECT_PATTERNS)
+    return any(p.fullmatch(uri or "") for p in ALLOWED_REDIRECT_PATTERNS)
 
 
 def verify_pkce(verifier: str, challenge: str) -> bool:
@@ -60,7 +60,8 @@ def oauth_routes(store, issuer_url, consent_password, scope="es"):
     def _hidden(params):
         keep = ["client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "scope"]
         return "".join(
-            f'<input type=hidden name="{k}" value="{(params.get(k) or "")}">' for k in keep)
+            f'<input type=hidden name="{k}" value="{html.escape(params.get(k) or "", quote=True)}">'
+            for k in keep)
 
     async def authorize_get(request):
         return HTMLResponse(_FORM.format(hidden=_hidden(request.query_params)))
