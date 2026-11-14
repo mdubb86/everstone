@@ -1,0 +1,14 @@
+#!/bin/sh
+# es-mcp-http runner — invoked by services/es-mcp-http/run via s6.
+# Opt-in + fail-safe (mirrors hermes-webui-run): exposes the FULL es_* tool set
+# over OAuth-protected HTTP. Runs ONLY when mcp_http.enabled is true; otherwise
+# stays up but idle so s6 doesn't restart-loop a disabled longrun.
+set -u
+EN="$(config-get mcp_http.enabled)"
+case "$EN" in
+    true|True|1|yes) ;;
+    *) echo "[es-mcp-http] disabled — set mcp_http.enabled + consent_password in config.yaml"; exec tail -f /dev/null ;;
+esac
+export HERMES_HOME=/opt/data/hermes
+echo "[es-mcp-http] starting on 127.0.0.1:9400"
+exec /usr/local/bin/es-mcp-http

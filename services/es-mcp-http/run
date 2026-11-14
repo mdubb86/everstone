@@ -1,0 +1,3 @@
+#!/command/execlineb -P
+with-contenv
+/scripts/es-mcp-http-run
