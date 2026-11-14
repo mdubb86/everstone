@@ -96,10 +96,16 @@ def main() -> None:
     issuer = (block.get("issuer_url") or cfg.get("public_url") or "").rstrip("/")
     if not issuer:
         raise SystemExit("es mcp-http: no issuer_url / public_url configured")
+    consent_password = (block.get("consent_password") or "").strip()
+    if not consent_password:
+        raise SystemExit(
+            "mcp_http enabled but consent_password is empty — refusing to start "
+            "(would be an open auth surface)"
+        )
 
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     store = OAuthStore(DB_PATH)
-    app = build_app(store, issuer, block.get("consent_password", ""))
+    app = build_app(store, issuer, consent_password)
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")
 
 

@@ -68,7 +68,10 @@ def oauth_routes(store, issuer_url, consent_password, scope="es"):
 
     async def authorize_post(request):
         form = await request.form()
-        if not secrets.compare_digest(form.get("password", ""), consent_password):
+        # Fail closed: an empty server-side consent password can never pass, so
+        # an unset/blank password never becomes an open auth surface (and
+        # compare_digest("", "") would otherwise be True).
+        if not consent_password or not secrets.compare_digest(form.get("password", ""), consent_password):
             return HTMLResponse("Forbidden", status_code=403)
         client = store.get_client(form.get("client_id", ""))
         redirect_uri = form.get("redirect_uri", "")

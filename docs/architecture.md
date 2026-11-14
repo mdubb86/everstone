@@ -170,7 +170,8 @@ default**; nothing changes unless you enable it.
   `/authorize` (shared `mcp_http.consent_password`), and RFC 8414/9728 metadata. Tokens are
   **opaque and rotating** (`at-…`/`rt-…`, not JWTs), kept in an in-process **SQLite** store at
   **`/opt/data/mcp-oauth/oauth.db`**. Only Claude's redirect URIs are allowed
-  (`https://claude.ai/api/mcp/auth_callback`, `http://localhost(:port)/callback`).
+  (`https://claude.ai/api/mcp/auth_callback`, `http://localhost(:port)/callback`,
+  `http://127.0.0.1(:port)/callback`).
 - **Routing — existing private site, no new port.** When `mcp_http.enabled`,
   `configure.py` injects a Caddy block (`mcp_caddy_block`, at the `# ==MCP_ROUTES==`
   marker) that `reverse_proxy`s `/mcp`, `/authorize`, `/token`, `/register`, `/revoke` and
@@ -185,7 +186,9 @@ default**; nothing changes unless you enable it.
   consent gate + OAuth**. It is served the same **private-only** way as everything else
   (Pi-hole/Tailscale DNS for `waage.haus`); it is never on the public internet. **If
   EverStone is ever exposed publicly, this endpoint inherits that exposure** — treat
-  enabling it as granting remote full-tool access.
+  enabling it as granting remote full-tool access. The consent gate has **no
+  built-in brute-force throttle**, so it leans on a strong `consent_password` and the
+  private-network-only exposure; online-guessing resistance is a future hardening.
 
 **Client setup** (the endpoint is `https://everstone.waage.haus/mcp`):
 

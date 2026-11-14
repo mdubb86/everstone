@@ -86,6 +86,26 @@ def test_authorize_get_escapes_reflected_params(client):
     assert "&quot;&gt;" in body
 
 
+def test_empty_consent_password_never_accepted(tmp_path):
+    # Fail-closed: an empty server-side consent password rejects every /authorize
+    # POST (including one that sends an empty password), never issuing a code.
+    store = OAuthStore(str(tmp_path / "oauth.db"))
+    app = Starlette(routes=oauth_server.oauth_routes(store, ISSUER, ""))
+    client = TestClient(app)
+    cid = client.post("/register", json={"redirect_uris": ["http://127.0.0.1/callback"]}).json()["client_id"]
+    _, chal = _pkce()
+    base = {
+        "client_id": cid, "redirect_uri": "http://127.0.0.1/callback",
+        "code_challenge": chal, "code_challenge_method": "S256", "state": "x", "scope": "es",
+    }
+    # empty password submitted (compare_digest("", "") would be True) → still 403
+    r = client.post("/authorize", data={**base, "password": ""}, follow_redirects=False)
+    assert r.status_code == 403
+    # any non-empty password → also 403 (no password can match an empty server secret)
+    r = client.post("/authorize", data={**base, "password": "anything"}, follow_redirects=False)
+    assert r.status_code == 403
+
+
 def test_disallowed_redirect_rejected(client):
     cid = client.post("/register", json={"redirect_uris": ["http://127.0.0.1/callback"]}).json()["client_id"]
     _, chal = _pkce()

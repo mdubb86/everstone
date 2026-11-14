@@ -40,3 +40,22 @@ def test_token_verifier_accepts_valid(ctx):
 def test_as_routes_present(ctx):
     _, client = ctx
     assert client.get("/.well-known/oauth-authorization-server").status_code == 200
+
+
+def test_main_refuses_empty_consent_password(monkeypatch):
+    # Fail-closed startup guard: enabled with an empty consent_password must not
+    # boot an open auth surface. This raises before any bind, but mock the heavy
+    # bits anyway so a regression can't accidentally start serving.
+    monkeypatch.setattr(mcp_http.config, "load_config", lambda: {
+        "mcp_http": {"enabled": True, "issuer_url": ISSUER, "consent_password": "  "},
+    })
+    monkeypatch.setattr(mcp_http, "OAuthStore", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("OAuthStore should not be constructed")))
+    import sys, types
+    fake_uvicorn = types.ModuleType("uvicorn")
+    fake_uvicorn.run = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("uvicorn.run should not be called"))
+    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
+    with pytest.raises(SystemExit) as ei:
+        mcp_http.main()
+    assert "consent_password is empty" in str(ei.value)
