@@ -61,37 +61,30 @@ def resolve_mcp_http(config: dict):
 MCP_ROUTES_MARKER = "# ==MCP_ROUTES=="
 
 
-def mcp_caddy_block() -> str:
-    # Each path reverse-proxied to the es-mcp-http service on localhost:9400.
+def mcp_caddy_block(token: str) -> str:
+    """Caddy block for the /mcp endpoint, gated by a static bearer token.
+
+    Caddy is the only auth wall: a request whose Authorization header is not
+    exactly ``Bearer <token>`` gets 401; everything else is streamed to the
+    es-mcp-http service on localhost:9400 (``flush_interval -1`` keeps the
+    streamable-http/SSE frames unbuffered). The token is injected verbatim —
+    it is url-safe base64 (no spaces/quotes), so it needs no escaping."""
     return "\n".join([
         "\thandle /mcp* {",
-        "\t\treverse_proxy localhost:9400 {",
-        "\t\t\tflush_interval -1",
+        f'\t\t@noauth not header Authorization "Bearer {token}"',
+        "\t\troute {",
+        "\t\t\trespond @noauth 401",
+        "\t\t\treverse_proxy localhost:9400 {",
+        "\t\t\t\tflush_interval -1",
+        "\t\t\t}",
         "\t\t}",
-        "\t}",
-        "\thandle /authorize* {",
-        "\t\treverse_proxy localhost:9400",
-        "\t}",
-        "\thandle /token {",
-        "\t\treverse_proxy localhost:9400",
-        "\t}",
-        "\thandle /register {",
-        "\t\treverse_proxy localhost:9400",
-        "\t}",
-        "\thandle /revoke {",
-        "\t\treverse_proxy localhost:9400",
-        "\t}",
-        "\thandle /.well-known/oauth-authorization-server {",
-        "\t\treverse_proxy localhost:9400",
-        "\t}",
-        "\thandle /.well-known/oauth-protected-resource* {",
-        "\t\treverse_proxy localhost:9400",
         "\t}",
     ])
 
 
 def render_caddyfile(template: str, config: dict) -> str:
-    block = mcp_caddy_block() if resolve_mcp_http(config) else ""
+    resolved = resolve_mcp_http(config)
+    block = mcp_caddy_block(resolved["token"]) if resolved else ""
     return template.replace(MCP_ROUTES_MARKER, block)
 
 
