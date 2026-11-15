@@ -181,5 +181,40 @@ def restart(
     _exec("s6-svc", "-k" if hard else "-t", f"/run/service/{service}")
 
 
+# ─── mcp ───────────────────────────────────────────────────────────────────
+
+def _mcp_add_message(config: dict) -> str:
+    """The `esadmin mcp` output: the ready-to-paste `claude mcp add` line, or a
+    hint when mcp_http is disabled / the token is missing."""
+    block = config.get("mcp_http") or {}
+    if not block.get("enabled"):
+        return (
+            "mcp_http is disabled.\n"
+            "Set mcp_http.{enabled: true, token: <url-safe token>} in config.yaml\n"
+            "and restart, then re-run `esadmin mcp`."
+        )
+    public_url = (config.get("public_url") or "").rstrip("/")
+    token = str(block.get("token") or "").strip()
+    if not public_url:
+        return "mcp_http is enabled but public_url is not set in config.yaml."
+    if not token:
+        return (
+            "mcp_http is enabled but mcp_http.token is empty.\n"
+            "Set a url-safe token (e.g. `python -c 'import secrets;print(secrets.token_urlsafe(32))'`)\n"
+            "in config.yaml and restart, then re-run `esadmin mcp`."
+        )
+    return (
+        f'claude mcp add --transport http everstone {public_url}/mcp '
+        f'--header "Authorization: Bearer {token}"'
+    )
+
+
+@app.command()
+def mcp() -> None:
+    """Print the `claude mcp add` line to connect Claude Code to the es MCP endpoint."""
+    from es.config import load_config
+    typer.echo(_mcp_add_message(load_config()))
+
+
 if __name__ == "__main__":
     app()
