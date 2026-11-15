@@ -34,8 +34,7 @@ brave:
   api_key: test-brave-key-e2e
 mcp_http:
   enabled: true
-  issuer_url: http://localhost:{port}
-  consent_password: e2e-consent
+  token: e2e-mcp-token
 """)
 
 @pytest.fixture(scope="session")
