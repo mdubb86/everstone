@@ -42,15 +42,17 @@ def _mcp_ready(everstone):
     """Wait for the es-mcp-http longrun to be serving behind Caddy — the fixture's
     /health check only proves Caddy is up, not the separate es-mcp-http service."""
     url = everstone["base_url"] + "/mcp"
-    for _ in range(45):
+    for _ in range(60):
         try:
             r = requests.post(url, headers=_auth(), json=_init_body(), timeout=4)
-            if r.status_code != 502:
+            # Ready only once a real MCP initialize succeeds (200 + a session id);
+            # a 502 (service not up) or a bootstrapping 200-without-session doesn't count.
+            if r.status_code == 200 and r.headers.get("mcp-session-id"):
                 return
         except Exception:
             pass
         time.sleep(2)
-    pytest.fail("es-mcp-http did not come up behind Caddy in time (still 502)")
+    pytest.fail("es-mcp-http did not become ready behind Caddy in time")
 
 
 def test_mcp_no_token_rejected(everstone):
