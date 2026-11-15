@@ -292,11 +292,9 @@
         "enabled": {
           "type": "boolean"
         },
-        "issuer_url": {
-          "type": "string"
-        },
-        "consent_password": {
-          "type": "string"
+        "token": {
+          "type": "string",
+          "description": "Static bearer token checked in Caddy for the /mcp endpoint. Use a url-safe, high-entropy value (e.g. `python -c 'import secrets;print(secrets.token_urlsafe(32))'`)."
         }
       }
     },

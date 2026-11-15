@@ -47,15 +47,14 @@ def deep_merge(base: dict, override: dict) -> dict:
 def resolve_mcp_http(config: dict):
     """Normalized mcp_http settings, or None when disabled/absent.
 
-    issuer_url defaults to public_url (trailing slash stripped)."""
+    Returns ``{"enabled": True, "token": <str>}`` when enabled. The token is
+    the static bearer Caddy checks on the /mcp route; it is injected verbatim."""
     block = config.get("mcp_http") or {}
     if not block.get("enabled"):
         return None
-    issuer = (block.get("issuer_url") or config.get("public_url") or "").rstrip("/")
     return {
         "enabled": True,
-        "issuer_url": issuer,
-        "consent_password": block.get("consent_password", ""),
+        "token": str(block.get("token") or ""),
     }
 
 
